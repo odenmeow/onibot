@@ -172,9 +172,9 @@ def on_release(key):
     })
 
 
-def send_to_pi(payload, pi_host):
+def send_to_pi(payload, pi_host, timeout=8):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(8)
+    s.settimeout(timeout)
     s.connect((pi_host, PI_PORT))
     s.sendall(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     data = s.recv(1024 * 1024)
@@ -271,31 +271,52 @@ class App:
         return res
 
     def poll_pi_status(self):
-        try:
-            pi_host = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
-            res = send_to_pi({"action": "status"}, pi_host)
+        if self.polling_status:
+            self.root.after(1000, self.poll_pi_status)
+            return
 
-            run_status = res.get("run_status", {})
-            state = run_status.get("state", "unknown")
-            mode = run_status.get("mode", "")
-            message = run_status.get("message", "")
+        self.polling_status = True
+        pi_host = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
 
-            if state == "running":
-                self.status_var.set("Pi 執行中：{} / {}".format(mode, message))
-            elif state == "idle":
-                pass
-            elif state == "stopped":
-                self.status_var.set("Pi 已停止：{}".format(message))
-                self.set_backend_error(message)
-            elif state == "error":
-                self.status_var.set("Pi 錯誤：{}".format(message))
-                self.set_backend_error(message)
-            else:
-                self.set_backend_error("")
-        except Exception as e:
-            self.set_frontend_error(str(e))
+        def worker():
+            frontend_err = ""
+            backend_err = None
+            status_msg = None
+            try:
+                res = send_to_pi({"action": "status"}, pi_host, timeout=0.8)
 
-        self.root.after(500, self.poll_pi_status)
+                run_status = res.get("run_status", {})
+                state = run_status.get("state", "unknown")
+                mode = run_status.get("mode", "")
+                message = run_status.get("message", "")
+
+                if state == "running":
+                    status_msg = "Pi 執行中：{} / {}".format(mode, message)
+                    backend_err = ""
+                elif state == "stopped":
+                    status_msg = "Pi 已停止：{}".format(message)
+                    backend_err = message
+                elif state == "error":
+                    status_msg = "Pi 錯誤：{}".format(message)
+                    backend_err = message
+                else:
+                    backend_err = ""
+            except Exception as e:
+                frontend_err = str(e)
+
+            def apply_result():
+                if status_msg:
+                    self.set_status(status_msg)
+                if backend_err is not None:
+                    self.set_backend_error(backend_err)
+                if frontend_err:
+                    self.set_frontend_error(frontend_err)
+                self.polling_status = False
+                self.root.after(1000, self.poll_pi_status)
+
+            self.root.after(0, apply_result)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def __init__(self, root):
         ensure_dirs()
@@ -306,11 +327,20 @@ class App:
         self.timeline = []
         self.current_name = ""
         self.current_loaded_from_saved = False
+        self.polling_status = False
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
 
-        top = tk.LabelFrame(container, text="操作區")
+        body = tk.PanedWindow(container, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        body.pack(fill="both", expand=True)
+
+        left_panel = tk.Frame(body)
+        right_panel = tk.Frame(body)
+        body.add(left_panel, minsize=560)
+        body.add(right_panel, minsize=420)
+
+        top = tk.LabelFrame(left_panel, text="操作區")
         top.pack(fill="x", pady=(0, 6))
 
         self.status_var = tk.StringVar(value="尚未錄製")
@@ -327,10 +357,10 @@ class App:
             ("測試連線", self.ping_pi, "#d9d9d9"),
         ]
         for idx, (txt, cmd, color) in enumerate(btn_specs):
-            kwargs = {"text": txt, "command": cmd, "width": 12}
+            kwargs = {"text": txt, "command": cmd, "width": 10}
             if color:
                 kwargs["bg"] = color
-            tk.Button(top, **kwargs).grid(row=1, column=idx, padx=5, pady=(2, 8))
+            tk.Button(top, **kwargs).grid(row=1, column=idx, padx=4, pady=(2, 8))
 
         self.current_script_var = tk.StringVar(value="【目前腳本：未命名 / 未儲存】")
         tk.Label(
@@ -340,28 +370,17 @@ class App:
             fg="#1a4fb8"
         ).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 8))
 
-        body = tk.PanedWindow(container, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
-        body.pack(fill="both", expand=True)
-
-        left_panel = tk.Frame(body)
-        right_panel = tk.Frame(body)
-        body.add(left_panel, minsize=620)
-        body.add(right_panel, minsize=320)
-
         info = tk.LabelFrame(left_panel, text="目前套用資訊")
         row = tk.Frame(info)
         row.pack(fill="x", padx=8, pady=2)
 
         tk.Label(row, text="Pi IP：").pack(side="left")
-
         self.pi_ip_entry = tk.Entry(row, width=18)
         self.pi_ip_entry.insert(0, self.config["pi_host"])
         self.pi_ip_entry.pack(side="left", padx=5)
-
         tk.Button(row, text="保存", command=self.save_pi_ip).pack(side="left", padx=5)
         info.pack(fill="x", pady=5)
 
-        
         save_frame = tk.LabelFrame(left_panel, text="儲存 / 載入")
         save_frame.pack(fill="x", pady=5)
 
@@ -378,25 +397,20 @@ class App:
         self.saved_listbox.grid(row=1, column=0, columnspan=6, sticky="we", padx=5, pady=5)
 
         error_frame = tk.LabelFrame(left_panel, text="錯誤訊息（前端 / 後端）")
-        error_frame.pack(fill="x", pady=5)
+        error_frame.pack(fill="both", expand=True, pady=(5, 0))
         tk.Label(error_frame, text="前端：", width=8, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="nw")
-        self.frontend_error_text = tk.Text(error_frame, height=3, wrap="word", fg="#b30000")
-        self.frontend_error_text.grid(row=0, column=1, sticky="we", padx=(0, 6), pady=2)
+        self.frontend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
+        self.frontend_error_text.grid(row=0, column=1, sticky="nsew", padx=(0, 6), pady=2)
         tk.Label(error_frame, text="後端：", width=8, anchor="w").grid(row=1, column=0, padx=6, pady=2, sticky="nw")
-        self.backend_error_text = tk.Text(error_frame, height=3, wrap="word", fg="#b30000")
-        self.backend_error_text.grid(row=1, column=1, sticky="we", padx=(0, 6), pady=(2, 6))
+        self.backend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
+        self.backend_error_text.grid(row=1, column=1, sticky="nsew", padx=(0, 6), pady=(2, 6))
         error_frame.grid_columnconfigure(1, weight=1)
+        error_frame.grid_rowconfigure(0, weight=1)
+        error_frame.grid_rowconfigure(1, weight=1)
         self.clear_errors()
 
-        columns = ("idx", "type", "button", "at", "at_jitter", "group")
-        self.tree = ttk.Treeview(left_panel, columns=columns, show="headings", height=8, selectmode="extended")
-        for col in columns:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=100)
-        self.tree.pack(fill="both", expand=True, pady=8)
-
         jitter_frame = tk.LabelFrame(right_panel, text="jitter 設定")
-        jitter_frame.pack(fill="x", pady=(5, 8))
+        jitter_frame.pack(fill="x", pady=(0, 8))
 
         tk.Label(jitter_frame, text="at jitter").grid(row=0, column=0, padx=5, pady=5)
         self.at_jitter_entry = tk.Entry(jitter_frame, width=10)
@@ -407,11 +421,18 @@ class App:
         tk.Button(jitter_frame, text="套用到全部 event", command=self.apply_jitter_to_all).grid(row=0, column=3, padx=5, pady=5)
         tk.Button(jitter_frame, text="選取列清成 0", command=self.clear_jitter_selected).grid(row=0, column=4, padx=5, pady=5)
 
+        columns = ("idx", "type", "button", "at", "at_jitter", "group")
+        self.tree = ttk.Treeview(right_panel, columns=columns, show="headings", height=8, selectmode="extended")
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=92)
+        self.tree.pack(fill="both", expand=True, pady=(0, 8))
+
         bottom = tk.Frame(right_panel)
-        bottom.pack(fill="both", expand=True, pady=(0, 5))
+        bottom.pack(fill="both", expand=True)
 
         tk.Label(bottom, text="JSON 預覽 / 分析結果").pack(anchor="w")
-        self.text = tk.Text(bottom, height=10)
+        self.text = tk.Text(bottom, height=12)
         self.text.pack(fill="both", expand=True)
 
         self.refresh_saved_list()
