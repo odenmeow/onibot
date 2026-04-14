@@ -290,10 +290,17 @@ class App:
         with self.request_lock:
             for retry in range(2):
                 try:
-                    res = send_to_pi(payload, self.config["pi_host"])
+                    self.ensure_connection()
+                    wire = json.dumps(payload, ensure_ascii=False) + "\n"
+                    self.conn.sendall(wire.encode("utf-8"))
+                    line = self.conn_file.readline()
+                    if not line:
+                        raise ConnectionError("連線已中斷，未收到回應")
+                    res = json.loads(line)
                     break
                 except Exception as e:
                     last_err = e
+                    self.close_connection()
                     if retry == 0:
                         time.sleep(0.15)
                         continue
@@ -320,6 +327,36 @@ class App:
             })
         return res
 
+    def ensure_connection(self):
+        if self.conn is not None and self.conn_file is not None and self.connected:
+            return
+        self.open_connection()
+
+    def open_connection(self, timeout=3.0):
+        self.close_connection(silent=True)
+        host = self.config["pi_host"]
+        sock = socket.create_connection((host, PI_PORT), timeout=timeout)
+        sock.settimeout(timeout)
+        self.conn = sock
+        self.conn_file = sock.makefile("r", encoding="utf-8")
+        self.set_connected(True)
+
+    def close_connection(self, silent=False):
+        if self.conn_file is not None:
+            try:
+                self.conn_file.close()
+            except Exception:
+                pass
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+        self.conn_file = None
+        self.conn = None
+        if not silent:
+            self.set_connected(False)
+
     def __init__(self, root):
         ensure_dirs()
         self.config = load_config()
@@ -333,6 +370,8 @@ class App:
         self.offline_mode = False
         self.request_lock = threading.Lock()
         self.drag_iid = None
+        self.conn = None
+        self.conn_file = None
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -354,11 +393,11 @@ class App:
         )
 
         btn_specs = [
-            ("開始錄製", self.toggle_record, None),
+            ("重新分析", self.analyze, None),
+            ("開始錄製", self.toggle_record, "#9be58b"),
             ("送出執行", self.send_timeline, "#c8f7c5"),
             ("重複執行", self.send_timeline_loop, "#b7f0ad"),
             ("停止", self.stop_pi, "#ff8c69"),
-            ("重新分析", self.analyze, None),
         ]
         self.record_button = None
         for idx, (txt, cmd, color) in enumerate(btn_specs):
@@ -367,7 +406,7 @@ class App:
                 kwargs["bg"] = color
             btn = tk.Button(top, **kwargs)
             btn.grid(row=1, column=idx, padx=4, pady=(2, 8))
-            if idx == 0:
+            if idx == 1:
                 self.record_button = btn
 
         self.current_script_var = tk.StringVar(value="【目前腳本：未命名 / 未儲存】")
@@ -563,6 +602,7 @@ class App:
                 self.request_pi({"action": "stop"}, write_response=False)
         except Exception as e:
             self.set_frontend_error(str(e))
+        self.close_connection(silent=True)
         self.offline_mode = True
         self.set_connected(False, "已離線（GPIO 釋放指令已送出）")
 
@@ -579,11 +619,13 @@ class App:
         self.write_text({"status": "recording"})
         self.refresh_tree()
         self.record_button.config(text="停止錄製")
+        self.record_button.config(bg="#f7e37a")
 
     def stop_record(self):
         global recording
         recording = False
         self.record_button.config(text="開始錄製")
+        self.record_button.config(bg="#9be58b")
         if events:
             self.analyze()
         else:
@@ -776,10 +818,12 @@ class App:
 
             self.offline_mode = False
             self.set_frontend_error("")
+            self.open_connection(timeout=1.5)
             self.request_pi({"action": "ping"})
             self.set_connected(True, "Pi 連線正常：{}".format(self.config["pi_host"]))
         except Exception as e:
             self.set_frontend_error(str(e))
+            self.close_connection(silent=True)
             self.set_connected(False)
             if show_popup:
                 messagebox.showerror("Pi 連線失敗", str(e))

@@ -386,23 +386,41 @@ def handle_request(data):
 
 def client_thread(conn, addr):
     print("[連線] {}".format(addr))
+    buffer = b""
+
+    def handle_line(raw_line):
+        try:
+            text = raw_line.decode("utf-8")
+            print("[收到] {}".format(text))
+            data = json.loads(text)
+            response = handle_request(data)
+        except Exception as e:
+            response = {"status": "error", "message": str(e)}
+
+        try:
+            wire = json.dumps(response, ensure_ascii=False) + "\n"
+            conn.sendall(wire.encode("utf-8"))
+        except Exception as e:
+            print("[回傳失敗] {}".format(e))
+            raise
+
     try:
-        raw = conn.recv(1024 * 1024)
-        if not raw:
-            return
+        while True:
+            raw = conn.recv(1024 * 1024)
+            if not raw:
+                break
 
-        text = raw.decode("utf-8")
-        print("[收到] {}".format(text))
-        data = json.loads(text)
-        response = handle_request(data)
+            buffer += raw
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                handle_line(line)
 
-    except Exception as e:
-        response = {"status": "error", "message": str(e)}
-
-    try:
-        conn.sendall(json.dumps(response, ensure_ascii=False).encode("utf-8"))
-    except Exception as e:
-        print("[回傳失敗] {}".format(e))
+        rest = buffer.strip()
+        if rest:
+            handle_line(rest)
     finally:
         conn.close()
         print("[斷線] {}".format(addr))
