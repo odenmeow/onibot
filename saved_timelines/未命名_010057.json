@@ -1,0 +1,162 @@
+{
+  "name": "未命名_010057",
+  "saved_at": "2026-04-15 01:01:08",
+  "events": [
+    {
+      "type": "press",
+      "button": "right",
+      "at": 2.0471,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "right",
+      "at": 3.5594,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "alt",
+      "at": 3.7224,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "alt",
+      "at": 3.947,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "alt",
+      "at": 4.1473,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "alt",
+      "at": 4.3347,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "alt",
+      "at": 4.5974,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "alt",
+      "at": 4.7845,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "right",
+      "at": 4.9354,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "right",
+      "at": 5.6345,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 5.6484,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 5.7978,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 5.8602,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 6.0104,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 6.0857,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 6.2485,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 6.6476,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 6.8349,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 6.9098,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 7.0594,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 7.1597,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 7.3217,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "d",
+      "at": 8.2119,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "d",
+      "at": 8.3731,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "press",
+      "button": "d",
+      "at": 8.4736,
+      "at_jitter": 0.0
+    },
+    {
+      "type": "release",
+      "button": "d",
+      "at": 8.5982,
+      "at_jitter": 0.0
+    }
+  ]
+}
