@@ -10,7 +10,7 @@ BUTTONS = {
     "fn": 26,
     "g": 2,
     "shift": 3,
-    "f": 6,          # ✅ 改這裡（原本 GPIO4 → 現在 GPIO6）
+    "f": 6,
     "c": 17,
     "v": 27,
     "d": 22,
@@ -67,6 +67,19 @@ def press_button(name, duration=PRESS_TIME):
     time.sleep(0.1)
 
 
+def delayed_press_button(name, delay, duration):
+    if name not in BUTTONS:
+        print("[錯誤] 找不到按鍵: {}".format(name))
+        return
+
+    delay = abs(float(delay))
+    duration = abs(float(duration))
+
+    print("[排程] {} 將在 {:.2f} 秒後按下，持續 {:.2f} 秒".format(name, delay, duration))
+    time.sleep(delay)
+    press_button(name, duration)
+
+
 def press_and_hold(name):
     if name not in BUTTONS:
         print("[錯誤] 找不到按鍵: {}".format(name))
@@ -101,18 +114,24 @@ def show_buttons():
     print()
 
 
+def show_help():
+    print("指令說明：")
+    print("  all                    -> 全部輪流測試")
+    print("  <按鍵名稱>             -> 單次按一下")
+    print("  hold <按鍵名稱>        -> 持續按住")
+    print("  release <按鍵名稱>     -> 放開")
+    print("  <按鍵> -延遲 -持續     -> 延遲後按住一段時間")
+    print("                           例如：down -2 -2")
+    print("                           表示 2 秒後按 down，持續 2 秒")
+    print("  list                   -> 顯示按鍵清單")
+    print("  q                      -> 離開")
+    print()
+
+
 def main():
     setup()
     show_buttons()
-
-    print("指令說明：")
-    print("  all                 -> 全部輪流測試")
-    print("  <按鍵名稱>          -> 單次按一下")
-    print("  hold <按鍵名稱>     -> 持續按住")
-    print("  release <按鍵名稱>  -> 放開")
-    print("  list                -> 顯示按鍵清單")
-    print("  q                   -> 離開")
-    print()
+    show_help()
 
     try:
         while True:
@@ -120,20 +139,57 @@ def main():
 
             if cmd == "q":
                 break
+
             elif cmd == "all":
                 test_all()
+
             elif cmd == "list":
                 show_buttons()
+
             elif cmd.startswith("hold "):
-                name = cmd.split(maxsplit=1)[1]
-                press_and_hold(name)
+                parts = cmd.split(None, 1)
+                if len(parts) == 2:
+                    name = parts[1]
+                    press_and_hold(name)
+                else:
+                    print("格式錯誤，例：hold space")
+
             elif cmd.startswith("release "):
-                name = cmd.split(maxsplit=1)[1]
-                release_button(name)
-            elif cmd in BUTTONS:
-                press_button(cmd)
+                parts = cmd.split(None, 1)
+                if len(parts) == 2:
+                    name = parts[1]
+                    release_button(name)
+                else:
+                    print("格式錯誤，例：release space")
+
             else:
-                print("未知指令，輸入 list 查看按鍵名稱。")
+                parts = cmd.split()
+
+                # 單一按鍵
+                if len(parts) == 1 and parts[0] in BUTTONS:
+                    press_button(parts[0])
+
+                # 延遲 + 持續按壓，例如：down -2 -2
+                elif len(parts) == 3:
+                    name = parts[0]
+                    delay_str = parts[1]
+                    duration_str = parts[2]
+
+                    if name not in BUTTONS:
+                        print("[錯誤] 找不到按鍵: {}".format(name))
+                        continue
+
+                    try:
+                        delay = abs(float(delay_str))
+                        duration = abs(float(duration_str))
+                    except ValueError:
+                        print("格式錯誤，例：down -2 -2")
+                        continue
+
+                    delayed_press_button(name, delay, duration)
+
+                else:
+                    print("未知指令，輸入 list 查看按鍵名稱。")
 
     except KeyboardInterrupt:
         print("\n[中止] 使用者中斷")
