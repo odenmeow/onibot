@@ -870,7 +870,7 @@ class App:
         save_config(self.config)
         self.update_current_labels()
 
-        prepared_events, selected_group = self.prepare_events_for_send()
+        prepared_events, resolve_note = self.prepare_events_for_send()
         if prepared_events is None:
             return
 
@@ -897,8 +897,8 @@ class App:
                 self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
             else:
                 suffix = ""
-                if selected_group:
-                    suffix = "（buff_group: {}）".format(selected_group)
+                if resolve_note:
+                    suffix = "（{}）".format(resolve_note)
                 self.set_status("已送出：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
         except Exception as e:
             self.set_frontend_error(str(e))
@@ -913,7 +913,7 @@ class App:
         save_config(self.config)
         self.update_current_labels()
 
-        prepared_events, selected_group = self.prepare_events_for_send()
+        prepared_events, resolve_note = self.prepare_events_for_send()
         if prepared_events is None:
             return
 
@@ -938,8 +938,8 @@ class App:
                 self.set_status("重複送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
             else:
                 suffix = ""
-                if selected_group:
-                    suffix = "（buff_group: {}）".format(selected_group)
+                if resolve_note:
+                    suffix = "（{}）".format(resolve_note)
                 self.set_status("已開始重複執行：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
         except Exception as e:
             self.set_frontend_error(str(e))
@@ -947,36 +947,66 @@ class App:
 
     def prepare_events_for_send(self):
         events = [self.normalize_event_schema(ev) for ev in self.timeline]
-        group_to_indexes = {}
+        group_configs = {}
         for idx, ev in enumerate(events):
-            g = ev.get("buff_group", "").strip()
+            group_name = ev.get("buff_group", "").strip()
+            if not group_name:
+                continue
             cycle = float(ev.get("buff_cycle_sec", 0.0))
-            if g and cycle > 0:
-                group_to_indexes.setdefault(g, []).append(idx)
+            jitter = float(ev.get("buff_jitter_sec", 0.0))
+            if cycle <= 0:
+                continue
+            group_configs.setdefault(group_name, []).append({
+                "idx": idx,
+                "cycle": cycle,
+                "jitter": jitter
+            })
 
-        selected_group = ""
-        if len(group_to_indexes) > 1:
-            options = sorted(group_to_indexes.keys())
-            detail = []
-            for g in options:
-                idxs = ",".join(str(i) for i in group_to_indexes[g])
-                detail.append("{}(idx:{})".format(g, idxs))
-            ans = simpledialog.askstring(
-                "選擇 buff 群組",
-                "偵測到多個 buff 群組：{}\n請輸入要套用的群組名稱：".format("、".join(detail)),
-                initialvalue=options[0]
-            )
-            if ans is None:
-                return None, ""
-            ans = ans.strip()
-            if ans not in group_to_indexes:
-                messagebox.showerror("輸入錯誤", "找不到 buff 群組：{}".format(ans))
-                return None, ""
-            selected_group = ans
-            events = [ev for ev in events if not ev.get("buff_group") or ev.get("buff_group") == selected_group]
-        elif len(group_to_indexes) == 1:
-            selected_group = next(iter(group_to_indexes.keys()))
-        return events, selected_group
+        resolved_groups = []
+        for group_name, cfg_rows in sorted(group_configs.items()):
+            uniq = {}
+            for row in cfg_rows:
+                key = (row["cycle"], row["jitter"])
+                if key not in uniq:
+                    uniq[key] = []
+                uniq[key].append(row["idx"])
+
+            if len(uniq) == 1:
+                (chosen_cycle, chosen_jitter), _ = next(iter(uniq.items()))
+            else:
+                options = []
+                option_map = {}
+                for cfg_idx, ((cycle, jitter), idx_list) in enumerate(sorted(uniq.items()), start=1):
+                    sample_idx = idx_list[0]
+                    options.append("{}. idx{} => cycle={}, jitter={}".format(cfg_idx, sample_idx, cycle, jitter))
+                    option_map[str(cfg_idx)] = (cycle, jitter)
+
+                ans = simpledialog.askstring(
+                    "buff 參數衝突",
+                    "buff_group {} 有多組秒數設定：\n{}\n請輸入要採用的選項編號：".format(
+                        group_name,
+                        "\n".join(options)
+                    ),
+                    initialvalue="1"
+                )
+                if ans is None:
+                    return None, ""
+                ans = ans.strip()
+                if ans not in option_map:
+                    messagebox.showerror("輸入錯誤", "選項不存在：{}".format(ans))
+                    return None, ""
+                chosen_cycle, chosen_jitter = option_map[ans]
+                resolved_groups.append(str(group_name))
+
+            for ev in events:
+                if ev.get("buff_group", "").strip() == group_name:
+                    ev["buff_cycle_sec"] = chosen_cycle
+                    ev["buff_jitter_sec"] = chosen_jitter
+
+        resolve_note = ""
+        if resolved_groups:
+            resolve_note = "已解決衝突群組: {}".format("、".join(resolved_groups))
+        return events, resolve_note
 
     def on_tree_double_click(self, event):
         row_id = self.tree.identify_row(event.y)
