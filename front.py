@@ -226,11 +226,17 @@ def build_overlap_summary(timeline):
 
 
 class App:
+    def update_error_text(self, widget, message):
+        widget.config(state="normal")
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, message or "無")
+        widget.config(state="disabled")
+
     def set_frontend_error(self, message):
-        self.frontend_error_var.set(message or "無")
+        self.update_error_text(self.frontend_error_text, message)
 
     def set_backend_error(self, message):
-        self.backend_error_var.set(message or "無")
+        self.update_error_text(self.backend_error_text, message)
 
     def clear_errors(self):
         self.set_frontend_error("")
@@ -326,7 +332,23 @@ class App:
                 kwargs["bg"] = color
             tk.Button(top, **kwargs).grid(row=1, column=idx, padx=5, pady=(2, 8))
 
-        info = tk.LabelFrame(container, text="目前套用資訊")
+        self.current_script_var = tk.StringVar(value="【目前腳本：未命名 / 未儲存】")
+        tk.Label(
+            top,
+            textvariable=self.current_script_var,
+            anchor="w",
+            fg="#1a4fb8"
+        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 8))
+
+        body = tk.PanedWindow(container, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        body.pack(fill="both", expand=True)
+
+        left_panel = tk.Frame(body)
+        right_panel = tk.Frame(body)
+        body.add(left_panel, minsize=620)
+        body.add(right_panel, minsize=320)
+
+        info = tk.LabelFrame(left_panel, text="目前套用資訊")
         row = tk.Frame(info)
         row.pack(fill="x", padx=8, pady=2)
 
@@ -339,23 +361,8 @@ class App:
         tk.Button(row, text="保存", command=self.save_pi_ip).pack(side="left", padx=5)
         info.pack(fill="x", pady=5)
 
-        self.current_name_var = tk.StringVar(value="目前資料：未命名 / 未儲存")
-        self.current_pi_var = tk.StringVar(value="Pi IP：{}".format(self.config["pi_host"]))
-
-        tk.Label(info, textvariable=self.current_name_var).pack(anchor="w", padx=8, pady=2)
-        tk.Label(info, textvariable=self.current_pi_var).pack(anchor="w", padx=8, pady=2)
-
         
-        error_frame = tk.LabelFrame(container, text="錯誤訊息（前端 / 後端）")
-        error_frame.pack(fill="x", pady=5)
-        self.frontend_error_var = tk.StringVar(value="無")
-        self.backend_error_var = tk.StringVar(value="無")
-        tk.Label(error_frame, text="前端：", width=8, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="w")
-        tk.Label(error_frame, textvariable=self.frontend_error_var, anchor="w", fg="#b30000").grid(row=0, column=1, sticky="w")
-        tk.Label(error_frame, text="後端：", width=8, anchor="w").grid(row=1, column=0, padx=6, pady=2, sticky="w")
-        tk.Label(error_frame, textvariable=self.backend_error_var, anchor="w", fg="#b30000").grid(row=1, column=1, sticky="w")
-
-        save_frame = tk.LabelFrame(container, text="儲存 / 載入")
+        save_frame = tk.LabelFrame(left_panel, text="儲存 / 載入")
         save_frame.pack(fill="x", pady=5)
 
         tk.Label(save_frame, text="名稱").grid(row=0, column=0, padx=5, pady=5)
@@ -370,8 +377,26 @@ class App:
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
         self.saved_listbox.grid(row=1, column=0, columnspan=6, sticky="we", padx=5, pady=5)
 
-        jitter_frame = tk.LabelFrame(container, text="jitter 設定")
-        jitter_frame.pack(fill="x", pady=5)
+        error_frame = tk.LabelFrame(left_panel, text="錯誤訊息（前端 / 後端）")
+        error_frame.pack(fill="x", pady=5)
+        tk.Label(error_frame, text="前端：", width=8, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="nw")
+        self.frontend_error_text = tk.Text(error_frame, height=3, wrap="word", fg="#b30000")
+        self.frontend_error_text.grid(row=0, column=1, sticky="we", padx=(0, 6), pady=2)
+        tk.Label(error_frame, text="後端：", width=8, anchor="w").grid(row=1, column=0, padx=6, pady=2, sticky="nw")
+        self.backend_error_text = tk.Text(error_frame, height=3, wrap="word", fg="#b30000")
+        self.backend_error_text.grid(row=1, column=1, sticky="we", padx=(0, 6), pady=(2, 6))
+        error_frame.grid_columnconfigure(1, weight=1)
+        self.clear_errors()
+
+        columns = ("idx", "type", "button", "at", "at_jitter", "group")
+        self.tree = ttk.Treeview(left_panel, columns=columns, show="headings", height=8, selectmode="extended")
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=100)
+        self.tree.pack(fill="both", expand=True, pady=8)
+
+        jitter_frame = tk.LabelFrame(right_panel, text="jitter 設定")
+        jitter_frame.pack(fill="x", pady=(5, 8))
 
         tk.Label(jitter_frame, text="at jitter").grid(row=0, column=0, padx=5, pady=5)
         self.at_jitter_entry = tk.Entry(jitter_frame, width=10)
@@ -382,15 +407,8 @@ class App:
         tk.Button(jitter_frame, text="套用到全部 event", command=self.apply_jitter_to_all).grid(row=0, column=3, padx=5, pady=5)
         tk.Button(jitter_frame, text="選取列清成 0", command=self.clear_jitter_selected).grid(row=0, column=4, padx=5, pady=5)
 
-        columns = ("idx", "type", "button", "at", "at_jitter", "group")
-        self.tree = ttk.Treeview(container, columns=columns, show="headings", height=8, selectmode="extended")
-        for col in columns:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=110)
-        self.tree.pack(fill="both", expand=True, pady=8)
-
-        bottom = tk.Frame(container)
-        bottom.pack(fill="both", expand=True, pady=5)
+        bottom = tk.Frame(right_panel)
+        bottom.pack(fill="both", expand=True, pady=(0, 5))
 
         tk.Label(bottom, text="JSON 預覽 / 分析結果").pack(anchor="w")
         self.text = tk.Text(bottom, height=10)
@@ -403,11 +421,9 @@ class App:
     def update_current_labels(self):
         if self.current_name:
             source_note = "已儲存" if self.current_loaded_from_saved else "目前工作中"
-            self.current_name_var.set("目前資料：{} ({})".format(self.current_name, source_note))
+            self.current_script_var.set("【目前腳本：{}（{}）】".format(self.current_name, source_note))
         else:
-            self.current_name_var.set("目前資料：未命名 / 未儲存")
-
-        self.current_pi_var.set("Pi IP：{}".format(self.config["pi_host"]))
+            self.current_script_var.set("【目前腳本：未命名 / 未儲存】")
 
     def write_text(self, obj):
         self.text.delete("1.0", tk.END)
