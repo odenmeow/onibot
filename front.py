@@ -174,12 +174,27 @@ def on_release(key):
 
 
 def send_to_pi(payload, pi_host, timeout=8):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    s.connect((pi_host, PI_PORT))
-    s.sendall(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-    data = s.recv(1024 * 1024)
-    s.close()
+    raw_payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    with socket.create_connection((pi_host, PI_PORT), timeout=timeout) as s:
+        s.settimeout(timeout)
+        s.sendall(raw_payload)
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+        chunks = []
+        while True:
+            part = s.recv(1024 * 1024)
+            if not part:
+                break
+            chunks.append(part)
+
+    if not chunks:
+        raise ConnectionError("Pi 沒有回應資料")
+
+    data = b"".join(chunks)
     return json.loads(data.decode("utf-8"))
 
 
@@ -247,14 +262,22 @@ class App:
         self.status_var.set(message)
 
     def request_pi(self, payload, success_status=None, write_response=True):
-        try:
-            res = send_to_pi(payload, self.config["pi_host"])
-        except Exception as e:
-            err = str(e)
-            self.set_frontend_error(err)
-            if success_status:
-                self.set_status(success_status + "（前端連線失敗）")
-            raise
+        last_err = None
+        with self.request_lock:
+            for retry in range(2):
+                try:
+                    res = send_to_pi(payload, self.config["pi_host"])
+                    break
+                except Exception as e:
+                    last_err = e
+                    if retry == 0:
+                        time.sleep(0.15)
+                        continue
+                    err = str(last_err)
+                    self.set_frontend_error(err)
+                    if success_status:
+                        self.set_status(success_status + "（前端連線失敗）")
+                    raise
 
         status = res.get("status")
         if status in ("error", "busy"):
@@ -273,6 +296,10 @@ class App:
 
     def poll_pi_status(self):
         if self.polling_status:
+            self.root.after(1000, self.poll_pi_status)
+            return
+
+        if self.request_lock.locked():
             self.root.after(1000, self.poll_pi_status)
             return
 
@@ -329,6 +356,7 @@ class App:
         self.current_name = ""
         self.current_loaded_from_saved = False
         self.polling_status = False
+        self.request_lock = threading.Lock()
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
