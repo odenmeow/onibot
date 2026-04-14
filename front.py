@@ -226,6 +226,28 @@ def build_overlap_summary(timeline):
 
 
 class App:
+    def poll_pi_status(self):
+        try:
+            pi_host = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
+            res = send_to_pi({"action": "status"}, pi_host)
+
+            run_status = res.get("run_status", {})
+            state = run_status.get("state", "unknown")
+            mode = run_status.get("mode", "")
+            message = run_status.get("message", "")
+
+            if state == "running":
+                self.status_var.set("Pi 執行中：{} / {}".format(mode, message))
+            elif state == "idle":
+                pass
+            elif state == "stopped":
+                self.status_var.set("Pi 已停止：{}".format(message))
+            elif state == "error":
+                self.status_var.set("Pi 錯誤：{}".format(message))
+        except Exception:
+            pass
+
+        self.root.after(500, self.poll_pi_status)
     def __init__(self, root):
         ensure_dirs()
         self.config = load_config()
@@ -242,14 +264,52 @@ class App:
         self.status_var = tk.StringVar(value="尚未錄製")
         tk.Label(top, textvariable=self.status_var).pack(side="left")
 
-        tk.Button(top, text="開始錄製", command=self.start_record).pack(side="left", padx=5)
-        tk.Button(top, text="停止錄製", command=self.stop_record).pack(side="left", padx=5)
-        tk.Button(top, text="分析 Timeline", command=self.analyze).pack(side="left", padx=5)
-        tk.Button(top, text="送到 Pi", command=self.send_timeline).pack(side="left", padx=5)
-        tk.Button(top, text="停止 Pi", command=self.stop_pi).pack(side="left", padx=5)
-        tk.Button(top, text="測試 Pi", command=self.ping_pi).pack(side="left", padx=5)
+        btn_start = tk.Button(top, text="開始錄製", command=self.start_record)
+        btn_start.pack(side="left", padx=5)
 
+        btn_stop_record = tk.Button(top, text="停止錄製", command=self.stop_record)
+        btn_stop_record.pack(side="left", padx=5)
+
+        btn_analyze = tk.Button(top, text="分析 Timeline", command=self.analyze)
+        btn_analyze.pack(side="left", padx=5)
+
+        btn_send = tk.Button(
+            top,
+            text="送出執行",
+            command=self.send_timeline,
+            bg="#c8f7c5",      # 淺綠
+            activebackground="#b6efb0"
+        )
+        btn_send.pack(side="left", padx=5)
+
+        btn_stop_pi = tk.Button(
+            top,
+            text="停止",
+            command=self.stop_pi,
+            bg="#ff8c69",      # 橘紅
+            activebackground="#ff7f50"
+        )
+        btn_stop_pi.pack(side="left", padx=5)
+
+        btn_ping = tk.Button(
+            top,
+            text="測試連線",
+            command=self.ping_pi,
+            bg="#d9d9d9",      # 灰色
+            activebackground="#cfcfcf"
+        )
+        btn_ping.pack(side="left", padx=5)
         info = tk.LabelFrame(root, text="目前套用資訊")
+        row = tk.Frame(info)
+        row.pack(fill="x", padx=8, pady=2)
+
+        tk.Label(row, text="Pi IP：").pack(side="left")
+
+        self.pi_ip_entry = tk.Entry(row, width=18)
+        self.pi_ip_entry.insert(0, self.config["pi_host"])
+        self.pi_ip_entry.pack(side="left", padx=5)
+
+        tk.Button(row, text="保存", command=self.save_pi_ip).pack(side="left", padx=5)
         info.pack(fill="x", padx=10, pady=5)
 
         self.current_name_var = tk.StringVar(value="目前資料：未命名 / 未儲存")
@@ -258,16 +318,7 @@ class App:
         tk.Label(info, textvariable=self.current_name_var).pack(anchor="w", padx=8, pady=2)
         tk.Label(info, textvariable=self.current_pi_var).pack(anchor="w", padx=8, pady=2)
 
-        ip_frame = tk.LabelFrame(root, text="Raspberry Pi 設定")
-        ip_frame.pack(fill="x", padx=10, pady=5)
-
-        tk.Label(ip_frame, text="Pi IP").grid(row=0, column=0, padx=5, pady=5)
-        self.pi_ip_entry = tk.Entry(ip_frame, width=18)
-        self.pi_ip_entry.insert(0, self.config["pi_host"])
-        self.pi_ip_entry.grid(row=0, column=1, padx=5, pady=5)
-
-        tk.Button(ip_frame, text="保存 Pi IP", command=self.save_pi_ip).grid(row=0, column=2, padx=5, pady=5)
-
+        
         save_frame = tk.LabelFrame(root, text="儲存 / 載入")
         save_frame.pack(fill="x", padx=10, pady=5)
 
