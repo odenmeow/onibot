@@ -346,7 +346,7 @@ class App:
 
         self.status_var = tk.StringVar(value="尚未錄製")
         tk.Label(top, textvariable=self.status_var, anchor="w").grid(
-            row=0, column=0, columnspan=6, sticky="we", padx=8, pady=(6, 2)
+            row=0, column=0, columnspan=7, sticky="we", padx=8, pady=(6, 2)
         )
 
         btn_specs = [
@@ -354,6 +354,7 @@ class App:
             ("停止錄製", self.stop_record, None),
             ("分析 Timeline", self.analyze, None),
             ("送出執行", self.send_timeline, "#c8f7c5"),
+            ("重複執行", self.send_timeline_loop, "#b7f0ad"),
             ("停止", self.stop_pi, "#ff8c69"),
             ("測試連線", self.ping_pi, "#d9d9d9"),
         ]
@@ -369,7 +370,7 @@ class App:
             textvariable=self.current_script_var,
             anchor="w",
             fg="#1a4fb8"
-        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 8))
+        ).grid(row=2, column=0, columnspan=7, sticky="w", padx=8, pady=(0, 8))
 
         info = tk.LabelFrame(left_panel, text="目前套用資訊")
         row = tk.Frame(info)
@@ -791,6 +792,40 @@ class App:
         except Exception as e:
             self.set_frontend_error(str(e))
             messagebox.showerror("傳送失敗", str(e))
+
+    def send_timeline_loop(self):
+        if not self.timeline:
+            messagebox.showwarning("提醒", "請先錄製並分析，或載入已保存項目")
+            return
+
+        self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
+        save_config(self.config)
+        self.update_current_labels()
+
+        payload = {
+            "action": "run_timeline_loop",
+            "events": self.timeline
+        }
+
+        display_name = self.current_name if self.current_name else "未命名資料"
+
+        try:
+            self.set_frontend_error("")
+            res = self.request_pi(payload, write_response=False)
+            self.write_text({
+                "sending_name": display_name,
+                "pi_host": self.config["pi_host"],
+                "request": payload,
+                "response": res
+            })
+
+            if res.get("status") in ("error", "busy"):
+                self.set_status("重複送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
+            else:
+                self.set_status("已開始重複執行：{} -> {}".format(display_name, self.config["pi_host"]))
+        except Exception as e:
+            self.set_frontend_error(str(e))
+            messagebox.showerror("重複傳送失敗", str(e))
 
 
 def start_listener():

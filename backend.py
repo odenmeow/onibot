@@ -148,11 +148,12 @@ def run_macro(steps):
     return results
 
 
-def run_timeline(events):
+def run_timeline(events, reset_stop_event=True):
     if not isinstance(events, list):
         raise ValueError("events 必須是 list")
 
-    stop_event.clear()
+    if reset_stop_event:
+        stop_event.clear()
     normalized = []
 
     for i, ev in enumerate(events):
@@ -235,6 +236,42 @@ def run_timeline_background(events):
         current_run_status = {
             "state": "error",
             "mode": "timeline",
+            "message": str(e)
+        }
+
+
+def run_timeline_loop_background(events):
+    global current_run_status
+    loop_count = 0
+    try:
+        stop_event.clear()
+        while not stop_event.is_set():
+            loop_count += 1
+            current_run_status = {
+                "state": "running",
+                "mode": "timeline_loop",
+                "message": "正在第 {} 次循環".format(loop_count)
+            }
+            run_timeline(events, reset_stop_event=False)
+            release_all()
+
+        current_run_status = {
+            "state": "stopped",
+            "mode": "timeline_loop",
+            "message": "已停止循環，共執行 {} 次".format(loop_count)
+        }
+    except InterruptedError as e:
+        release_all()
+        current_run_status = {
+            "state": "stopped",
+            "mode": "timeline_loop",
+            "message": "{}（共執行 {} 次）".format(str(e), loop_count)
+        }
+    except Exception as e:
+        release_all()
+        current_run_status = {
+            "state": "error",
+            "mode": "timeline_loop",
             "message": str(e)
         }
 
@@ -329,6 +366,20 @@ def handle_request(data):
         )
         current_run_thread.start()
         return {"status": "ok", "mode": "timeline", "message": "已收到 timeline，開始背景執行"}
+
+    if action == "run_timeline_loop":
+        if current_run_thread is not None and current_run_thread.is_alive():
+            return {"status": "busy", "message": "Pi 目前已有執行中的工作"}
+
+        events = data.get("events", [])
+        stop_event.clear()
+        current_run_thread = threading.Thread(
+            target=run_timeline_loop_background,
+            args=(events,),
+            daemon=True
+        )
+        current_run_thread.start()
+        return {"status": "ok", "mode": "timeline_loop", "message": "已收到 timeline，開始重複執行"}
 
     return {"status": "error", "message": "未知 action"}
 
