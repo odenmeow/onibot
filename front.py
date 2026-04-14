@@ -226,6 +226,50 @@ def build_overlap_summary(timeline):
 
 
 class App:
+    def update_error_text(self, widget, message):
+        widget.config(state="normal")
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, message or "無")
+        widget.config(state="disabled")
+
+    def set_frontend_error(self, message):
+        self.update_error_text(self.frontend_error_text, message)
+
+    def set_backend_error(self, message):
+        self.update_error_text(self.backend_error_text, message)
+
+    def clear_errors(self):
+        self.set_frontend_error("")
+        self.set_backend_error("")
+
+    def set_status(self, message):
+        self.status_var.set(message)
+
+    def request_pi(self, payload, success_status=None, write_response=True):
+        try:
+            res = send_to_pi(payload, self.config["pi_host"])
+        except Exception as e:
+            err = str(e)
+            self.set_frontend_error(err)
+            if success_status:
+                self.set_status(success_status + "（前端連線失敗）")
+            raise
+
+        status = res.get("status")
+        if status in ("error", "busy"):
+            self.set_backend_error(res.get("message", "Pi 回傳錯誤"))
+        else:
+            self.set_backend_error("")
+
+        if write_response:
+            self.write_text({
+                "current_name": self.current_name,
+                "pi_host": self.config["pi_host"],
+                "request": payload,
+                "response": res
+            })
+        return res
+
     def poll_pi_status(self):
         try:
             pi_host = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
@@ -242,12 +286,17 @@ class App:
                 pass
             elif state == "stopped":
                 self.status_var.set("Pi 已停止：{}".format(message))
+                self.set_backend_error(message)
             elif state == "error":
                 self.status_var.set("Pi 錯誤：{}".format(message))
-        except Exception:
-            pass
+                self.set_backend_error(message)
+            else:
+                self.set_backend_error("")
+        except Exception as e:
+            self.set_frontend_error(str(e))
 
         self.root.after(500, self.poll_pi_status)
+
     def __init__(self, root):
         ensure_dirs()
         self.config = load_config()
@@ -258,48 +307,48 @@ class App:
         self.current_name = ""
         self.current_loaded_from_saved = False
 
-        top = tk.Frame(root)
-        top.pack(fill="x", padx=10, pady=8)
+        container = tk.Frame(root)
+        container.pack(fill="both", expand=True, padx=10, pady=8)
+
+        top = tk.LabelFrame(container, text="操作區")
+        top.pack(fill="x", pady=(0, 6))
 
         self.status_var = tk.StringVar(value="尚未錄製")
-        tk.Label(top, textvariable=self.status_var).pack(side="left")
-
-        btn_start = tk.Button(top, text="開始錄製", command=self.start_record)
-        btn_start.pack(side="left", padx=5)
-
-        btn_stop_record = tk.Button(top, text="停止錄製", command=self.stop_record)
-        btn_stop_record.pack(side="left", padx=5)
-
-        btn_analyze = tk.Button(top, text="分析 Timeline", command=self.analyze)
-        btn_analyze.pack(side="left", padx=5)
-
-        btn_send = tk.Button(
-            top,
-            text="送出執行",
-            command=self.send_timeline,
-            bg="#c8f7c5",      # 淺綠
-            activebackground="#b6efb0"
+        tk.Label(top, textvariable=self.status_var, anchor="w").grid(
+            row=0, column=0, columnspan=6, sticky="we", padx=8, pady=(6, 2)
         )
-        btn_send.pack(side="left", padx=5)
 
-        btn_stop_pi = tk.Button(
-            top,
-            text="停止",
-            command=self.stop_pi,
-            bg="#ff8c69",      # 橘紅
-            activebackground="#ff7f50"
-        )
-        btn_stop_pi.pack(side="left", padx=5)
+        btn_specs = [
+            ("開始錄製", self.start_record, None),
+            ("停止錄製", self.stop_record, None),
+            ("分析 Timeline", self.analyze, None),
+            ("送出執行", self.send_timeline, "#c8f7c5"),
+            ("停止", self.stop_pi, "#ff8c69"),
+            ("測試連線", self.ping_pi, "#d9d9d9"),
+        ]
+        for idx, (txt, cmd, color) in enumerate(btn_specs):
+            kwargs = {"text": txt, "command": cmd, "width": 12}
+            if color:
+                kwargs["bg"] = color
+            tk.Button(top, **kwargs).grid(row=1, column=idx, padx=5, pady=(2, 8))
 
-        btn_ping = tk.Button(
+        self.current_script_var = tk.StringVar(value="【目前腳本：未命名 / 未儲存】")
+        tk.Label(
             top,
-            text="測試連線",
-            command=self.ping_pi,
-            bg="#d9d9d9",      # 灰色
-            activebackground="#cfcfcf"
-        )
-        btn_ping.pack(side="left", padx=5)
-        info = tk.LabelFrame(root, text="目前套用資訊")
+            textvariable=self.current_script_var,
+            anchor="w",
+            fg="#1a4fb8"
+        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 8))
+
+        body = tk.PanedWindow(container, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        body.pack(fill="both", expand=True)
+
+        left_panel = tk.Frame(body)
+        right_panel = tk.Frame(body)
+        body.add(left_panel, minsize=620)
+        body.add(right_panel, minsize=320)
+
+        info = tk.LabelFrame(left_panel, text="目前套用資訊")
         row = tk.Frame(info)
         row.pack(fill="x", padx=8, pady=2)
 
@@ -310,17 +359,11 @@ class App:
         self.pi_ip_entry.pack(side="left", padx=5)
 
         tk.Button(row, text="保存", command=self.save_pi_ip).pack(side="left", padx=5)
-        info.pack(fill="x", padx=10, pady=5)
-
-        self.current_name_var = tk.StringVar(value="目前資料：未命名 / 未儲存")
-        self.current_pi_var = tk.StringVar(value="Pi IP：{}".format(self.config["pi_host"]))
-
-        tk.Label(info, textvariable=self.current_name_var).pack(anchor="w", padx=8, pady=2)
-        tk.Label(info, textvariable=self.current_pi_var).pack(anchor="w", padx=8, pady=2)
+        info.pack(fill="x", pady=5)
 
         
-        save_frame = tk.LabelFrame(root, text="儲存 / 載入")
-        save_frame.pack(fill="x", padx=10, pady=5)
+        save_frame = tk.LabelFrame(left_panel, text="儲存 / 載入")
+        save_frame.pack(fill="x", pady=5)
 
         tk.Label(save_frame, text="名稱").grid(row=0, column=0, padx=5, pady=5)
         self.name_entry = tk.Entry(save_frame, width=25)
@@ -334,8 +377,26 @@ class App:
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
         self.saved_listbox.grid(row=1, column=0, columnspan=6, sticky="we", padx=5, pady=5)
 
-        jitter_frame = tk.LabelFrame(root, text="jitter 設定")
-        jitter_frame.pack(fill="x", padx=10, pady=5)
+        error_frame = tk.LabelFrame(left_panel, text="錯誤訊息（前端 / 後端）")
+        error_frame.pack(fill="x", pady=5)
+        tk.Label(error_frame, text="前端：", width=8, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="nw")
+        self.frontend_error_text = tk.Text(error_frame, height=3, wrap="word", fg="#b30000")
+        self.frontend_error_text.grid(row=0, column=1, sticky="we", padx=(0, 6), pady=2)
+        tk.Label(error_frame, text="後端：", width=8, anchor="w").grid(row=1, column=0, padx=6, pady=2, sticky="nw")
+        self.backend_error_text = tk.Text(error_frame, height=3, wrap="word", fg="#b30000")
+        self.backend_error_text.grid(row=1, column=1, sticky="we", padx=(0, 6), pady=(2, 6))
+        error_frame.grid_columnconfigure(1, weight=1)
+        self.clear_errors()
+
+        columns = ("idx", "type", "button", "at", "at_jitter", "group")
+        self.tree = ttk.Treeview(left_panel, columns=columns, show="headings", height=8, selectmode="extended")
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=100)
+        self.tree.pack(fill="both", expand=True, pady=8)
+
+        jitter_frame = tk.LabelFrame(right_panel, text="jitter 設定")
+        jitter_frame.pack(fill="x", pady=(5, 8))
 
         tk.Label(jitter_frame, text="at jitter").grid(row=0, column=0, padx=5, pady=5)
         self.at_jitter_entry = tk.Entry(jitter_frame, width=10)
@@ -346,15 +407,8 @@ class App:
         tk.Button(jitter_frame, text="套用到全部 event", command=self.apply_jitter_to_all).grid(row=0, column=3, padx=5, pady=5)
         tk.Button(jitter_frame, text="選取列清成 0", command=self.clear_jitter_selected).grid(row=0, column=4, padx=5, pady=5)
 
-        columns = ("idx", "type", "button", "at", "at_jitter", "group")
-        self.tree = ttk.Treeview(root, columns=columns, show="headings", height=8, selectmode="extended")
-        for col in columns:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=110)
-        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
-
-        bottom = tk.Frame(root)
-        bottom.pack(fill="both", expand=True, padx=10, pady=5)
+        bottom = tk.Frame(right_panel)
+        bottom.pack(fill="both", expand=True, pady=(0, 5))
 
         tk.Label(bottom, text="JSON 預覽 / 分析結果").pack(anchor="w")
         self.text = tk.Text(bottom, height=10)
@@ -362,15 +416,14 @@ class App:
 
         self.refresh_saved_list()
         self.restore_last_selected()
+        self.poll_pi_status()
 
     def update_current_labels(self):
         if self.current_name:
             source_note = "已儲存" if self.current_loaded_from_saved else "目前工作中"
-            self.current_name_var.set("目前資料：{} ({})".format(self.current_name, source_note))
+            self.current_script_var.set("【目前腳本：{}（{}）】".format(self.current_name, source_note))
         else:
-            self.current_name_var.set("目前資料：未命名 / 未儲存")
-
-        self.current_pi_var.set("Pi IP：{}".format(self.config["pi_host"]))
+            self.current_script_var.set("【目前腳本：未命名 / 未儲存】")
 
     def write_text(self, obj):
         self.text.delete("1.0", tk.END)
@@ -440,13 +493,15 @@ class App:
     def save_pi_ip(self):
         ip = self.pi_ip_entry.get().strip()
         if not ip:
+            self.set_frontend_error("Pi IP 不可空白")
             messagebox.showwarning("提醒", "Pi IP 不可空白")
             return
 
         self.config["pi_host"] = ip
         save_config(self.config)
         self.update_current_labels()
-        self.status_var.set("已保存 Pi IP：{}".format(ip))
+        self.set_frontend_error("")
+        self.set_status("已保存 Pi IP：{}".format(ip))
 
     def start_record(self):
         global recording, recording_start, events, pressed_keys
@@ -456,14 +511,15 @@ class App:
         recording_start = time.time()
         self.timeline = []
         self.current_loaded_from_saved = False
-        self.status_var.set("錄製中...")
+        self.set_frontend_error("")
+        self.set_status("錄製中...")
         self.write_text({"status": "recording"})
         self.refresh_tree()
 
     def stop_record(self):
         global recording
         recording = False
-        self.status_var.set("已停止錄製，共 {} 筆事件".format(len(events)))
+        self.set_status("已停止錄製，共 {} 筆事件".format(len(events)))
         self.write_text(events)
 
     def analyze(self):
@@ -484,7 +540,7 @@ class App:
         self.name_entry.insert(0, self.current_name)
 
         self.update_current_labels()
-        self.status_var.set("Timeline 分析完成，共 {} 筆 event".format(len(self.timeline)))
+        self.set_status("Timeline 分析完成，共 {} 筆 event".format(len(self.timeline)))
 
     def save_current_timeline(self):
         if not self.timeline:
@@ -514,7 +570,7 @@ class App:
         self.select_saved_name(name)
         self.update_current_labels()
         self.refresh_preview()
-        self.status_var.set("已保存 Timeline：{}".format(name))
+        self.set_status("已保存 Timeline：{}".format(name))
 
     def select_saved_name(self, name):
         names = list_saved_timeline_names()
@@ -548,7 +604,7 @@ class App:
         self.refresh_tree()
         self.refresh_preview()
         self.update_current_labels()
-        self.status_var.set("已載入：{}".format(self.current_name))
+        self.set_status("已載入：{}".format(self.current_name))
 
     def delete_selected_timeline(self):
         name = self.get_selected_saved_name()
@@ -576,7 +632,7 @@ class App:
 
         self.refresh_saved_list()
         self.update_current_labels()
-        self.status_var.set("已刪除：{}".format(name))
+        self.set_status("已刪除：{}".format(name))
 
     def get_selected_indexes(self):
         selection = self.tree.selection()
@@ -608,7 +664,7 @@ class App:
         self.current_loaded_from_saved = False
         self.update_current_labels()
         self.refresh_preview()
-        self.status_var.set("已套用 jitter 到 {} 筆選取列".format(len(selected)))
+        self.set_status("已套用 jitter 到 {} 筆選取列".format(len(selected)))
 
     def apply_jitter_to_all(self):
         if not self.timeline:
@@ -628,7 +684,7 @@ class App:
         self.refresh_tree()
         self.refresh_preview()
         self.update_current_labels()
-        self.status_var.set("已套用 jitter 到全部 event")
+        self.set_status("已套用 jitter 到全部 event")
 
     def clear_jitter_selected(self):
         if not self.timeline:
@@ -650,7 +706,7 @@ class App:
 
         self.refresh_preview()
         self.update_current_labels()
-        self.status_var.set("已將選取列 jitter 清為 0")
+        self.set_status("已將選取列 jitter 清為 0")
 
     def ping_pi(self):
         try:
@@ -658,14 +714,11 @@ class App:
             save_config(self.config)
             self.update_current_labels()
 
-            res = send_to_pi({"action": "ping"}, self.config["pi_host"])
-            self.write_text({
-                "current_name": self.current_name,
-                "pi_host": self.config["pi_host"],
-                "response": res
-            })
-            self.status_var.set("Pi 連線正常：{}".format(self.config["pi_host"]))
+            self.set_frontend_error("")
+            self.request_pi({"action": "ping"})
+            self.set_status("Pi 連線正常：{}".format(self.config["pi_host"]))
         except Exception as e:
+            self.set_frontend_error(str(e))
             messagebox.showerror("Pi 連線失敗", str(e))
 
     def stop_pi(self):
@@ -674,14 +727,11 @@ class App:
             save_config(self.config)
             self.update_current_labels()
 
-            res = send_to_pi({"action": "stop"}, self.config["pi_host"])
-            self.write_text({
-                "current_name": self.current_name,
-                "pi_host": self.config["pi_host"],
-                "response": res
-            })
-            self.status_var.set("已停止 Pi：{}".format(self.config["pi_host"]))
+            self.set_frontend_error("")
+            self.request_pi({"action": "stop"})
+            self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
         except Exception as e:
+            self.set_frontend_error(str(e))
             messagebox.showerror("停止失敗", str(e))
 
     def send_timeline(self):
@@ -701,18 +751,23 @@ class App:
         display_name = self.current_name if self.current_name else "未命名資料"
 
         try:
-            res = send_to_pi(payload, self.config["pi_host"])
+            self.set_frontend_error("")
+            res = self.request_pi(payload, write_response=False)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
+                "request": payload,
                 "response": res
             })
 
             if res.get("status") == "stopped":
-                self.status_var.set("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
+                self.set_status("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
+            elif res.get("status") in ("error", "busy"):
+                self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
             else:
-                self.status_var.set("已送出：{} -> {}".format(display_name, self.config["pi_host"]))
+                self.set_status("已送出：{} -> {}".format(display_name, self.config["pi_host"]))
         except Exception as e:
+            self.set_frontend_error(str(e))
             messagebox.showerror("傳送失敗", str(e))
 
 
