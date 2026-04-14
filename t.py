@@ -3,18 +3,14 @@ import time
 import RPi.GPIO as GPIO
 
 # ========== 設定區 ==========
-# 大部分繼電器模組是低電位觸發：
-# True  = LOW 代表按下
-# False = HIGH 代表按下
-ACTIVE_LOW = True
-
-PRESS_TIME = 0.25  # 每次按下持續秒數
+ACTIVE_LOW = True   # 如果繼電器相反就改 False
+PRESS_TIME = 0.25
 
 BUTTONS = {
     "fn": 26,
     "g": 2,
     "shift": 3,
-    "f": 4,
+    "f": 6,          # ✅ 改這裡（原本 GPIO4 → 現在 GPIO6）
     "c": 17,
     "v": 27,
     "d": 22,
@@ -26,7 +22,7 @@ BUTTONS = {
     "right": 16,
     "x": 12,
     "space": 19,
-    "6": 13,
+    "6": 13
 }
 # ===========================
 
@@ -47,7 +43,7 @@ def setup():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
-    for name, pin in BUTTONS.items():
+    for pin in BUTTONS.values():
         GPIO.setup(pin, GPIO.OUT)
         GPIO.output(pin, RELEASE_LEVEL)
 
@@ -60,11 +56,11 @@ def cleanup():
 
 def press_button(name, duration=PRESS_TIME):
     if name not in BUTTONS:
-        print(f"[錯誤] 找不到按鍵: {name}")
+        print("[錯誤] 找不到按鍵: {}".format(name))
         return
 
     pin = BUTTONS[name]
-    print(f"[測試] {name} (GPIO {pin}) 按下 {duration:.2f} 秒")
+    print("[測試] {} (GPIO {}) 按下 {:.2f} 秒".format(name, pin, duration))
     GPIO.output(pin, PRESS_LEVEL)
     time.sleep(duration)
     GPIO.output(pin, RELEASE_LEVEL)
@@ -73,21 +69,21 @@ def press_button(name, duration=PRESS_TIME):
 
 def press_and_hold(name):
     if name not in BUTTONS:
-        print(f"[錯誤] 找不到按鍵: {name}")
+        print("[錯誤] 找不到按鍵: {}".format(name))
         return
 
     pin = BUTTONS[name]
-    print(f"[保持按下] {name} (GPIO {pin})")
+    print("[保持按下] {} (GPIO {})".format(name, pin))
     GPIO.output(pin, PRESS_LEVEL)
 
 
 def release_button(name):
     if name not in BUTTONS:
-        print(f"[錯誤] 找不到按鍵: {name}")
+        print("[錯誤] 找不到按鍵: {}".format(name))
         return
 
     pin = BUTTONS[name]
-    print(f"[放開] {name} (GPIO {pin})")
+    print("[放開] {} (GPIO {})".format(name, pin))
     GPIO.output(pin, RELEASE_LEVEL)
 
 
@@ -101,7 +97,7 @@ def test_all():
 def show_buttons():
     print("\n可用按鍵：")
     for name, pin in BUTTONS.items():
-        print(f"  {name:<6} -> GPIO {pin}")
+        print("  {:<6} -> GPIO {}".format(name, pin))
     print()
 
 
@@ -144,7 +140,7 @@ def main():
 
     finally:
         cleanup()
-        print("[結束] GPIO 已清理，所有繼電器已釋放")
+        print("[結束] GPIO 已清理")
 
 
 if __name__ == "__main__":
