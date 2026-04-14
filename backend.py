@@ -34,6 +34,13 @@ BUTTONS = {
 stop_event = threading.Event()
 run_lock = threading.Lock()
 
+current_run_thread = None
+current_run_status = {
+    "state": "idle",   # idle / running / stopped / error
+    "mode": "",
+    "message": ""
+}
+
 
 def get_press_level():
     return GPIO.LOW if ACTIVE_LOW else GPIO.HIGH
@@ -201,9 +208,77 @@ def run_timeline(events):
     return results
 
 
+def run_timeline_background(events):
+    global current_run_status
+    try:
+        current_run_status = {
+            "state": "running",
+            "mode": "timeline",
+            "message": "正在執行 timeline"
+        }
+        run_timeline(events)
+        release_all()
+        current_run_status = {
+            "state": "idle",
+            "mode": "timeline",
+            "message": "timeline 執行完成"
+        }
+    except InterruptedError as e:
+        release_all()
+        current_run_status = {
+            "state": "stopped",
+            "mode": "timeline",
+            "message": str(e)
+        }
+    except Exception as e:
+        release_all()
+        current_run_status = {
+            "state": "error",
+            "mode": "timeline",
+            "message": str(e)
+        }
+
+
+def run_macro_background(steps):
+    global current_run_status
+    try:
+        current_run_status = {
+            "state": "running",
+            "mode": "macro",
+            "message": "正在執行 macro"
+        }
+        run_macro(steps)
+        release_all()
+        current_run_status = {
+            "state": "idle",
+            "mode": "macro",
+            "message": "macro 執行完成"
+        }
+    except InterruptedError as e:
+        release_all()
+        current_run_status = {
+            "state": "stopped",
+            "mode": "macro",
+            "message": str(e)
+        }
+    except Exception as e:
+        release_all()
+        current_run_status = {
+            "state": "error",
+            "mode": "macro",
+            "message": str(e)
+        }
+
+
 def stop_current_run():
+    global current_run_status
     stop_event.set()
     release_all()
+    current_run_status = {
+        "state": "stopped",
+        "mode": current_run_status.get("mode", ""),
+        "message": "已送出停止指令，並釋放所有 GPIO"
+    }
     return {
         "status": "ok",
         "message": "已送出停止指令，並釋放所有 GPIO"
@@ -211,6 +286,8 @@ def stop_current_run():
 
 
 def handle_request(data):
+    global current_run_thread, current_run_status
+
     action = data.get("action")
 
     if action == "ping":
@@ -219,28 +296,39 @@ def handle_request(data):
     if action == "list_buttons":
         return {"status": "ok", "buttons": BUTTONS}
 
+    if action == "status":
+        return {"status": "ok", "run_status": current_run_status}
+
     if action == "stop":
         return stop_current_run()
 
     if action == "run_macro":
-        try:
-            steps = data.get("steps", [])
-            results = run_macro(steps)
-            release_all()
-            return {"status": "ok", "mode": "macro", "results": results}
-        except InterruptedError as e:
-            release_all()
-            return {"status": "stopped", "mode": "macro", "message": str(e)}
+        if current_run_thread is not None and current_run_thread.is_alive():
+            return {"status": "busy", "message": "Pi 目前已有執行中的工作"}
+
+        steps = data.get("steps", [])
+        stop_event.clear()
+        current_run_thread = threading.Thread(
+            target=run_macro_background,
+            args=(steps,),
+            daemon=True
+        )
+        current_run_thread.start()
+        return {"status": "ok", "mode": "macro", "message": "已收到 macro，開始背景執行"}
 
     if action == "run_timeline":
-        try:
-            events = data.get("events", [])
-            results = run_timeline(events)
-            release_all()
-            return {"status": "ok", "mode": "timeline", "results": results}
-        except InterruptedError as e:
-            release_all()
-            return {"status": "stopped", "mode": "timeline", "message": str(e)}
+        if current_run_thread is not None and current_run_thread.is_alive():
+            return {"status": "busy", "message": "Pi 目前已有執行中的工作"}
+
+        events = data.get("events", [])
+        stop_event.clear()
+        current_run_thread = threading.Thread(
+            target=run_timeline_background,
+            args=(events,),
+            daemon=True
+        )
+        current_run_thread.start()
+        return {"status": "ok", "mode": "timeline", "message": "已收到 timeline，開始背景執行"}
 
     return {"status": "error", "message": "未知 action"}
 
@@ -277,7 +365,7 @@ def start_server():
     server.bind((HOST, PORT))
     server.listen(5)
 
-    print("Pi backend v3 listening on {}:{}".format(HOST, PORT))
+    print("Pi backend v4 listening on {}:{}".format(HOST, PORT))
 
     try:
         while True:
