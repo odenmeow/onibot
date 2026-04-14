@@ -261,24 +261,57 @@ class App:
     def set_status(self, message):
         self.status_var.set(message)
 
+    def set_connection_status(self, message):
+        self.connection_var.set(message)
+
+    def set_connected(self, connected, message=""):
+        self.connected = connected
+        if connected:
+            self.offline_mode = False
+            self.set_connection_status("已連線（{}）".format(self.config["pi_host"]))
+            if message:
+                self.set_status(message)
+        else:
+            self.set_connection_status("未連線")
+            if message:
+                self.set_status(message)
+
+    def mark_timeline_dirty(self):
+        self.current_loaded_from_saved = False
+        self.update_current_labels()
+        self.refresh_tree()
+        self.refresh_preview()
+
     def request_pi(self, payload, success_status=None, write_response=True):
+        if self.offline_mode and payload.get("action") != "ping":
+            raise ConnectionError("目前為離線模式，請先按「測試連線」")
+
         last_err = None
         with self.request_lock:
             for retry in range(2):
                 try:
-                    res = send_to_pi(payload, self.config["pi_host"])
+                    self.ensure_connection()
+                    wire = json.dumps(payload, ensure_ascii=False) + "\n"
+                    self.conn.sendall(wire.encode("utf-8"))
+                    line = self.conn_file.readline()
+                    if not line:
+                        raise ConnectionError("連線已中斷，未收到回應")
+                    res = json.loads(line)
                     break
                 except Exception as e:
                     last_err = e
+                    self.close_connection()
                     if retry == 0:
                         time.sleep(0.15)
                         continue
                     err = str(last_err)
                     self.set_frontend_error(err)
+                    self.set_connected(False)
                     if success_status:
                         self.set_status(success_status + "（前端連線失敗）")
                     raise
 
+        self.set_connected(True)
         status = res.get("status")
         if status in ("error", "busy"):
             self.set_backend_error(res.get("message", "Pi 回傳錯誤"))
@@ -294,57 +327,35 @@ class App:
             })
         return res
 
-    def poll_pi_status(self):
-        if self.polling_status:
-            self.root.after(1000, self.poll_pi_status)
+    def ensure_connection(self):
+        if self.conn is not None and self.conn_file is not None and self.connected:
             return
+        self.open_connection()
 
-        if self.request_lock.locked():
-            self.root.after(1000, self.poll_pi_status)
-            return
+    def open_connection(self, timeout=3.0):
+        self.close_connection(silent=True)
+        host = self.config["pi_host"]
+        sock = socket.create_connection((host, PI_PORT), timeout=timeout)
+        sock.settimeout(timeout)
+        self.conn = sock
+        self.conn_file = sock.makefile("r", encoding="utf-8")
+        self.set_connected(True)
 
-        self.polling_status = True
-        pi_host = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
-
-        def worker():
-            frontend_err = ""
-            backend_err = None
-            status_msg = None
+    def close_connection(self, silent=False):
+        if self.conn_file is not None:
             try:
-                res = send_to_pi({"action": "status"}, pi_host, timeout=0.8)
-
-                run_status = res.get("run_status", {})
-                state = run_status.get("state", "unknown")
-                mode = run_status.get("mode", "")
-                message = run_status.get("message", "")
-
-                if state == "running":
-                    status_msg = "Pi 執行中：{} / {}".format(mode, message)
-                    backend_err = ""
-                elif state == "stopped":
-                    status_msg = "Pi 已停止：{}".format(message)
-                    backend_err = message
-                elif state == "error":
-                    status_msg = "Pi 錯誤：{}".format(message)
-                    backend_err = message
-                else:
-                    backend_err = ""
-            except Exception as e:
-                frontend_err = str(e)
-
-            def apply_result():
-                if status_msg:
-                    self.set_status(status_msg)
-                if backend_err is not None:
-                    self.set_backend_error(backend_err)
-                if frontend_err:
-                    self.set_frontend_error(frontend_err)
-                self.polling_status = False
-                self.root.after(1000, self.poll_pi_status)
-
-            self.root.after(0, apply_result)
-
-        threading.Thread(target=worker, daemon=True).start()
+                self.conn_file.close()
+            except Exception:
+                pass
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+        self.conn_file = None
+        self.conn = None
+        if not silent:
+            self.set_connected(False)
 
     def __init__(self, root):
         ensure_dirs()
@@ -355,8 +366,12 @@ class App:
         self.timeline = []
         self.current_name = ""
         self.current_loaded_from_saved = False
-        self.polling_status = False
+        self.connected = False
+        self.offline_mode = False
         self.request_lock = threading.Lock()
+        self.drag_iid = None
+        self.conn = None
+        self.conn_file = None
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -374,23 +389,25 @@ class App:
 
         self.status_var = tk.StringVar(value="尚未錄製")
         tk.Label(top, textvariable=self.status_var, anchor="w").grid(
-            row=0, column=0, columnspan=7, sticky="we", padx=8, pady=(6, 2)
+            row=0, column=0, columnspan=5, sticky="we", padx=8, pady=(6, 2)
         )
 
         btn_specs = [
-            ("開始錄製", self.start_record, None),
-            ("停止錄製", self.stop_record, None),
-            ("分析 Timeline", self.analyze, None),
+            ("重新分析", self.analyze, None),
+            ("開始錄製", self.toggle_record, "#9be58b"),
             ("送出執行", self.send_timeline, "#c8f7c5"),
             ("重複執行", self.send_timeline_loop, "#b7f0ad"),
             ("停止", self.stop_pi, "#ff8c69"),
-            ("測試連線", self.ping_pi, "#d9d9d9"),
         ]
+        self.record_button = None
         for idx, (txt, cmd, color) in enumerate(btn_specs):
             kwargs = {"text": txt, "command": cmd, "width": 10}
             if color:
                 kwargs["bg"] = color
-            tk.Button(top, **kwargs).grid(row=1, column=idx, padx=4, pady=(2, 8))
+            btn = tk.Button(top, **kwargs)
+            btn.grid(row=1, column=idx, padx=4, pady=(2, 8))
+            if idx == 1:
+                self.record_button = btn
 
         self.current_script_var = tk.StringVar(value="【目前腳本：未命名 / 未儲存】")
         tk.Label(
@@ -398,7 +415,7 @@ class App:
             textvariable=self.current_script_var,
             anchor="w",
             fg="#1a4fb8"
-        ).grid(row=2, column=0, columnspan=7, sticky="w", padx=8, pady=(0, 8))
+        ).grid(row=2, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 8))
 
         info = tk.LabelFrame(left_panel, text="目前套用資訊")
         row = tk.Frame(info)
@@ -409,6 +426,14 @@ class App:
         self.pi_ip_entry.insert(0, self.config["pi_host"])
         self.pi_ip_entry.pack(side="left", padx=5)
         tk.Button(row, text="保存", command=self.save_pi_ip).pack(side="left", padx=5)
+
+        connection_row = tk.Frame(info)
+        connection_row.pack(fill="x", padx=8, pady=(2, 5))
+        tk.Label(connection_row, text="連線狀況：").pack(side="left")
+        self.connection_var = tk.StringVar(value="未連線")
+        tk.Label(connection_row, textvariable=self.connection_var, fg="#1a4fb8").pack(side="left", padx=(0, 10))
+        tk.Button(connection_row, text="測試連線", command=self.ping_pi, width=10).pack(side="left", padx=4)
+        tk.Button(connection_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
         info.pack(fill="x", pady=5)
 
         save_frame = tk.LabelFrame(left_panel, text="儲存 / 載入")
@@ -457,6 +482,16 @@ class App:
             self.tree.heading(col, text=col)
             self.tree.column(col, width=92)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
+        self.tree.bind("<Double-1>", self.on_tree_double_click)
+        self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start, add="+")
+        self.tree.bind("<ButtonRelease-1>", self.on_tree_drag_end, add="+")
+
+        edit_row = tk.Frame(right_panel)
+        edit_row.pack(fill="x", pady=(0, 8))
+        tk.Button(edit_row, text="上移", command=self.move_selected_up, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="複製列", command=self.duplicate_selected_rows, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
 
         bottom = tk.Frame(right_panel)
         bottom.pack(fill="both", expand=True)
@@ -467,7 +502,7 @@ class App:
 
         self.refresh_saved_list()
         self.restore_last_selected()
-        self.poll_pi_status()
+        self.root.after(150, self.auto_connect)
 
     def update_current_labels(self):
         if self.current_name:
@@ -553,6 +588,23 @@ class App:
         self.update_current_labels()
         self.set_frontend_error("")
         self.set_status("已保存 Pi IP：{}".format(ip))
+        self.set_connected(False, "IP 已更新，請重新測試連線")
+
+    def auto_connect(self):
+        self.ping_pi(show_popup=False)
+
+    def go_offline(self):
+        self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
+        save_config(self.config)
+        self.update_current_labels()
+        try:
+            if self.connected:
+                self.request_pi({"action": "stop"}, write_response=False)
+        except Exception as e:
+            self.set_frontend_error(str(e))
+        self.close_connection(silent=True)
+        self.offline_mode = True
+        self.set_connected(False, "已離線（GPIO 釋放指令已送出）")
 
     def start_record(self):
         global recording, recording_start, events, pressed_keys
@@ -566,12 +618,25 @@ class App:
         self.set_status("錄製中...")
         self.write_text({"status": "recording"})
         self.refresh_tree()
+        self.record_button.config(text="停止錄製")
+        self.record_button.config(bg="#f7e37a")
 
     def stop_record(self):
         global recording
         recording = False
-        self.set_status("已停止錄製，共 {} 筆事件".format(len(events)))
-        self.write_text(events)
+        self.record_button.config(text="開始錄製")
+        self.record_button.config(bg="#9be58b")
+        if events:
+            self.analyze()
+        else:
+            self.set_status("已停止錄製，共 0 筆事件")
+            self.write_text(events)
+
+    def toggle_record(self):
+        if recording:
+            self.stop_record()
+        else:
+            self.start_record()
 
     def analyze(self):
         global events, recording_start
@@ -580,9 +645,7 @@ class App:
             return
 
         self.timeline = build_timeline(events, recording_start)
-        self.refresh_tree()
-        self.refresh_preview()
-        self.current_loaded_from_saved = False
+        self.mark_timeline_dirty()
 
         if not self.current_name:
             self.current_name = "未命名_{}".format(time.strftime("%H%M%S"))
@@ -590,7 +653,6 @@ class App:
         self.name_entry.delete(0, tk.END)
         self.name_entry.insert(0, self.current_name)
 
-        self.update_current_labels()
         self.set_status("Timeline 分析完成，共 {} 筆 event".format(len(self.timeline)))
 
     def save_current_timeline(self):
@@ -708,13 +770,9 @@ class App:
         for idx in selected:
             self.timeline[idx]["at_jitter"] = jitter
 
-        self.refresh_tree()
+        self.mark_timeline_dirty()
         for idx in selected:
             self.tree.selection_add(str(idx))
-
-        self.current_loaded_from_saved = False
-        self.update_current_labels()
-        self.refresh_preview()
         self.set_status("已套用 jitter 到 {} 筆選取列".format(len(selected)))
 
     def apply_jitter_to_all(self):
@@ -731,10 +789,7 @@ class App:
         for ev in self.timeline:
             ev["at_jitter"] = jitter
 
-        self.current_loaded_from_saved = False
-        self.refresh_tree()
-        self.refresh_preview()
-        self.update_current_labels()
+        self.mark_timeline_dirty()
         self.set_status("已套用 jitter 到全部 event")
 
     def clear_jitter_selected(self):
@@ -750,27 +805,28 @@ class App:
         for idx in selected:
             self.timeline[idx]["at_jitter"] = 0.0
 
-        self.current_loaded_from_saved = False
-        self.refresh_tree()
+        self.mark_timeline_dirty()
         for idx in selected:
             self.tree.selection_add(str(idx))
-
-        self.refresh_preview()
-        self.update_current_labels()
         self.set_status("已將選取列 jitter 清為 0")
 
-    def ping_pi(self):
+    def ping_pi(self, show_popup=True):
         try:
             self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
             save_config(self.config)
             self.update_current_labels()
 
+            self.offline_mode = False
             self.set_frontend_error("")
+            self.open_connection(timeout=1.5)
             self.request_pi({"action": "ping"})
-            self.set_status("Pi 連線正常：{}".format(self.config["pi_host"]))
+            self.set_connected(True, "Pi 連線正常：{}".format(self.config["pi_host"]))
         except Exception as e:
             self.set_frontend_error(str(e))
-            messagebox.showerror("Pi 連線失敗", str(e))
+            self.close_connection(silent=True)
+            self.set_connected(False)
+            if show_popup:
+                messagebox.showerror("Pi 連線失敗", str(e))
 
     def stop_pi(self):
         try:
@@ -854,6 +910,115 @@ class App:
         except Exception as e:
             self.set_frontend_error(str(e))
             messagebox.showerror("重複傳送失敗", str(e))
+
+    def on_tree_double_click(self, event):
+        row_id = self.tree.identify_row(event.y)
+        col_id = self.tree.identify_column(event.x)
+        if not row_id or not col_id:
+            return
+
+        idx = int(row_id)
+        col_index = int(col_id[1:]) - 1
+        columns = ("idx", "type", "button", "at", "at_jitter", "group")
+        field = columns[col_index]
+        if field not in ("type", "button", "at", "at_jitter"):
+            return
+
+        current_value = str(self.timeline[idx].get(field, ""))
+        new_value = simpledialog.askstring("修改欄位", "請輸入 {}:".format(field), initialvalue=current_value)
+        if new_value is None:
+            return
+
+        try:
+            if field in ("at", "at_jitter"):
+                value = float(new_value)
+                if field == "at":
+                    value = max(0.0, value)
+                else:
+                    value = abs(value)
+                self.timeline[idx][field] = round(value, 4)
+            else:
+                value = new_value.strip().lower()
+                if field == "type" and value not in ("press", "release"):
+                    raise ValueError("type 只能是 press / release")
+                if field == "button" and not value:
+                    raise ValueError("button 不可空白")
+                self.timeline[idx][field] = value
+        except Exception as e:
+            messagebox.showerror("修改失敗", str(e))
+            return
+
+        self.mark_timeline_dirty()
+        self.tree.selection_set(str(idx))
+
+    def on_tree_drag_start(self, event):
+        self.drag_iid = self.tree.identify_row(event.y)
+
+    def on_tree_drag_end(self, event):
+        if not self.drag_iid:
+            return
+        target_iid = self.tree.identify_row(event.y)
+        if not target_iid or target_iid == self.drag_iid:
+            self.drag_iid = None
+            return
+
+        src = int(self.drag_iid)
+        dst = int(target_iid)
+        ev = self.timeline.pop(src)
+        self.timeline.insert(dst, ev)
+        self.mark_timeline_dirty()
+        self.tree.selection_set(str(dst))
+        self.drag_iid = None
+
+    def move_selected_up(self):
+        selected = sorted(self.get_selected_indexes())
+        if not selected:
+            messagebox.showwarning("提醒", "請先選取列")
+            return
+        if selected[0] == 0:
+            return
+        for idx in selected:
+            self.timeline[idx - 1], self.timeline[idx] = self.timeline[idx], self.timeline[idx - 1]
+        self.mark_timeline_dirty()
+        self.tree.selection_set([str(i - 1) for i in selected])
+
+    def move_selected_down(self):
+        selected = sorted(self.get_selected_indexes(), reverse=True)
+        if not selected:
+            messagebox.showwarning("提醒", "請先選取列")
+            return
+        if selected[0] == len(self.timeline) - 1:
+            return
+        for idx in selected:
+            self.timeline[idx + 1], self.timeline[idx] = self.timeline[idx], self.timeline[idx + 1]
+        self.mark_timeline_dirty()
+        self.tree.selection_set([str(i + 1) for i in sorted(selected)])
+
+    def duplicate_selected_rows(self):
+        selected = sorted(self.get_selected_indexes())
+        if not selected:
+            messagebox.showwarning("提醒", "請先選取列")
+            return
+        offset = 0
+        new_ids = []
+        for idx in selected:
+            insert_at = idx + 1 + offset
+            copied = dict(self.timeline[idx + offset])
+            self.timeline.insert(insert_at, copied)
+            new_ids.append(insert_at)
+            offset += 1
+        self.mark_timeline_dirty()
+        self.tree.selection_set([str(i) for i in new_ids])
+
+    def delete_selected_rows(self):
+        selected = sorted(self.get_selected_indexes(), reverse=True)
+        if not selected:
+            messagebox.showwarning("提醒", "請先選取列")
+            return
+        for idx in selected:
+            self.timeline.pop(idx)
+        self.mark_timeline_dirty()
+        self.set_status("已刪除 {} 列".format(len(selected)))
 
 
 def start_listener():
