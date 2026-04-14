@@ -148,7 +148,7 @@ def run_macro(steps):
     return results
 
 
-def run_timeline(events, reset_stop_event=True):
+def run_timeline(events, reset_stop_event=True, buff_runtime=None):
     if not isinstance(events, list):
         raise ValueError("events 必須是 list")
 
@@ -156,11 +156,15 @@ def run_timeline(events, reset_stop_event=True):
         stop_event.clear()
     normalized = []
 
+    group_config = {}
     for i, ev in enumerate(events):
         ev_type = ev.get("type")
         button = ev.get("button")
         at = float(ev.get("at", 0.0))
         at_jitter = abs(float(ev.get("at_jitter", 0.0)))
+        buff_group = str(ev.get("buff_group", "")).strip()
+        buff_cycle_sec = max(0.0, float(ev.get("buff_cycle_sec", 0.0)))
+        buff_jitter_sec = abs(float(ev.get("buff_jitter_sec", 0.0)))
 
         if ev_type not in ("press", "release"):
             raise ValueError("第 {} 筆 event type 錯誤".format(i))
@@ -168,10 +172,18 @@ def run_timeline(events, reset_stop_event=True):
             raise ValueError("第 {} 筆找不到按鍵: {}".format(i, button))
 
         actual_at = max(0.0, at + random.uniform(-at_jitter, at_jitter))
+        if buff_group and buff_cycle_sec > 0:
+            cfg = group_config.get(buff_group)
+            if cfg is None:
+                group_config[buff_group] = {
+                    "cycle_sec": buff_cycle_sec,
+                    "jitter_sec": buff_jitter_sec
+                }
         normalized.append({
             "type": ev_type,
             "button": button,
-            "at": actual_at
+            "at": actual_at,
+            "buff_group": buff_group
         })
 
     normalized.sort(key=lambda x: x["at"])
@@ -179,6 +191,7 @@ def run_timeline(events, reset_stop_event=True):
 
     with run_lock:
         start = time.monotonic()
+        skip_cache = {}
 
         for i, ev in enumerate(normalized):
             if stop_event.is_set():
@@ -187,6 +200,33 @@ def run_timeline(events, reset_stop_event=True):
             target = ev["at"]
             now = time.monotonic() - start
             wait_time = target - now
+            skip_by_cooldown = False
+
+            buff_group = ev.get("buff_group", "")
+            if buff_runtime is not None and buff_group in group_config:
+                if buff_group in skip_cache:
+                    skip_by_cooldown = skip_cache[buff_group]
+                else:
+                    now_abs = time.monotonic()
+                    next_ready = buff_runtime["next_ready_at"].get(buff_group)
+                    if next_ready is not None and now_abs < next_ready:
+                        skip_by_cooldown = True
+                    else:
+                        cfg = group_config[buff_group]
+                        cd = max(0.0, cfg["cycle_sec"] + random.uniform(-cfg["jitter_sec"], cfg["jitter_sec"]))
+                        buff_runtime["next_ready_at"][buff_group] = now_abs + cd
+                    skip_cache[buff_group] = skip_by_cooldown
+
+            if skip_by_cooldown:
+                results.append({
+                    "index": i,
+                    "type": ev["type"],
+                    "button": ev["button"],
+                    "target_at": round(target, 4),
+                    "actual_at": round(time.monotonic() - start, 4),
+                    "status": "skipped_by_cooldown"
+                })
+                continue
 
             if wait_time > 0:
                 safe_sleep(wait_time)
@@ -243,6 +283,7 @@ def run_timeline_background(events):
 def run_timeline_loop_background(events):
     global current_run_status
     loop_count = 0
+    buff_runtime = {"next_ready_at": {}}
     try:
         stop_event.clear()
         while not stop_event.is_set():
@@ -252,7 +293,7 @@ def run_timeline_loop_background(events):
                 "mode": "timeline_loop",
                 "message": "正在第 {} 次循環".format(loop_count)
             }
-            run_timeline(events, reset_stop_event=False)
+            run_timeline(events, reset_stop_event=False, buff_runtime=buff_runtime)
             release_all()
 
         current_run_status = {

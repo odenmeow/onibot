@@ -208,7 +208,10 @@ def build_timeline(raw_events, start_time):
             "type": ev["type"],
             "button": ev["button"],
             "at": round(max(0.0, ev["time"] - start_time), 4),
-            "at_jitter": 0.0
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0
         })
 
     timeline.sort(key=lambda x: x["at"])
@@ -242,6 +245,17 @@ def build_overlap_summary(timeline):
 
 
 class App:
+    def normalize_event_schema(self, ev):
+        row = dict(ev)
+        row.setdefault("type", "")
+        row.setdefault("button", "")
+        row["at"] = round(max(0.0, float(row.get("at", 0.0))), 4)
+        row["at_jitter"] = round(abs(float(row.get("at_jitter", 0.0))), 4)
+        row["buff_group"] = str(row.get("buff_group", "")).strip()
+        row["buff_cycle_sec"] = round(max(0.0, float(row.get("buff_cycle_sec", 0.0))), 4)
+        row["buff_jitter_sec"] = round(abs(float(row.get("buff_jitter_sec", 0.0))), 4)
+        return row
+
     def update_error_text(self, widget, message):
         widget.config(state="normal")
         widget.delete("1.0", tk.END)
@@ -476,11 +490,14 @@ class App:
         tk.Button(jitter_frame, text="套用到全部 event", command=self.apply_jitter_to_all).grid(row=0, column=3, padx=5, pady=5)
         tk.Button(jitter_frame, text="選取列清成 0", command=self.clear_jitter_selected).grid(row=0, column=4, padx=5, pady=5)
 
-        columns = ("idx", "type", "button", "at", "at_jitter", "group")
+        columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree = ttk.Treeview(right_panel, columns=columns, show="headings", height=8, selectmode="extended")
         for col in columns:
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=92)
+            width = 92
+            if col in ("buff_group", "buff_cycle_sec", "buff_jitter_sec"):
+                width = 100
+            self.tree.column(col, width=width)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start, add="+")
@@ -546,6 +563,9 @@ class App:
                 ev["button"],
                 ev["at"],
                 ev["at_jitter"],
+                ev.get("buff_group", ""),
+                ev.get("buff_cycle_sec", 0.0),
+                ev.get("buff_jitter_sec", 0.0),
                 grp
             ))
 
@@ -705,7 +725,7 @@ class App:
             messagebox.showerror("載入失敗", str(e))
             return
 
-        self.timeline = data.get("events", [])
+        self.timeline = [self.normalize_event_schema(ev) for ev in data.get("events", [])]
         self.current_name = data.get("name", name)
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = self.current_name
@@ -850,9 +870,13 @@ class App:
         save_config(self.config)
         self.update_current_labels()
 
+        prepared_events, resolve_note = self.prepare_events_for_send()
+        if prepared_events is None:
+            return
+
         payload = {
             "action": "run_timeline",
-            "events": self.timeline
+            "events": prepared_events
         }
 
         display_name = self.current_name if self.current_name else "未命名資料"
@@ -872,7 +896,10 @@ class App:
             elif res.get("status") in ("error", "busy"):
                 self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
             else:
-                self.set_status("已送出：{} -> {}".format(display_name, self.config["pi_host"]))
+                suffix = ""
+                if resolve_note:
+                    suffix = "（{}）".format(resolve_note)
+                self.set_status("已送出：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
         except Exception as e:
             self.set_frontend_error(str(e))
             messagebox.showerror("傳送失敗", str(e))
@@ -886,9 +913,13 @@ class App:
         save_config(self.config)
         self.update_current_labels()
 
+        prepared_events, resolve_note = self.prepare_events_for_send()
+        if prepared_events is None:
+            return
+
         payload = {
             "action": "run_timeline_loop",
-            "events": self.timeline
+            "events": prepared_events
         }
 
         display_name = self.current_name if self.current_name else "未命名資料"
@@ -906,10 +937,76 @@ class App:
             if res.get("status") in ("error", "busy"):
                 self.set_status("重複送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
             else:
-                self.set_status("已開始重複執行：{} -> {}".format(display_name, self.config["pi_host"]))
+                suffix = ""
+                if resolve_note:
+                    suffix = "（{}）".format(resolve_note)
+                self.set_status("已開始重複執行：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
         except Exception as e:
             self.set_frontend_error(str(e))
             messagebox.showerror("重複傳送失敗", str(e))
+
+    def prepare_events_for_send(self):
+        events = [self.normalize_event_schema(ev) for ev in self.timeline]
+        group_configs = {}
+        for idx, ev in enumerate(events):
+            group_name = ev.get("buff_group", "").strip()
+            if not group_name:
+                continue
+            cycle = float(ev.get("buff_cycle_sec", 0.0))
+            jitter = float(ev.get("buff_jitter_sec", 0.0))
+            if cycle <= 0:
+                continue
+            group_configs.setdefault(group_name, []).append({
+                "idx": idx,
+                "cycle": cycle,
+                "jitter": jitter
+            })
+
+        resolved_groups = []
+        for group_name, cfg_rows in sorted(group_configs.items()):
+            uniq = {}
+            for row in cfg_rows:
+                key = (row["cycle"], row["jitter"])
+                if key not in uniq:
+                    uniq[key] = []
+                uniq[key].append(row["idx"])
+
+            if len(uniq) == 1:
+                (chosen_cycle, chosen_jitter), _ = next(iter(uniq.items()))
+            else:
+                options = []
+                option_map = {}
+                for cfg_idx, ((cycle, jitter), idx_list) in enumerate(sorted(uniq.items()), start=1):
+                    sample_idx = idx_list[0]
+                    options.append("{}. idx{} => cycle={}, jitter={}".format(cfg_idx, sample_idx, cycle, jitter))
+                    option_map[str(cfg_idx)] = (cycle, jitter)
+
+                ans = simpledialog.askstring(
+                    "buff 參數衝突",
+                    "buff_group {} 有多組秒數設定：\n{}\n請輸入要採用的選項編號：".format(
+                        group_name,
+                        "\n".join(options)
+                    ),
+                    initialvalue="1"
+                )
+                if ans is None:
+                    return None, ""
+                ans = ans.strip()
+                if ans not in option_map:
+                    messagebox.showerror("輸入錯誤", "選項不存在：{}".format(ans))
+                    return None, ""
+                chosen_cycle, chosen_jitter = option_map[ans]
+                resolved_groups.append(str(group_name))
+
+            for ev in events:
+                if ev.get("buff_group", "").strip() == group_name:
+                    ev["buff_cycle_sec"] = chosen_cycle
+                    ev["buff_jitter_sec"] = chosen_jitter
+
+        resolve_note = ""
+        if resolved_groups:
+            resolve_note = "已解決衝突群組: {}".format("、".join(resolved_groups))
+        return events, resolve_note
 
     def on_tree_double_click(self, event):
         row_id = self.tree.identify_row(event.y)
@@ -919,9 +1016,9 @@ class App:
 
         idx = int(row_id)
         col_index = int(col_id[1:]) - 1
-        columns = ("idx", "type", "button", "at", "at_jitter", "group")
+        columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         field = columns[col_index]
-        if field not in ("type", "button", "at", "at_jitter"):
+        if field not in ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec"):
             return
 
         current_value = str(self.timeline[idx].get(field, ""))
@@ -930,7 +1027,7 @@ class App:
             return
 
         try:
-            if field in ("at", "at_jitter"):
+            if field in ("at", "at_jitter", "buff_cycle_sec", "buff_jitter_sec"):
                 value = float(new_value)
                 if field == "at":
                     value = max(0.0, value)
@@ -943,6 +1040,8 @@ class App:
                     raise ValueError("type 只能是 press / release")
                 if field == "button" and not value:
                     raise ValueError("button 不可空白")
+                if field == "buff_group":
+                    value = new_value.strip()
                 self.timeline[idx][field] = value
         except Exception as e:
             messagebox.showerror("修改失敗", str(e))
