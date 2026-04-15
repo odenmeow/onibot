@@ -7,7 +7,7 @@ if "pynput" not in sys.modules:
     pynput_stub.keyboard = types.SimpleNamespace(Listener=object)
     sys.modules["pynput"] = pynput_stub
 
-from front import recalculate_runtime_events_by_index
+from front import App, recalculate_runtime_events_by_index
 
 
 def _event(at, buff_group=""):
@@ -78,6 +78,124 @@ class RecalculateRuntimeTimelineTests(unittest.TestCase):
 
         recalculated = recalculate_runtime_events_by_index(events, anchor_gap_sec=0.2)
         self.assertEqual(recalculated[14]["at"], round(recalculated[13]["at"] + 1.5, 2))
+
+
+class _FakeLabel:
+    def __init__(self):
+        self.text = ""
+        self.background = ""
+        self.visible = False
+        self.place_calls = []
+
+    def configure(self, **kwargs):
+        self.text = kwargs.get("text", self.text)
+        self.background = kwargs.get("background", self.background)
+
+    def place(self, **kwargs):
+        self.visible = True
+        self.place_calls.append(kwargs)
+
+    def place_forget(self):
+        self.visible = False
+
+    def destroy(self):
+        self.visible = False
+
+
+class _FakeTree:
+    def __init__(self, children, bbox_by_iid):
+        self._children = [str(v) for v in children]
+        self._bbox_by_iid = bbox_by_iid
+        self.deleted = []
+
+    def get_children(self):
+        return tuple(self._children)
+
+    def bbox(self, iid, column=None):
+        return self._bbox_by_iid.get(str(iid))
+
+    def delete(self, item):
+        self.deleted.append(str(item))
+        self._children = [iid for iid in self._children if iid != str(item)]
+
+
+class OverlayStabilityTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_label = sys.modules["front"].tk.Label
+        sys.modules["front"].tk.Label = lambda *args, **kwargs: _FakeLabel()
+
+    def tearDown(self):
+        sys.modules["front"].tk.Label = self._orig_label
+
+    def _new_app(self):
+        app = App.__new__(App)
+        app._tree_font = "TkDefaultFont"
+        app.tree_overlay_labels = {}
+        app.runtime_recent_ok_indices = []
+        app.runtime_recent_skipped_indices = []
+        app.timeline_runtime_by_index = {}
+        return app
+
+    def test_overlay_keeps_previous_visible_state_when_bbox_temporarily_missing(self):
+        app = self._new_app()
+        app.timeline = [{"buff_group": "", "replicatedRow": 0} for _ in range(11)]
+        app.timeline[9]["replicatedRow"] = 1
+        app.timeline[10]["replicatedRow"] = 1
+        app.tree = _FakeTree(
+            children=[9, 10],
+            bbox_by_iid={
+                "9": (0, 90, 120, 20),
+                "10": (0, 110, 120, 20),
+            },
+        )
+
+        app._refresh_tree_buff_group_overlays()
+        self.assertTrue(app.tree_overlay_labels["9"].visible)
+        self.assertTrue(app.tree_overlay_labels["10"].visible)
+        self.assertEqual(app.tree_overlay_labels["9"].background, "#fff4b3")
+        self.assertEqual(app.tree_overlay_labels["10"].background, "#fff4b3")
+
+        app.tree._bbox_by_iid = {}
+        app._refresh_tree_buff_group_overlays()
+
+        self.assertTrue(app.tree_overlay_labels["9"].visible)
+        self.assertTrue(app.tree_overlay_labels["10"].visible)
+        self.assertEqual(app.tree_overlay_labels["9"].place_calls[-1]["y"], 90)
+        self.assertEqual(app.tree_overlay_labels["10"].place_calls[-1]["y"], 110)
+
+    def test_overlay_state_is_stable_and_deterministic_across_repeated_refresh(self):
+        app = self._new_app()
+        app.timeline = [{"buff_group": "", "replicatedRow": 0} for _ in range(11)]
+        app.timeline[9]["replicatedRow"] = 1
+        app.timeline[10]["replicatedRow"] = 1
+        app.tree = _FakeTree(
+            children=[9, 10],
+            bbox_by_iid={
+                "9": (0, 90, 120, 20),
+                "10": (0, 110, 120, 20),
+            },
+        )
+
+        snapshots = []
+        for _ in range(5):
+            app._refresh_tree_buff_group_overlays()
+            snapshots.append(
+                (
+                    app.tree_overlay_labels["9"].visible,
+                    app.tree_overlay_labels["9"].background,
+                    app.tree_overlay_labels["9"].place_calls[-1]["y"],
+                    app.tree_overlay_labels["10"].visible,
+                    app.tree_overlay_labels["10"].background,
+                    app.tree_overlay_labels["10"].place_calls[-1]["y"],
+                )
+            )
+
+        self.assertEqual(len(set(snapshots)), 1)
+
+        app.timeline[10]["replicatedRow"] = 0
+        app._refresh_tree_buff_group_overlays()
+        self.assertTrue(app.tree_overlay_labels["9"].visible)
+        self.assertFalse(app.tree_overlay_labels["10"].visible)
 
 
 if __name__ == "__main__":

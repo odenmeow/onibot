@@ -644,6 +644,10 @@ class App:
         self.runtime_recent_skipped_indices = []
         self.runtime_latest_index = None
         self.last_runtime_signature = ""
+        self._overlay_refresh_after_id = None
+        self._overlay_refresh_min_interval_ms = 80
+        self._overlay_refresh_next_allowed_at = 0.0
+        self._overlay_refresh_pending = False
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -1012,11 +1016,18 @@ class App:
         try:
             if not self.offline_mode and self.conn is not None and self.connected:
                 res = self.request_pi({"action": "status"}, write_response=False)
-                if isinstance(res, dict) and self.update_runtime_from_status(res):
-                    self.refresh_tree()
-                    state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
-                    if state == "running":
-                        self.focus_latest_runtime_row()
+                if isinstance(res, dict):
+                    prev_signature = self.last_runtime_signature
+                    changed = self.update_runtime_from_status(res)
+                    if changed:
+                        state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+                        if not (
+                            state in ("stopped", "idle")
+                            and self.last_runtime_signature == prev_signature
+                        ):
+                            self.refresh_tree()
+                            if state == "running":
+                                self.focus_latest_runtime_row()
         except Exception:
             pass
         finally:
@@ -1042,28 +1053,43 @@ class App:
     def _schedule_tree_overlay_refresh(self, _event=None):
         if not hasattr(self, "tree"):
             return
-        if hasattr(self, "_overlay_refresh_after_id") and self._overlay_refresh_after_id is not None:
-            try:
-                self.root.after_cancel(self._overlay_refresh_after_id)
-            except Exception:
-                pass
-        self._overlay_refresh_after_id = self.root.after(10, self._refresh_tree_buff_group_overlays)
+        now = time.monotonic()
+        min_interval_sec = max(0.05, float(getattr(self, "_overlay_refresh_min_interval_ms", 80)) / 1000.0)
+        next_allowed = float(getattr(self, "_overlay_refresh_next_allowed_at", 0.0))
+
+        if now >= next_allowed:
+            if self._overlay_refresh_after_id is None:
+                self._overlay_refresh_after_id = self.root.after(1, self._run_tree_overlay_refresh)
+            self._overlay_refresh_pending = False
+            self._overlay_refresh_next_allowed_at = now + min_interval_sec
+            return
+
+        self._overlay_refresh_pending = True
+        if self._overlay_refresh_after_id is not None:
+            return
+        delay_ms = max(1, int((next_allowed - now) * 1000))
+        self._overlay_refresh_after_id = self.root.after(delay_ms, self._run_tree_overlay_refresh)
+
+    def _run_tree_overlay_refresh(self):
+        self._overlay_refresh_after_id = None
+        self._refresh_tree_buff_group_overlays()
+        if self._overlay_refresh_pending:
+            self._overlay_refresh_pending = False
+            self._overlay_refresh_next_allowed_at = time.monotonic() + (
+                max(0.05, float(getattr(self, "_overlay_refresh_min_interval_ms", 80)) / 1000.0)
+            )
+            self._overlay_refresh_after_id = self.root.after(1, self._run_tree_overlay_refresh)
 
     def _refresh_tree_buff_group_overlays(self):
-        self._overlay_refresh_after_id = None
         if not hasattr(self, "tree"):
             return
 
         overlay_labels = getattr(self, "tree_overlay_labels", {})
         if not isinstance(overlay_labels, dict):
             overlay_labels = {}
-        for label in overlay_labels.values():
-            try:
-                label.place_forget()
-            except Exception:
-                pass
 
         active_iids = set()
+        should_hide_iids = set()
         for iid in self.tree.get_children():
             active_iids.add(iid)
             try:
@@ -1087,6 +1113,7 @@ class App:
                 bg_color = "#fff4b3"
 
             if not bg_color:
+                should_hide_iids.add(iid)
                 continue
 
             bbox = self.tree.bbox(iid, column="buff_group")
@@ -1110,6 +1137,16 @@ class App:
                 background=bg_color
             )
             label.place(x=x, y=y, width=w, height=h)
+
+        for iid in should_hide_iids:
+            label = overlay_labels.get(iid)
+            if label is None:
+                continue
+            try:
+                label.place_forget()
+            except Exception:
+                pass
+
         stale_iids = [iid for iid in overlay_labels.keys() if iid not in active_iids]
         for iid in stale_iids:
             try:
@@ -1120,6 +1157,13 @@ class App:
         self.tree_overlay_labels = overlay_labels
 
     def refresh_tree(self):
+        overlay_labels = getattr(self, "tree_overlay_labels", {})
+        if isinstance(overlay_labels, dict):
+            for label in overlay_labels.values():
+                try:
+                    label.place_forget()
+                except Exception:
+                    pass
         for item in self.tree.get_children():
             self.tree.delete(item)
 
