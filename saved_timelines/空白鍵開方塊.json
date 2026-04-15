@@ -1,0 +1,130 @@
+{
+  "name": "空白鍵開方塊",
+  "saved_at": "2026-04-16 02:40:52",
+  "events": [
+    {
+      "type": "press",
+      "button": "space",
+      "at": 0.58,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "space",
+      "at": 6.14,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    }
+  ],
+  "_meta": {
+    "original_events": [
+      {
+        "type": "press",
+        "button": "space",
+        "at": 0.58,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "space",
+        "at": 6.14,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      }
+    ],
+    "history": [
+      {
+        "ts": "2026-04-16 02:35:16",
+        "reason": "before_send_loop",
+        "events": [
+          {
+            "type": "press",
+            "button": "space",
+            "at": 0.58,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "space",
+            "at": 6.14,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          }
+        ]
+      },
+      {
+        "ts": "2026-04-16 02:36:43",
+        "reason": "before_save",
+        "events": [
+          {
+            "type": "press",
+            "button": "space",
+            "at": 0.58,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "space",
+            "at": 6.14,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          }
+        ]
+      },
+      {
+        "ts": "2026-04-16 02:40:52",
+        "reason": "before_send_loop",
+        "events": [
+          {
+            "type": "press",
+            "button": "space",
+            "at": 0.58,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "space",
+            "at": 6.14,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          }
+        ]
+      }
+    ]
+  }
+}

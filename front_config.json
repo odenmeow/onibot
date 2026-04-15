@@ -1,15 +1,16 @@
 {
   "pi_host": "192.168.100.140",
   "send_delay_sec": 1.0,
-  "last_selected_name": "影子跳舞3人少",
+  "last_selected_name": "空白鍵開方塊",
   "buff_skip_mode": "compress",
   "manual_offset_sec": 0.2,
   "ui_layout": {
+    "paned_sash_x": 462,
+    "paned_ratio": null,
     "window_size": [
       1061,
       620
     ],
-    "paned_sash_x": 462,
     "tree_column_widths": {
       "idx": 40,
       "type": 56,
