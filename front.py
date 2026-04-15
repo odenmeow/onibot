@@ -640,6 +640,9 @@ class App:
         self.conn_file = None
         self.timeline_runtime_info = {"events": []}
         self.timeline_runtime_by_index = {}
+        self.runtime_recent_ok_indices = []
+        self.runtime_recent_skipped_indices = []
+        self.runtime_latest_index = None
         self.last_runtime_signature = ""
 
         container = tk.Frame(root)
@@ -795,7 +798,9 @@ class App:
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.tag_configure("copied_group", background="#fff4b3")
-        self.tree.tag_configure("runtime_ok", background="#d9f7d2")
+        self.tree.tag_configure("runtime_ok_latest", background="#d6f5cf")
+        self.tree.tag_configure("runtime_ok_mid", background="#e2f9dd")
+        self.tree.tag_configure("runtime_ok_old", background="#effced")
         self.tree.tag_configure("runtime_skipped", background="#ffe1cc")
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<Control-a>", self.on_tree_select_all, add="+")
@@ -932,6 +937,9 @@ class App:
             events = []
 
         runtime_by_index = {}
+        recent_ok = []
+        recent_skipped = []
+        latest_idx = None
         for ev in events:
             if not isinstance(ev, dict):
                 continue
@@ -940,6 +948,33 @@ class App:
             except Exception:
                 continue
             runtime_by_index[idx] = ev
+            latest_idx = idx
+
+        for ev in reversed(events):
+            if not isinstance(ev, dict):
+                continue
+            try:
+                idx = int(ev.get("original_index"))
+            except Exception:
+                continue
+            status = str(ev.get("status", "")).strip().lower()
+            if status == "ok" and idx not in recent_ok:
+                recent_ok.append(idx)
+                if len(recent_ok) >= 3:
+                    break
+
+        for ev in reversed(events):
+            if not isinstance(ev, dict):
+                continue
+            try:
+                idx = int(ev.get("original_index"))
+            except Exception:
+                continue
+            status = str(ev.get("status", "")).strip().lower()
+            if status == "skipped_by_cooldown" and idx not in recent_skipped:
+                recent_skipped.append(idx)
+                if len(recent_skipped) >= 2:
+                    break
 
         runtime["events"] = events
         signature = json.dumps(
@@ -947,7 +982,9 @@ class App:
                 "run_id": runtime.get("run_id"),
                 "state": runtime.get("state"),
                 "processed_count": runtime.get("processed_count"),
-                "last_event": runtime.get("last_event")
+                "last_event": runtime.get("last_event"),
+                "recent_ok": recent_ok,
+                "recent_skipped": recent_skipped
             },
             ensure_ascii=False,
             sort_keys=True
@@ -958,6 +995,9 @@ class App:
         )
         self.timeline_runtime_info = runtime
         self.timeline_runtime_by_index = runtime_by_index
+        self.runtime_recent_ok_indices = recent_ok
+        self.runtime_recent_skipped_indices = recent_skipped
+        self.runtime_latest_index = latest_idx
         self.last_runtime_signature = signature
         return changed
 
@@ -967,6 +1007,9 @@ class App:
                 res = self.request_pi({"action": "status"}, write_response=False)
                 if isinstance(res, dict) and self.update_runtime_from_status(res):
                     self.refresh_tree()
+                    state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+                    if state == "running":
+                        self.focus_latest_runtime_row()
         except Exception:
             pass
         finally:
@@ -975,7 +1018,18 @@ class App:
     def clear_runtime_highlight(self):
         self.timeline_runtime_info = {"events": []}
         self.timeline_runtime_by_index = {}
+        self.runtime_recent_ok_indices = []
+        self.runtime_recent_skipped_indices = []
+        self.runtime_latest_index = None
         self.last_runtime_signature = ""
+
+    def focus_latest_runtime_row(self):
+        if self.runtime_latest_index is None:
+            return
+        row_id = str(self.runtime_latest_index)
+        if not self.tree.exists(row_id):
+            return
+        self.tree.see(row_id)
 
     def refresh_tree(self):
         for item in self.tree.get_children():
@@ -1001,9 +1055,15 @@ class App:
             tags = []
             if is_replicated:
                 tags.append("copied_group")
-            if runtime_status == "ok":
-                tags.append("runtime_ok")
-            elif runtime_status == "skipped_by_cooldown":
+            if i in self.runtime_recent_ok_indices:
+                recent_rank = self.runtime_recent_ok_indices.index(i)
+                if recent_rank == 0:
+                    tags.append("runtime_ok_latest")
+                elif recent_rank == 1:
+                    tags.append("runtime_ok_mid")
+                else:
+                    tags.append("runtime_ok_old")
+            elif runtime_status == "skipped_by_cooldown" and i in self.runtime_recent_skipped_indices:
                 tags.append("runtime_skipped")
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
