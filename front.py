@@ -631,7 +631,6 @@ class App:
         self.connected = False
         self.offline_mode = False
         self.request_lock = threading.Lock()
-        self.drag_iid = None
         self.conn = None
         self.conn_file = None
 
@@ -789,8 +788,12 @@ class App:
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.tag_configure("copied_group", background="#fff4b3")
         self.tree.bind("<Double-1>", self.on_tree_double_click)
-        self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start, add="+")
-        self.tree.bind("<ButtonRelease-1>", self.on_tree_drag_end, add="+")
+        self.tree.bind("<Control-a>", self.on_tree_select_all, add="+")
+        self.tree.bind("<Control-A>", self.on_tree_select_all, add="+")
+        self.tree.bind("<Control-c>", self.on_tree_copy, add="+")
+        self.tree.bind("<Control-C>", self.on_tree_copy, add="+")
+        self.tree.bind("<Control-v>", self.on_tree_paste, add="+")
+        self.tree.bind("<Control-V>", self.on_tree_paste, add="+")
 
         edit_row = tk.Frame(right_panel)
         edit_row.pack(fill="x", pady=(0, 8))
@@ -1575,14 +1578,151 @@ class App:
         self.tree.selection_set(str(idx))
 
     def _apply_tree_field_value(self, idx, field, raw_value):
+        self._apply_tree_field_value_to_event(self.timeline[idx], field, raw_value)
+        if field == "buff_group":
+            self._sync_replicated_row(self.timeline[idx])
+
+    def on_tree_select_all(self, _event=None):
+        if not self.timeline:
+            return "break"
+        self.tree.selection_set([str(i) for i in range(len(self.timeline))])
+        self.set_status("已全選 {} 列".format(len(self.timeline)))
+        return "break"
+
+    def on_tree_copy(self, _event=None):
+        selected = sorted(self.get_selected_indexes())
+        if not selected:
+            return "break"
+
+        lines = ["\t".join(self.tree_columns)]
+        for idx in selected:
+            values = self.tree.item(str(idx), "values")
+            lines.append("\t".join(str(v) for v in values))
+
+        self.root.clipboard_clear()
+        self.root.clipboard_append("\n".join(lines))
+        self.set_status("已複製 {} 列（含欄位標題，可貼到 Excel）".format(len(selected)))
+        return "break"
+
+    def on_tree_paste(self, _event=None):
+        try:
+            raw = self.root.clipboard_get()
+        except tk.TclError:
+            messagebox.showwarning("提醒", "剪貼簿沒有可貼上的內容")
+            return "break"
+
+        lines = [line for line in raw.splitlines() if line.strip()]
+        if not lines:
+            return "break"
+
+        start_idx = 0
+        selected = sorted(self.get_selected_indexes())
+        if selected:
+            start_idx = selected[0]
+
+        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        parsed_rows = []
+        for line in lines:
+            values = [v.strip() for v in line.split("\t")]
+            if values and [v.lower() for v in values] == [f.lower() for f in fields]:
+                continue
+            parsed_rows.append(values)
+
+        if not parsed_rows:
+            messagebox.showwarning("提醒", "剪貼簿只有標題列，沒有可貼上的資料")
+            return "break"
+
+        try:
+            parsed_rows = [self._normalize_paste_row(values) for values in parsed_rows]
+        except Exception as e:
+            messagebox.showerror("貼上失敗", str(e))
+            return "break"
+
+        if len(parsed_rows) >= 2 and len(selected) == 1:
+            anchor = selected[0]
+            ask = messagebox.askyesnocancel(
+                "貼上位置",
+                "你選了第 {} 列。\n要貼在：\n"
+                "Yes：第 {}~{} 列之間（插入在上方）\n"
+                "No：第 {}~{} 列之間（插入在下方）\n"
+                "Cancel：取消貼上".format(
+                    anchor + 1,
+                    max(1, anchor),
+                    anchor + 1,
+                    anchor + 1,
+                    anchor + 2
+                )
+            )
+            if ask is None:
+                self.set_status("已取消貼上")
+                return "break"
+
+            insert_at = anchor if ask else anchor + 1
+            new_indexes = []
+            for offset, row_values in enumerate(parsed_rows):
+                ev = self._build_timeline_event_from_values(row_values)
+                idx = insert_at + offset
+                self.timeline.insert(idx, ev)
+                new_indexes.append(idx)
+
+            self.mark_timeline_dirty()
+            self.tree.selection_set([str(i) for i in new_indexes])
+            self.set_status("已插入貼上 {} 列（從第 {} 列開始）".format(len(new_indexes), insert_at + 1))
+            return "break"
+
+        changed_indexes = []
+        for offset, row_values in enumerate(parsed_rows):
+            row_idx = start_idx + offset
+            if row_idx >= len(self.timeline):
+                break
+            for col_idx, raw_value in enumerate(row_values):
+                field = fields[col_idx]
+                self._apply_tree_field_value(row_idx, field, raw_value)
+            changed_indexes.append(row_idx)
+
+        if not changed_indexes:
+            messagebox.showwarning("提醒", "貼上範圍超出目前列數，未更新任何資料")
+            return "break"
+
+        self.mark_timeline_dirty()
+        self.tree.selection_set([str(i) for i in changed_indexes])
+        self.set_status("已貼上 {} 列（從第 {} 列開始）".format(len(changed_indexes), changed_indexes[0] + 1))
+        return "break"
+
+    def _normalize_paste_row(self, values):
+        if not values:
+            raise ValueError("貼上資料有空白列")
+        if len(values) < 7:
+            raise ValueError("每列至少需要 7 欄（type 到 buff_jitter_sec）")
+        normalized = values[:7]
+        for i in range(7):
+            normalized[i] = normalized[i].strip()
+        return normalized
+
+    def _build_timeline_event_from_values(self, values):
+        event = {
+            "type": "press",
+            "button": "",
+            "at": 0.0,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0
+        }
+        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        for i, field in enumerate(fields):
+            self._apply_tree_field_value_to_event(event, field, values[i])
+        return self._sync_replicated_row(event)
+
+    def _apply_tree_field_value_to_event(self, event, field, raw_value):
         if field in ("at", "at_jitter", "buff_cycle_sec", "buff_jitter_sec"):
             value = float(raw_value)
             if field == "at":
                 value = max(0.0, value)
-                self.timeline[idx][field] = round(value, 2)
+                event[field] = round(value, 2)
             else:
                 value = abs(value)
-                self.timeline[idx][field] = round(value, 4)
+                event[field] = round(value, 4)
             return
 
         value = raw_value.strip().lower()
@@ -1592,28 +1732,7 @@ class App:
             raise ValueError("button 不可空白")
         if field == "buff_group":
             value = raw_value.strip()
-        self.timeline[idx][field] = value
-        if field == "buff_group":
-            self._sync_replicated_row(self.timeline[idx])
-
-    def on_tree_drag_start(self, event):
-        self.drag_iid = self.tree.identify_row(event.y)
-
-    def on_tree_drag_end(self, event):
-        if not self.drag_iid:
-            return
-        target_iid = self.tree.identify_row(event.y)
-        if not target_iid or target_iid == self.drag_iid:
-            self.drag_iid = None
-            return
-
-        src = int(self.drag_iid)
-        dst = int(target_iid)
-        ev = self.timeline.pop(src)
-        self.timeline.insert(dst, ev)
-        self.mark_timeline_dirty()
-        self.tree.selection_set(str(dst))
-        self.drag_iid = None
+        event[field] = value
 
     def move_selected_up(self):
         selected = sorted(self.get_selected_indexes())
