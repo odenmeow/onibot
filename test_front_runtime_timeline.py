@@ -142,6 +142,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.runtime_latest_index = None
         app.last_runtime_signature = ""
         app.runtime_display_frozen = False
+        app.runtime_manual_restore_active = False
         app.pre_run_timeline_snapshot = []
         app.has_pre_run_snapshot = False
         app.copy_events = App.copy_events.__get__(app, App)
@@ -176,6 +177,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.timeline = [
             {"type": "press", "button": "a", "at": 0.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
         ]
+        app.has_pre_run_snapshot = True
         refresh_count = {"count": 0}
 
         def _count_refresh():
@@ -190,6 +192,17 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertTrue(app.runtime_display_frozen)
         self.assertEqual(refresh_count["count"], 0)
+
+    def test_poll_stopped_after_manual_restore_does_not_refreeze(self):
+        app = self._new_app()
+        app.has_pre_run_snapshot = True
+        app.runtime_manual_restore_active = True
+        app.runtime_display_frozen = False
+        app.request_pi = lambda *_args, **_kwargs: {"timeline_runtime": {"state": "stopped", "events": []}}
+
+        app.poll_runtime_status()
+
+        self.assertFalse(app.runtime_display_frozen)
 
     def test_restore_pre_run_state_restores_snapshot(self):
         app = self._new_app()

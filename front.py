@@ -647,6 +647,7 @@ class App:
         self.pre_run_timeline_snapshot = []
         self.has_pre_run_snapshot = False
         self.runtime_display_frozen = False
+        self.runtime_manual_restore_active = False
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -1018,13 +1019,16 @@ class App:
                     changed = self.update_runtime_from_status(res)
                     if changed:
                         state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
-                        if state in ("stopped", "idle"):
-                            self.runtime_display_frozen = True
-                        else:
+                        if state == "running":
+                            self.runtime_manual_restore_active = False
                             self.runtime_display_frozen = False
                             self.refresh_tree()
-                            if state == "running":
-                                self.focus_latest_runtime_row()
+                            self.focus_latest_runtime_row()
+                        elif state in ("stopped", "idle"):
+                            if self.has_pre_run_snapshot and not self.runtime_manual_restore_active:
+                                self.runtime_display_frozen = True
+                        else:
+                            self.runtime_display_frozen = False
         except Exception:
             pass
         finally:
@@ -1116,6 +1120,7 @@ class App:
             messagebox.showwarning("提醒", "沒有可恢復內容")
             return
         self.timeline = self.copy_events(self.pre_run_timeline_snapshot)
+        self.runtime_manual_restore_active = True
         self.runtime_display_frozen = False
         self.clear_runtime_highlight()
         self.refresh_tree()
@@ -1499,6 +1504,7 @@ class App:
 
             self.set_frontend_error("")
             self.request_pi({"action": "stop"})
+            self.runtime_manual_restore_active = False
             self.runtime_display_frozen = True
             self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
         except Exception as e:
@@ -1511,6 +1517,7 @@ class App:
             return
         self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
         self.has_pre_run_snapshot = True
+        self.runtime_manual_restore_active = False
         self.runtime_display_frozen = False
         self._set_restore_pre_run_button_state()
 
@@ -1569,6 +1576,7 @@ class App:
             return
         self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
         self.has_pre_run_snapshot = True
+        self.runtime_manual_restore_active = False
         self.runtime_display_frozen = False
         self._set_restore_pre_run_button_state()
 
