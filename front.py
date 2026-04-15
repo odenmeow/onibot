@@ -797,6 +797,7 @@ class App:
                 width = 100
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
+        self.tree.tag_configure("copied_group", background="#fff4b3")
         self.tree.tag_configure("runtime_ok_1", background="#bfe8bf")
         self.tree.tag_configure("runtime_ok_2", background="#d9f2d9")
         self.tree.tag_configure("runtime_ok_3", background="#edf9ed")
@@ -811,6 +812,7 @@ class App:
         self.tree.bind("<MouseWheel>", self._schedule_tree_overlay_refresh, add="+")
         self.tree.bind("<Button-4>", self._schedule_tree_overlay_refresh, add="+")
         self.tree.bind("<Button-5>", self._schedule_tree_overlay_refresh, add="+")
+        self.tree.bind("<Expose>", self._schedule_tree_overlay_refresh, add="+")
         self.tree_overlay_labels = []
 
         edit_row = tk.Frame(right_panel)
@@ -1089,8 +1091,11 @@ class App:
                 self.tree,
                 text=display_text,
                 background=bg_color,
+                font=ttk.Style().lookup("Treeview", "font"),
                 anchor="w",
-                padx=4
+                padx=4,
+                borderwidth=0,
+                highlightthickness=0
             )
             label.place(x=x, y=y, width=w, height=h)
             self.tree_overlay_labels.append(label)
@@ -1114,10 +1119,11 @@ class App:
             grp = event_to_group.get(key, "")
             original_buff_group = str(ev.get("buff_group", "")).strip()
             buff_group = original_buff_group
+            is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
             at_value = "{:.2f}".format(float(ev["at"]))
-            runtime_event = self.timeline_runtime_by_index.get(i, {})
-            runtime_status = str(runtime_event.get("status", "")).strip().lower()
             tags = []
+            if is_replicated:
+                tags.append("copied_group")
             if i in self.runtime_recent_ok_indices:
                 recent_rank = self.runtime_recent_ok_indices.index(i)
                 if recent_rank == 0:
@@ -1126,8 +1132,6 @@ class App:
                     tags.append("runtime_ok_2")
                 else:
                     tags.append("runtime_ok_3")
-            elif runtime_status == "skipped_by_cooldown" and i in self.runtime_recent_skipped_indices:
-                pass
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
