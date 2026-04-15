@@ -407,7 +407,7 @@ class App:
         )
 
         btn_specs = [
-            ("重新分析", self.analyze, None),
+            ("重新分析", self.analyze, "#fff4b3"),
             ("開始錄製", self.toggle_record, "#9be58b"),
             ("送出執行", self.send_timeline, "#c8f7c5"),
             ("重複執行", self.send_timeline_loop, "#b7f0ad"),
@@ -456,14 +456,17 @@ class App:
         tk.Label(save_frame, text="名稱").grid(row=0, column=0, padx=5, pady=5)
         self.name_entry = tk.Entry(save_frame, width=25)
         self.name_entry.grid(row=0, column=1, padx=5, pady=5)
+        save_frame.grid_columnconfigure(1, weight=1)
 
-        tk.Button(save_frame, text="保存目前 Timeline", command=self.save_current_timeline).grid(row=0, column=2, padx=5, pady=5)
-        tk.Button(save_frame, text="重新整理清單", command=self.refresh_saved_list).grid(row=0, column=3, padx=5, pady=5)
-        tk.Button(save_frame, text="載入選取項目", command=self.load_selected_timeline).grid(row=0, column=4, padx=5, pady=5)
-        tk.Button(save_frame, text="刪除選取項目", command=self.delete_selected_timeline).grid(row=0, column=5, padx=5, pady=5)
+        save_btn_row = tk.Frame(save_frame)
+        save_btn_row.grid(row=1, column=1, columnspan=5, sticky="w", padx=5, pady=(0, 5))
+        tk.Button(save_btn_row, text="保存目前 Timeline", command=self.save_current_timeline).pack(side="left", padx=(0, 5))
+        tk.Button(save_btn_row, text="重新整理清單", command=self.refresh_saved_list).pack(side="left", padx=5)
+        tk.Button(save_btn_row, text="載入選取項目", command=self.load_selected_timeline).pack(side="left", padx=5)
+        tk.Button(save_btn_row, text="刪除選取項目", command=self.delete_selected_timeline).pack(side="left", padx=5)
 
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
-        self.saved_listbox.grid(row=1, column=0, columnspan=6, sticky="we", padx=5, pady=5)
+        self.saved_listbox.grid(row=2, column=0, columnspan=6, sticky="we", padx=5, pady=5)
 
         error_frame = tk.LabelFrame(left_panel, text="錯誤訊息（前端 / 後端）")
         error_frame.pack(fill="both", expand=True, pady=(5, 0))
