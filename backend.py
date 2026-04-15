@@ -246,7 +246,6 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 
     with run_lock:
         start = time.monotonic()
-        skip_cache = {}
         timeline_shift = 0.0
 
         for i, ev in enumerate(normalized):
@@ -261,18 +260,14 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 
             buff_group = ev.get("buff_group", "")
             if buff_runtime is not None and buff_group in group_config:
-                if buff_group in skip_cache:
-                    skip_by_cooldown = skip_cache[buff_group]
+                now_abs = time.monotonic()
+                next_ready = buff_runtime["next_ready_at"].get(buff_group)
+                if next_ready is not None and now_abs < next_ready:
+                    skip_by_cooldown = True
                 else:
-                    now_abs = time.monotonic()
-                    next_ready = buff_runtime["next_ready_at"].get(buff_group)
-                    if next_ready is not None and now_abs < next_ready:
-                        skip_by_cooldown = True
-                    else:
-                        cfg = group_config[buff_group]
-                        cd = max(0.0, cfg["cycle_sec"] + random.uniform(-cfg["jitter_sec"], cfg["jitter_sec"]))
-                        buff_runtime["next_ready_at"][buff_group] = now_abs + cd
-                    skip_cache[buff_group] = skip_by_cooldown
+                    cfg = group_config[buff_group]
+                    cd = max(0.0, cfg["cycle_sec"] + random.uniform(-cfg["jitter_sec"], cfg["jitter_sec"]))
+                    buff_runtime["next_ready_at"][buff_group] = now_abs + cd
 
             if skip_by_cooldown:
                 compressed_sec = 0.0
