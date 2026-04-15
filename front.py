@@ -13,6 +13,7 @@ DEFAULT_PI_HOST = "192.168.100.140"
 PI_PORT = 5000
 BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
+NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 
 SAVE_DIR = "saved_timelines"
 CONFIG_FILE = "front_config.json"
@@ -379,14 +380,17 @@ class App:
             return events
 
         seen_negative_group = {}
+        cursor_at = 0.0
         i = 0
-        offset = 0.0
         while i < len(events):
             ev = events[i]
             group_name = str(ev.get("buff_group", "")).strip()
             is_negative_group = group_name.startswith("-")
             if not is_negative_group:
-                events[i]["at"] = round(events[i]["at"] + offset, 4)
+                original_at = float(events[i].get("at", 0.0))
+                shifted_at = max(original_at, cursor_at)
+                events[i]["at"] = round(shifted_at, 4)
+                cursor_at = shifted_at
                 i += 1
                 continue
 
@@ -404,11 +408,21 @@ class App:
 
             segment = events[start:end]
             base_at = min(item["at"] for item in segment)
+            relative_rows = []
             for row in segment:
-                row["at"] = round(max(0.0, row["at"] - base_at), 4)
+                relative_at = round(max(0.0, row["at"] - base_at), 4)
+                relative_rows.append((row, relative_at))
 
-            duration = max(row["at"] for row in segment) if segment else 0.0
-            offset = round(offset + duration, 4)
+            if start == 0:
+                anchor = 0.0
+            else:
+                anchor = cursor_at + NEGATIVE_GROUP_ANCHOR_GAP_SEC
+
+            duration = max(relative_at for _, relative_at in relative_rows) if relative_rows else 0.0
+            for row, relative_at in relative_rows:
+                row["at"] = round(anchor + relative_at, 4)
+
+            cursor_at = anchor + duration
             i = end
 
         return events
