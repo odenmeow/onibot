@@ -35,6 +35,7 @@ BUTTONS = {
 
 stop_event = threading.Event()
 run_lock = threading.Lock()
+runtime_lock = threading.Lock()
 
 current_run_thread = None
 current_run_status = {
@@ -42,6 +43,55 @@ current_run_status = {
     "mode": "",
     "message": ""
 }
+timeline_runtime = {
+    "run_id": 0,
+    "state": "idle",   # idle / running / stopped / error / done
+    "mode": "",
+    "loop_count": 0,
+    "events_total": 0,
+    "processed_count": 0,
+    "events": [],
+    "last_event": None
+}
+
+
+def set_timeline_runtime(mode, state, events_total=0, loop_count=0):
+    with runtime_lock:
+        timeline_runtime["run_id"] += 1
+        timeline_runtime["state"] = state
+        timeline_runtime["mode"] = mode
+        timeline_runtime["loop_count"] = int(loop_count)
+        timeline_runtime["events_total"] = int(events_total)
+        timeline_runtime["processed_count"] = 0
+        timeline_runtime["events"] = []
+        timeline_runtime["last_event"] = None
+
+
+def append_timeline_runtime_event(event_payload):
+    with runtime_lock:
+        timeline_runtime["events"].append(event_payload)
+        timeline_runtime["processed_count"] = len(timeline_runtime["events"])
+        timeline_runtime["last_event"] = event_payload
+
+
+def patch_timeline_runtime(**kwargs):
+    with runtime_lock:
+        for key, value in kwargs.items():
+            timeline_runtime[key] = value
+
+
+def get_timeline_runtime_snapshot():
+    with runtime_lock:
+        return {
+            "run_id": int(timeline_runtime.get("run_id", 0)),
+            "state": timeline_runtime.get("state", "idle"),
+            "mode": timeline_runtime.get("mode", ""),
+            "loop_count": int(timeline_runtime.get("loop_count", 0)),
+            "events_total": int(timeline_runtime.get("events_total", 0)),
+            "processed_count": int(timeline_runtime.get("processed_count", 0)),
+            "events": list(timeline_runtime.get("events", [])),
+            "last_event": timeline_runtime.get("last_event")
+        }
 
 
 def get_press_level():
@@ -184,6 +234,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     "jitter_sec": buff_jitter_sec
                 }
         normalized.append({
+            "original_index": i,
             "type": ev_type,
             "button": button,
             "at": actual_at,
@@ -230,6 +281,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     timeline_shift += compressed_sec
                 results.append({
                     "index": i,
+                    "original_index": ev["original_index"],
                     "type": ev["type"],
                     "button": ev["button"],
                     "source_target_at": round(source_target, 4),
@@ -238,6 +290,17 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     "status": "skipped_by_cooldown",
                     "buff_skip_mode": buff_skip_mode,
                     "compressed_sec": round(compressed_sec, 4)
+                })
+                append_timeline_runtime_event({
+                    "index": i,
+                    "original_index": ev["original_index"],
+                    "type": ev["type"],
+                    "button": ev["button"],
+                    "status": "skipped_by_cooldown",
+                    "source_target_at": round(source_target, 4),
+                    "target_at": round(target, 4),
+                    "actual_at": round(time.monotonic() - start, 4),
+                    "buff_skip_mode": buff_skip_mode
                 })
                 continue
 
@@ -252,12 +315,23 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
             actual_now = time.monotonic() - start
             results.append({
                 "index": i,
+                "original_index": ev["original_index"],
                 "type": ev["type"],
                 "button": ev["button"],
                 "source_target_at": round(source_target, 4),
                 "target_at": round(target, 4),
                 "actual_at": round(actual_now, 4),
                 "status": "ok"
+            })
+            append_timeline_runtime_event({
+                "index": i,
+                "original_index": ev["original_index"],
+                "type": ev["type"],
+                "button": ev["button"],
+                "status": "ok",
+                "source_target_at": round(source_target, 4),
+                "target_at": round(target, 4),
+                "actual_at": round(actual_now, 4)
             })
 
     return results
@@ -266,6 +340,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
     global current_run_status
     try:
+        set_timeline_runtime("timeline", "running", events_total=len(events), loop_count=1)
         current_run_status = {
             "state": "running",
             "mode": "timeline",
@@ -273,6 +348,7 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         }
         run_timeline(events, buff_skip_mode=buff_skip_mode)
         release_all()
+        patch_timeline_runtime(state="done")
         current_run_status = {
             "state": "idle",
             "mode": "timeline",
@@ -280,6 +356,7 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         }
     except InterruptedError as e:
         release_all()
+        patch_timeline_runtime(state="stopped")
         current_run_status = {
             "state": "stopped",
             "mode": "timeline",
@@ -287,6 +364,7 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         }
     except Exception as e:
         release_all()
+        patch_timeline_runtime(state="error")
         current_run_status = {
             "state": "error",
             "mode": "timeline",
@@ -302,6 +380,7 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         stop_event.clear()
         while not stop_event.is_set():
             loop_count += 1
+            set_timeline_runtime("timeline_loop", "running", events_total=len(events), loop_count=loop_count)
             current_run_status = {
                 "state": "running",
                 "mode": "timeline_loop",
@@ -313,8 +392,10 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
                 buff_runtime=buff_runtime,
                 buff_skip_mode=buff_skip_mode
             )
+            patch_timeline_runtime(state="done", loop_count=loop_count)
             release_all()
 
+        patch_timeline_runtime(state="stopped", loop_count=loop_count)
         current_run_status = {
             "state": "stopped",
             "mode": "timeline_loop",
@@ -322,6 +403,7 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         }
     except InterruptedError as e:
         release_all()
+        patch_timeline_runtime(state="stopped", loop_count=loop_count)
         current_run_status = {
             "state": "stopped",
             "mode": "timeline_loop",
@@ -329,6 +411,7 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         }
     except Exception as e:
         release_all()
+        patch_timeline_runtime(state="error", loop_count=loop_count)
         current_run_status = {
             "state": "error",
             "mode": "timeline_loop",
@@ -376,6 +459,7 @@ def stop_current_run():
         "mode": current_run_status.get("mode", ""),
         "message": "已送出停止指令，並釋放所有 GPIO"
     }
+    patch_timeline_runtime(state="stopped")
     return {
         "status": "ok",
         "message": "已送出停止指令，並釋放所有 GPIO"
@@ -400,7 +484,11 @@ def handle_request(data):
         return {"status": "ok", "buttons": BUTTONS}
 
     if action == "status":
-        return {"status": "ok", "run_status": current_run_status}
+        return {
+            "status": "ok",
+            "run_status": current_run_status,
+            "timeline_runtime": get_timeline_runtime_snapshot()
+        }
 
     if action == "stop":
         return stop_current_run()

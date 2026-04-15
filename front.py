@@ -544,6 +544,7 @@ class App:
     def mark_timeline_dirty(self):
         self.current_loaded_from_saved = False
         self.update_current_labels()
+        self.clear_runtime_highlight()
         self.refresh_tree()
         self.refresh_preview()
 
@@ -637,6 +638,12 @@ class App:
         self.request_lock = threading.Lock()
         self.conn = None
         self.conn_file = None
+        self.timeline_runtime_info = {"events": []}
+        self.timeline_runtime_by_index = {}
+        self.runtime_recent_ok_indices = []
+        self.runtime_recent_skipped_indices = []
+        self.runtime_latest_index = None
+        self.last_runtime_signature = ""
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -791,6 +798,7 @@ class App:
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.tag_configure("copied_group", background="#fff4b3")
+        self.tree.tag_configure("runtime_skipped", foreground="#8f8f8f")
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<Control-a>", self.on_tree_select_all, add="+")
         self.tree.bind("<Control-A>", self.on_tree_select_all, add="+")
@@ -823,6 +831,7 @@ class App:
         self.restore_last_selected()
         self.root.after(50, self.apply_saved_ui_layout)
         self.root.after(150, self.auto_connect)
+        self.root.after(200, self.poll_runtime_status)
 
     def get_current_paned_sash_x(self):
         self.root.update_idletasks()
@@ -916,6 +925,109 @@ class App:
             "simultaneous_groups": build_overlap_summary(self.timeline)
         })
 
+    def update_runtime_from_status(self, status_response):
+        runtime = status_response.get("timeline_runtime", {})
+        if not isinstance(runtime, dict):
+            runtime = {}
+        events = runtime.get("events", [])
+        if not isinstance(events, list):
+            events = []
+
+        runtime_by_index = {}
+        recent_ok = []
+        recent_skipped = []
+        latest_idx = None
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            try:
+                idx = int(ev.get("original_index"))
+            except Exception:
+                continue
+            runtime_by_index[idx] = ev
+            latest_idx = idx
+
+        for ev in reversed(events):
+            if not isinstance(ev, dict):
+                continue
+            try:
+                idx = int(ev.get("original_index"))
+            except Exception:
+                continue
+            status = str(ev.get("status", "")).strip().lower()
+            if status == "ok" and idx not in recent_ok:
+                recent_ok.append(idx)
+                if len(recent_ok) >= 3:
+                    break
+
+        for ev in reversed(events):
+            if not isinstance(ev, dict):
+                continue
+            try:
+                idx = int(ev.get("original_index"))
+            except Exception:
+                continue
+            status = str(ev.get("status", "")).strip().lower()
+            if status == "skipped_by_cooldown" and idx not in recent_skipped:
+                recent_skipped.append(idx)
+                if len(recent_skipped) >= 2:
+                    break
+
+        runtime["events"] = events
+        signature = json.dumps(
+            {
+                "run_id": runtime.get("run_id"),
+                "state": runtime.get("state"),
+                "processed_count": runtime.get("processed_count"),
+                "last_event": runtime.get("last_event"),
+                "recent_ok": recent_ok,
+                "recent_skipped": recent_skipped
+            },
+            ensure_ascii=False,
+            sort_keys=True
+        )
+        changed = (
+            signature != self.last_runtime_signature
+            or runtime_by_index != self.timeline_runtime_by_index
+        )
+        self.timeline_runtime_info = runtime
+        self.timeline_runtime_by_index = runtime_by_index
+        self.runtime_recent_ok_indices = recent_ok
+        self.runtime_recent_skipped_indices = recent_skipped
+        self.runtime_latest_index = latest_idx
+        self.last_runtime_signature = signature
+        return changed
+
+    def poll_runtime_status(self):
+        try:
+            if not self.offline_mode and self.conn is not None and self.connected:
+                res = self.request_pi({"action": "status"}, write_response=False)
+                if isinstance(res, dict) and self.update_runtime_from_status(res):
+                    self.refresh_tree()
+                    state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+                    if state == "running":
+                        self.focus_latest_runtime_row()
+        except Exception:
+            pass
+        finally:
+            self.root.after(200, self.poll_runtime_status)
+
+    def clear_runtime_highlight(self):
+        self.timeline_runtime_info = {"events": []}
+        self.timeline_runtime_by_index = {}
+        self.runtime_recent_ok_indices = []
+        self.runtime_recent_skipped_indices = []
+        self.runtime_latest_index = None
+        self.last_runtime_signature = ""
+
+    def focus_latest_runtime_row(self):
+        if self.runtime_latest_index is None:
+            return
+        row_id = str(self.runtime_latest_index)
+        if not self.tree.exists(row_id):
+            return
+        self.tree.see(row_id)
+
     def refresh_tree(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -934,19 +1046,38 @@ class App:
             key = (ev["type"], ev["button"], ev["at"])
             grp = event_to_group.get(key, "")
             buff_group = str(ev.get("buff_group", "")).strip()
+            at_value = "{:.2f}".format(float(ev["at"]))
             is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
-            tags = ("copied_group",) if is_replicated else ()
+            runtime_event = self.timeline_runtime_by_index.get(i, {})
+            runtime_status = str(runtime_event.get("status", "")).strip().lower()
+            tags = []
+            if i in self.runtime_recent_ok_indices:
+                recent_rank = self.runtime_recent_ok_indices.index(i)
+                if recent_rank == 0:
+                    at_value = "🟩 {}".format(at_value)
+                elif recent_rank == 1:
+                    at_value = "🟩· {}".format(at_value)
+                else:
+                    at_value = "🟩·· {}".format(at_value)
+            elif runtime_status == "skipped_by_cooldown" and i in self.runtime_recent_skipped_indices:
+                tags.append("runtime_skipped")
+                if buff_group:
+                    buff_group = "◼{} (cooldown)".format(buff_group)
+                else:
+                    buff_group = "◼cooldown"
+            if is_replicated:
+                tags.append("copied_group")
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
                 ev["button"],
-                "{:.2f}".format(float(ev["at"])),
+                at_value,
                 ev["at_jitter"],
                 buff_group,
                 ev.get("buff_cycle_sec", 0.0),
                 ev.get("buff_jitter_sec", 0.0),
                 grp
-            ), tags=tags)
+            ), tags=tuple(tags))
 
     def refresh_saved_list(self):
         names = list_saved_timeline_names()
@@ -1324,6 +1455,8 @@ class App:
 
             self.set_frontend_error("")
             self.request_pi({"action": "stop"})
+            self.clear_runtime_highlight()
+            self.refresh_tree()
             self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
         except Exception as e:
             self.set_frontend_error(str(e))
@@ -1358,6 +1491,8 @@ class App:
 
         try:
             self.set_frontend_error("")
+            self.clear_runtime_highlight()
+            self.refresh_tree()
             delay = self.apply_send_delay_if_needed()
             res = self.request_pi(payload, write_response=False)
             self.write_text({
@@ -1410,6 +1545,8 @@ class App:
 
         try:
             self.set_frontend_error("")
+            self.clear_runtime_highlight()
+            self.refresh_tree()
             delay = self.apply_send_delay_if_needed()
             res = self.request_pi(payload, write_response=False)
             self.write_text({
