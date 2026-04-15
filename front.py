@@ -11,6 +11,8 @@ from pynput import keyboard
 
 DEFAULT_PI_HOST = "192.168.100.140"
 PI_PORT = 5000
+BUFF_SKIP_MODE_WALK = "walk"
+BUFF_SKIP_MODE_COMPRESS = "compress"
 
 SAVE_DIR = "saved_timelines"
 CONFIG_FILE = "front_config.json"
@@ -56,6 +58,7 @@ def load_config():
         return {
             "pi_host": DEFAULT_PI_HOST,
             "last_selected_name": "",
+            "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "ui_layout": {
                 "paned_sash_x": None,
                 "window_size": None,
@@ -75,6 +78,7 @@ def load_config():
         return {
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
             "last_selected_name": data.get("last_selected_name", ""),
+            "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
             "ui_layout": {
                 "paned_sash_x": ui_layout.get("paned_sash_x"),
                 "paned_ratio": ui_layout.get("paned_ratio"),
@@ -86,6 +90,7 @@ def load_config():
         return {
             "pi_host": DEFAULT_PI_HOST,
             "last_selected_name": "",
+            "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "ui_layout": {
                 "paned_sash_x": None,
                 "window_size": None,
@@ -472,6 +477,26 @@ class App:
         tk.Label(connection_row, textvariable=self.connection_var, fg="#1a4fb8").pack(side="left", padx=(0, 10))
         tk.Button(connection_row, text="測試連線", command=self.ping_pi, width=10).pack(side="left", padx=4)
         tk.Button(connection_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
+
+        buff_mode_row = tk.Frame(info)
+        buff_mode_row.pack(fill="x", padx=8, pady=(0, 5))
+        tk.Label(buff_mode_row, text="buff 略過模式：").pack(side="left")
+        self.buff_skip_mode_var = tk.StringVar(value=self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS))
+        self.buff_skip_mode_combo = ttk.Combobox(
+            buff_mode_row,
+            state="readonly",
+            width=32,
+            values=[
+                "略過(不等不按，壓縮時間軸)",
+                "走過(等但不按，保留時間軸)"
+            ]
+        )
+        if self.buff_skip_mode_var.get() == BUFF_SKIP_MODE_WALK:
+            self.buff_skip_mode_combo.current(1)
+        else:
+            self.buff_skip_mode_combo.current(0)
+        self.buff_skip_mode_combo.pack(side="left", padx=5)
+        self.buff_skip_mode_combo.bind("<<ComboboxSelected>>", self.on_buff_skip_mode_change)
         info.pack(fill="x", pady=5)
 
         save_frame = tk.LabelFrame(left_panel, text="儲存 / 載入")
@@ -985,7 +1010,8 @@ class App:
 
         payload = {
             "action": "run_timeline",
-            "events": prepared_events
+            "events": prepared_events,
+            "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
         }
 
         display_name = self.current_name if self.current_name else "未命名資料"
@@ -1028,7 +1054,8 @@ class App:
 
         payload = {
             "action": "run_timeline_loop",
-            "events": prepared_events
+            "events": prepared_events,
+            "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
         }
 
         display_name = self.current_name if self.current_name else "未命名資料"
@@ -1116,6 +1143,16 @@ class App:
         if resolved_groups:
             resolve_note = "已解決衝突群組: {}".format("、".join(resolved_groups))
         return events, resolve_note
+
+    def on_buff_skip_mode_change(self, _event=None):
+        label = self.buff_skip_mode_combo.get().strip()
+        if label.startswith("走過"):
+            mode = BUFF_SKIP_MODE_WALK
+        else:
+            mode = BUFF_SKIP_MODE_COMPRESS
+        self.buff_skip_mode_var.set(mode)
+        self.config["buff_skip_mode"] = mode
+        save_config(self.config)
 
     def on_tree_double_click(self, event):
         row_id = self.tree.identify_row(event.y)
