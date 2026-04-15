@@ -387,6 +387,43 @@ class App:
 
         return events
 
+    def validate_negative_group_monotonic_by_index(self, events):
+        if not events:
+            return
+
+        i = 0
+        while i < len(events):
+            group_name = str(events[i].get("buff_group", "")).strip()
+            if not group_name.startswith("-"):
+                i += 1
+                continue
+
+            start = i
+            end = i
+            while end < len(events):
+                g = str(events[end].get("buff_group", "")).strip()
+                if g != group_name:
+                    break
+                end += 1
+
+            prev_at = float(events[start].get("at", 0.0))
+            for cur_idx in range(start + 1, end):
+                cur_at = float(events[cur_idx].get("at", 0.0))
+                if cur_at < prev_at:
+                    raise ValueError(
+                        "負群 {} 的 at 時間必須依 idx 非遞減：idx {} 的 at={}，但 idx {} 的 at={}。"
+                        "請先調整同群組列順序或時間，避免後列比前列更早。".format(
+                            group_name,
+                            cur_idx - 1,
+                            round(prev_at, 4),
+                            cur_idx,
+                            round(cur_at, 4)
+                        )
+                    )
+                prev_at = cur_at
+
+            i = end
+
     def update_error_text(self, widget, message):
         widget.config(state="normal")
         widget.delete("1.0", tk.END)
@@ -943,6 +980,7 @@ class App:
         try:
             self.push_history("before_save")
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
+            self.validate_negative_group_monotonic_by_index(self.timeline)
             recalculated = self.recalculate_timeline_for_runtime()
         except Exception as e:
             messagebox.showerror("保存失敗", str(e))
@@ -1208,6 +1246,7 @@ class App:
         try:
             self.push_history(action_reason)
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
+            self.validate_negative_group_monotonic_by_index(self.timeline)
             self.timeline = self.recalculate_timeline_for_runtime()
             self.current_loaded_from_saved = False
             self.update_current_labels()
