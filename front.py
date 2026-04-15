@@ -398,6 +398,19 @@ class App:
         if anchor_gap_sec is None:
             anchor_gap_sec = float(self.config.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC))
 
+        original_at_list = [float(ev.get("at", 0.0)) for ev in events]
+        processed_original_at = []
+
+        def compute_follow_gap_sec(cur_original_at):
+            ref_original_at = None
+            for prev_original_at in processed_original_at:
+                if prev_original_at <= cur_original_at:
+                    if ref_original_at is None or prev_original_at > ref_original_at:
+                        ref_original_at = prev_original_at
+            if ref_original_at is None:
+                return 0.0
+            return max(0.0, cur_original_at - ref_original_at)
+
         seen_negative_group = {}
         cursor_at = 0.0
         i = 0
@@ -406,10 +419,12 @@ class App:
             group_name = str(ev.get("buff_group", "")).strip()
             is_negative_group = group_name.startswith("-")
             if not is_negative_group:
-                original_at = float(events[i].get("at", 0.0))
-                shifted_at = max(original_at, cursor_at)
+                original_at = original_at_list[i]
+                follow_gap_sec = compute_follow_gap_sec(original_at)
+                shifted_at = max(0.0, cursor_at + follow_gap_sec)
                 events[i]["at"] = round(shifted_at, 2)
                 cursor_at = shifted_at
+                processed_original_at.append(original_at)
                 i += 1
                 continue
 
@@ -426,10 +441,11 @@ class App:
                 end += 1
 
             segment = events[start:end]
-            base_at = min(item["at"] for item in segment)
+            base_at = min(original_at_list[start:end])
             relative_rows = []
-            for row in segment:
-                relative_at = round(max(0.0, row["at"] - base_at), 4)
+            for local_idx, row in enumerate(segment):
+                absolute_idx = start + local_idx
+                relative_at = round(max(0.0, original_at_list[absolute_idx] - base_at), 4)
                 relative_rows.append((row, relative_at))
 
             if start == 0:
@@ -442,6 +458,7 @@ class App:
                 row["at"] = round(anchor + relative_at, 2)
 
             cursor_at = anchor + duration
+            processed_original_at.extend(original_at_list[start:end])
             i = end
 
         return events
