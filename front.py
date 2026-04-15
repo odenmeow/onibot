@@ -1621,10 +1621,13 @@ class App:
             start_idx = selected[0]
 
         fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        full_header = [col.lower() for col in self.tree_columns]
+        short_header = [f.lower() for f in fields]
         parsed_rows = []
         for line in lines:
             values = [v.strip() for v in line.split("\t")]
-            if values and [v.lower() for v in values] == [f.lower() for f in fields]:
+            lowered = [v.lower() for v in values]
+            if values and (lowered == short_header or lowered == full_header):
                 continue
             parsed_rows.append(values)
 
@@ -1659,11 +1662,15 @@ class App:
 
             insert_at = anchor if ask else anchor + 1
             new_indexes = []
-            for offset, row_values in enumerate(parsed_rows):
-                ev = self._build_timeline_event_from_values(row_values)
-                idx = insert_at + offset
-                self.timeline.insert(idx, ev)
-                new_indexes.append(idx)
+            try:
+                for offset, row_values in enumerate(parsed_rows):
+                    ev = self._build_timeline_event_from_values(row_values)
+                    idx = insert_at + offset
+                    self.timeline.insert(idx, ev)
+                    new_indexes.append(idx)
+            except Exception as e:
+                messagebox.showerror("貼上失敗", str(e))
+                return "break"
 
             self.mark_timeline_dirty()
             self.tree.selection_set([str(i) for i in new_indexes])
@@ -1694,7 +1701,11 @@ class App:
             raise ValueError("貼上資料有空白列")
         if len(values) < 7:
             raise ValueError("每列至少需要 7 欄（type 到 buff_jitter_sec）")
-        normalized = values[:7]
+        # 優先支援 7 欄格式；若是完整表格 9 欄（idx + 7 欄 + group），則忽略 idx/group。
+        if len(values) >= 9 and values[1].strip().lower() in ("press", "release"):
+            normalized = values[1:8]
+        else:
+            normalized = values[:7]
         for i in range(7):
             normalized[i] = normalized[i].strip()
         return normalized
