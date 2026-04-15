@@ -1,4 +1,23 @@
 {
   "pi_host": "192.168.100.140",
-  "last_selected_name": "超費版本測試"
+  "last_selected_name": "超費版本測試",
+  "ui_layout": {
+    "paned_sash_x": 462,
+    "paned_ratio": null,
+    "window_size": [
+      1020,
+      560
+    ],
+    "tree_column_widths": {
+      "idx": 40,
+      "type": 43,
+      "button": 51,
+      "at": 42,
+      "at_jitter": 55,
+      "buff_group": 73,
+      "buff_cycle_sec": 88,
+      "buff_jitter_sec": 86,
+      "group": 54
+    }
+  }
 }
