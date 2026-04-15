@@ -57,6 +57,7 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         return {
             "pi_host": DEFAULT_PI_HOST,
+            "send_delay_sec": 1.0,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "ui_layout": {
@@ -77,6 +78,7 @@ def load_config():
             tree_column_widths = {}
         return {
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
+            "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
             "ui_layout": {
@@ -89,6 +91,7 @@ def load_config():
     except Exception:
         return {
             "pi_host": DEFAULT_PI_HOST,
+            "send_delay_sec": 1.0,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "ui_layout": {
@@ -633,7 +636,11 @@ class App:
         self.pi_ip_entry = tk.Entry(row, width=18)
         self.pi_ip_entry.insert(0, self.config["pi_host"])
         self.pi_ip_entry.pack(side="left", padx=5)
-        tk.Button(row, text="保存", command=self.save_pi_ip).pack(side="left", padx=5)
+        tk.Label(row, text="送出延遲(秒)：").pack(side="left", padx=(8, 0))
+        self.send_delay_entry = tk.Entry(row, width=8)
+        self.send_delay_entry.insert(0, str(self.config.get("send_delay_sec", 1.0)))
+        self.send_delay_entry.pack(side="left", padx=5)
+        tk.Button(row, text="保存", command=self.save_apply_info).pack(side="left", padx=5)
 
         connection_row = tk.Frame(info)
         connection_row.pack(fill="x", padx=8, pady=(2, 5))
@@ -900,19 +907,47 @@ class App:
             return ""
         return self.saved_listbox.get(selection[0])
 
-    def save_pi_ip(self):
+    def parse_send_delay_sec(self):
+        raw = self.send_delay_entry.get().strip()
+        try:
+            delay = float(raw)
+        except ValueError:
+            raise ValueError("送出延遲秒數必須是數字")
+        if delay < 0:
+            raise ValueError("送出延遲秒數不可小於 0")
+        return delay
+
+    def save_apply_info(self):
         ip = self.pi_ip_entry.get().strip()
         if not ip:
             self.set_frontend_error("Pi IP 不可空白")
             messagebox.showwarning("提醒", "Pi IP 不可空白")
             return
+        try:
+            delay = self.parse_send_delay_sec()
+        except ValueError as e:
+            self.set_frontend_error(str(e))
+            messagebox.showwarning("提醒", str(e))
+            return
 
         self.config["pi_host"] = ip
+        self.config["send_delay_sec"] = delay
         save_config(self.config)
         self.update_current_labels()
         self.set_frontend_error("")
-        self.set_status("已保存 Pi IP：{}".format(ip))
-        self.set_connected(False, "IP 已更新，請重新測試連線")
+        self.set_status("已保存 Pi IP：{}，送出延遲 {} 秒".format(ip, delay))
+        self.set_connected(False, "設定已更新，請重新測試連線")
+
+    def apply_send_delay_if_needed(self):
+        delay = self.parse_send_delay_sec()
+        self.config["send_delay_sec"] = delay
+        save_config(self.config)
+        if delay <= 0:
+            return 0.0
+        self.set_status("延遲 {} 秒後送出...".format(delay))
+        self.root.update_idletasks()
+        time.sleep(delay)
+        return delay
 
     def auto_connect(self):
         self.ping_pi(show_popup=False)
@@ -1188,6 +1223,12 @@ class App:
             return
 
         self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
+        try:
+            self.config["send_delay_sec"] = self.parse_send_delay_sec()
+        except ValueError as e:
+            self.set_frontend_error(str(e))
+            messagebox.showwarning("提醒", str(e))
+            return
         save_config(self.config)
         self.update_current_labels()
 
@@ -1205,10 +1246,12 @@ class App:
 
         try:
             self.set_frontend_error("")
+            delay = self.apply_send_delay_if_needed()
             res = self.request_pi(payload, write_response=False)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
+                "send_delay_sec": delay,
                 "request": payload,
                 "response": res
             })
@@ -1232,6 +1275,12 @@ class App:
             return
 
         self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
+        try:
+            self.config["send_delay_sec"] = self.parse_send_delay_sec()
+        except ValueError as e:
+            self.set_frontend_error(str(e))
+            messagebox.showwarning("提醒", str(e))
+            return
         save_config(self.config)
         self.update_current_labels()
 
@@ -1249,10 +1298,12 @@ class App:
 
         try:
             self.set_frontend_error("")
+            delay = self.apply_send_delay_if_needed()
             res = self.request_pi(payload, write_response=False)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
+                "send_delay_sec": delay,
                 "request": payload,
                 "response": res
             })
