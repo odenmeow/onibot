@@ -747,19 +747,13 @@ class App:
         tk.Button(jitter_frame, text="套用到選取列", command=self.apply_jitter_to_selected).grid(row=0, column=2, padx=5, pady=5)
         tk.Button(jitter_frame, text="套用到全部 event", command=self.apply_jitter_to_all).grid(row=0, column=3, padx=5, pady=5)
         tk.Button(jitter_frame, text="選取列清成 0", command=self.clear_jitter_selected).grid(row=0, column=4, padx=5, pady=5)
-        tk.Label(jitter_frame, text="自/手動偏移時間:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
-        self.offset_sec_entry = tk.Entry(jitter_frame, width=10)
-        self.offset_sec_entry.insert(0, "{:.3f}".format(float(self.config.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC))))
-        self.offset_sec_entry.grid(row=1, column=1, padx=5, pady=5)
-        tk.Label(jitter_frame, text="秒").grid(row=1, column=2, padx=(0, 5), pady=5, sticky="w")
-        tk.Button(jitter_frame, text="套用偏移", command=self.apply_offset_from_selected).grid(row=1, column=3, padx=5, pady=5, sticky="w")
         tk.Button(
             jitter_frame,
             text="UI 保存",
             command=self.save_ui_layout,
             bg="#fff4b3",
             activebackground="#ffe08a"
-        ).grid(row=0, column=5, rowspan=2, padx=(5, 8), pady=5)
+        ).grid(row=0, column=5, padx=(5, 8), pady=5, sticky="e")
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -788,15 +782,6 @@ class App:
         self.offset_sec_entry.pack(side="left", padx=(0, 5))
         tk.Label(edit_row, text="秒").pack(side="left", padx=(0, 5))
         tk.Button(edit_row, text="套用偏移", command=self.apply_offset_from_selected).pack(side="left", padx=2)
-
-        offset_row = tk.Frame(right_panel)
-        offset_row.pack(fill="x", pady=(0, 8))
-        tk.Label(offset_row, text="自/手動偏移時間:").pack(side="left", padx=(2, 5))
-        self.offset_sec_entry = tk.Entry(offset_row, width=10)
-        self.offset_sec_entry.insert(0, "{:.3f}".format(float(self.config.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC))))
-        self.offset_sec_entry.pack(side="left", padx=(0, 5))
-        tk.Label(offset_row, text="秒").pack(side="left", padx=(0, 5))
-        tk.Button(offset_row, text="套用偏移", command=self.apply_offset_from_selected).pack(side="left", padx=2)
 
         bottom = tk.Frame(right_panel)
         bottom.pack(fill="both", expand=True)
