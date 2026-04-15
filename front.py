@@ -223,11 +223,21 @@ def recalculate_runtime_events_by_index(events, anchor_gap_sec):
         is_negative_group = group_name.startswith("-")
         if not is_negative_group:
             original_at = original_at_list[i]
+            prev_anchor_idx = i - 1
+            while prev_anchor_idx >= 0:
+                prev_group = str(events[prev_anchor_idx].get("buff_group", "")).strip()
+                if not prev_group.startswith("-"):
+                    break
+                prev_anchor_idx -= 1
+
             if i == 0:
                 shifted_at = max(0.0, original_at)
+            elif prev_anchor_idx >= 0:
+                prev_anchor_original_at = original_at_list[prev_anchor_idx]
+                follow_gap_sec = max(0.0, original_at - prev_anchor_original_at)
+                shifted_at = max(0.0, cursor_at + follow_gap_sec)
             else:
-                prev_original_at = original_at_list[i - 1]
-                follow_gap_sec = max(0.0, original_at - prev_original_at)
+                follow_gap_sec = max(0.0, original_at - original_at_list[0])
                 shifted_at = max(0.0, cursor_at + follow_gap_sec)
             events[i]["at"] = round(shifted_at, 2)
             cursor_at = shifted_at

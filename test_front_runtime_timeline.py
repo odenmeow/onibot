@@ -49,7 +49,35 @@ class RecalculateRuntimeTimelineTests(unittest.TestCase):
         recalculated = recalculate_runtime_events_by_index(events, anchor_gap_sec=0.2)
         recalculated_at = [row["at"] for row in recalculated]
 
-        self.assertEqual(recalculated_at, [1.0, 1.2, 1.4, 1.7, 1.9, 2.2, 2.5])
+        self.assertEqual(recalculated_at, [1.0, 1.2, 1.4, 2.9, 3.1, 3.4, 4.5])
+
+    def test_follow_gap_after_negative_copy_uses_previous_normal_anchor(self):
+        events = [_event(idx * 0.5, "") for idx in range(10)]
+        events.extend([
+            _event(3.5, "-1"),
+            _event(4.0, "-1"),
+            _event(4.5, "-1"),
+            _event(5.0, "-1"),
+            _event(5.0, ""),
+        ])
+
+        recalculated = recalculate_runtime_events_by_index(events, anchor_gap_sec=0.2)
+        self.assertEqual(recalculated[14]["at"], round(recalculated[13]["at"] + 0.5, 2))
+
+    def test_follow_gap_skips_whole_negative_prefix_before_event(self):
+        events = [_event(idx * 0.5, "") for idx in range(10)]
+        events[8]["buff_group"] = "-3"
+        events[9]["buff_group"] = "-3"
+        events.extend([
+            _event(3.5, "-1"),
+            _event(4.0, "-1"),
+            _event(4.5, "-1"),
+            _event(5.0, "-1"),
+            _event(5.0, ""),
+        ])
+
+        recalculated = recalculate_runtime_events_by_index(events, anchor_gap_sec=0.2)
+        self.assertEqual(recalculated[14]["at"], round(recalculated[13]["at"] + 1.5, 2))
 
 
 if __name__ == "__main__":
