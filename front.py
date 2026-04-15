@@ -1122,9 +1122,8 @@ class App:
             is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
             at_value = "{:.2f}".format(float(ev["at"]))
             tags = []
-            if is_replicated:
-                tags.append("copied_group")
-            if i in self.runtime_recent_ok_indices:
+            is_recent_ok = i in self.runtime_recent_ok_indices
+            if is_recent_ok:
                 recent_rank = self.runtime_recent_ok_indices.index(i)
                 if recent_rank == 0:
                     tags.append("runtime_ok_1")
@@ -1132,6 +1131,8 @@ class App:
                     tags.append("runtime_ok_2")
                 else:
                     tags.append("runtime_ok_3")
+            elif is_replicated:
+                tags.append("copied_group")
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
