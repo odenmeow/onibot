@@ -798,10 +798,7 @@ class App:
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.tag_configure("copied_group", background="#fff4b3")
-        self.tree.tag_configure("runtime_ok_latest", background="#d6f5cf")
-        self.tree.tag_configure("runtime_ok_mid", background="#e2f9dd")
-        self.tree.tag_configure("runtime_ok_old", background="#effced")
-        self.tree.tag_configure("runtime_skipped", background="#ffe1cc")
+        self.tree.tag_configure("runtime_skipped", foreground="#8f8f8f")
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<Control-a>", self.on_tree_select_all, add="+")
         self.tree.bind("<Control-A>", self.on_tree_select_all, add="+")
@@ -1049,27 +1046,32 @@ class App:
             key = (ev["type"], ev["button"], ev["at"])
             grp = event_to_group.get(key, "")
             buff_group = str(ev.get("buff_group", "")).strip()
+            at_value = "{:.2f}".format(float(ev["at"]))
             is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
             runtime_event = self.timeline_runtime_by_index.get(i, {})
             runtime_status = str(runtime_event.get("status", "")).strip().lower()
             tags = []
-            if is_replicated:
-                tags.append("copied_group")
             if i in self.runtime_recent_ok_indices:
                 recent_rank = self.runtime_recent_ok_indices.index(i)
                 if recent_rank == 0:
-                    tags.append("runtime_ok_latest")
+                    at_value = "🟩 {}".format(at_value)
                 elif recent_rank == 1:
-                    tags.append("runtime_ok_mid")
+                    at_value = "🟩· {}".format(at_value)
                 else:
-                    tags.append("runtime_ok_old")
+                    at_value = "🟩·· {}".format(at_value)
             elif runtime_status == "skipped_by_cooldown" and i in self.runtime_recent_skipped_indices:
                 tags.append("runtime_skipped")
+                if buff_group:
+                    buff_group = "◼{} (cooldown)".format(buff_group)
+                else:
+                    buff_group = "◼cooldown"
+            if is_replicated:
+                tags.append("copied_group")
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
                 ev["button"],
-                "{:.2f}".format(float(ev["at"])),
+                at_value,
                 ev["at_jitter"],
                 buff_group,
                 ev.get("buff_cycle_sec", 0.0),
