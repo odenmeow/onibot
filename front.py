@@ -1649,11 +1649,11 @@ class App:
                 "Yes：第 {}~{} 列之間（插入在上方）\n"
                 "No：第 {}~{} 列之間（插入在下方）\n"
                 "Cancel：取消貼上".format(
-                    anchor + 1,
-                    max(1, anchor),
-                    anchor + 1,
-                    anchor + 1,
-                    anchor + 2
+                    anchor,
+                    max(0, anchor - 1),
+                    anchor,
+                    anchor,
+                    anchor + 1
                 )
             )
             if ask is None:
@@ -1674,7 +1674,7 @@ class App:
 
             self.mark_timeline_dirty()
             self.tree.selection_set([str(i) for i in new_indexes])
-            self.set_status("已插入貼上 {} 列（從第 {} 列開始）".format(len(new_indexes), insert_at + 1))
+            self.set_status("已插入貼上 {} 列（從 idx {} 開始）".format(len(new_indexes), insert_at))
             return "break"
 
         changed_indexes = []
@@ -1693,7 +1693,7 @@ class App:
 
         self.mark_timeline_dirty()
         self.tree.selection_set([str(i) for i in changed_indexes])
-        self.set_status("已貼上 {} 列（從第 {} 列開始）".format(len(changed_indexes), changed_indexes[0] + 1))
+        self.set_status("已貼上 {} 列（從 idx {} 開始）".format(len(changed_indexes), changed_indexes[0]))
         return "break"
 
     def _normalize_paste_row(self, values):
