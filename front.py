@@ -1560,13 +1560,6 @@ class App:
             raise ValueError("button 不可空白")
         if field == "buff_group":
             value = raw_value.strip()
-            is_replicated = self._normalize_replicated_row_flag(
-                self.timeline[idx].get("replicatedRow", 0)
-            ) == 1
-            if is_replicated and value and not value.startswith("-"):
-                if value.startswith("+"):
-                    value = value[1:].strip()
-                value = "-{}".format(value)
         self.timeline[idx][field] = value
         if field == "buff_group":
             self._sync_replicated_row(self.timeline[idx])
