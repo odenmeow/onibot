@@ -782,6 +782,12 @@ class App:
         tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="複製列", command=self.duplicate_selected_rows, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
+        tk.Label(edit_row, text="自/手動偏移 :").pack(side="left", padx=(14, 5))
+        self.offset_sec_entry = tk.Entry(edit_row, width=10)
+        self.offset_sec_entry.insert(0, "{:.3f}".format(float(self.config.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC))))
+        self.offset_sec_entry.pack(side="left", padx=(0, 5))
+        tk.Label(edit_row, text="秒").pack(side="left", padx=(0, 5))
+        tk.Button(edit_row, text="套用偏移", command=self.apply_offset_from_selected).pack(side="left", padx=2)
 
         offset_row = tk.Frame(right_panel)
         offset_row.pack(fill="x", pady=(0, 8))
