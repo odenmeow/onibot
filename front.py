@@ -57,7 +57,7 @@ def load_config():
             "pi_host": DEFAULT_PI_HOST,
             "last_selected_name": "",
             "ui_layout": {
-                "paned_ratio": None,
+                "paned_sash_x": None,
                 "tree_column_widths": {}
             }
         }
@@ -75,6 +75,7 @@ def load_config():
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
             "last_selected_name": data.get("last_selected_name", ""),
             "ui_layout": {
+                "paned_sash_x": ui_layout.get("paned_sash_x"),
                 "paned_ratio": ui_layout.get("paned_ratio"),
                 "tree_column_widths": tree_column_widths
             }
@@ -84,7 +85,7 @@ def load_config():
             "pi_host": DEFAULT_PI_HOST,
             "last_selected_name": "",
             "ui_layout": {
-                "paned_ratio": None,
+                "paned_sash_x": None,
                 "tree_column_widths": {}
             }
         }
@@ -513,7 +514,13 @@ class App:
         tk.Button(jitter_frame, text="套用到選取列", command=self.apply_jitter_to_selected).grid(row=0, column=2, padx=5, pady=5)
         tk.Button(jitter_frame, text="套用到全部 event", command=self.apply_jitter_to_all).grid(row=0, column=3, padx=5, pady=5)
         tk.Button(jitter_frame, text="選取列清成 0", command=self.clear_jitter_selected).grid(row=0, column=4, padx=5, pady=5)
-        tk.Button(jitter_frame, text="UI 保存", command=self.save_ui_layout).grid(row=0, column=5, padx=(5, 8), pady=5)
+        tk.Button(
+            jitter_frame,
+            text="UI 保存",
+            command=self.save_ui_layout,
+            bg="#fff4b3",
+            activebackground="#ffe08a"
+        ).grid(row=0, column=5, padx=(5, 8), pady=5)
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -523,7 +530,7 @@ class App:
             width = 92
             if col in ("buff_group", "buff_cycle_sec", "buff_jitter_sec"):
                 width = 100
-            self.tree.column(col, width=width)
+            self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start, add="+")
@@ -548,14 +555,13 @@ class App:
         self.root.after(50, self.apply_saved_ui_layout)
         self.root.after(150, self.auto_connect)
 
-    def get_current_paned_ratio(self):
+    def get_current_paned_sash_x(self):
         self.root.update_idletasks()
-        total_width = self.body.winfo_width()
-        if total_width <= 0:
+        panes = self.body.panes()
+        if len(panes) < 2:
             return None
         sash_x, _ = self.body.sash_coord(0)
-        ratio = sash_x / float(total_width)
-        return max(0.05, min(0.95, ratio))
+        return max(0, int(sash_x))
 
     def apply_saved_ui_layout(self):
         ui_layout = self.config.get("ui_layout", {})
@@ -567,18 +573,30 @@ class App:
             for col in self.tree_columns:
                 width = widths.get(col)
                 if isinstance(width, (int, float)) and width >= 40:
-                    self.tree.column(col, width=int(width))
+                    self.tree.column(col, width=int(width), minwidth=40, stretch=False)
 
-        ratio = ui_layout.get("paned_ratio")
-        if isinstance(ratio, (int, float)):
-            self.root.update_idletasks()
-            total_width = self.body.winfo_width()
-            if total_width > 0:
-                self.body.sash_place(0, int(total_width * ratio), 0)
+        self.root.update_idletasks()
+        total_width = self.body.winfo_width()
+        if total_width <= 0:
+            return
+
+        sash_x = ui_layout.get("paned_sash_x")
+        if isinstance(sash_x, (int, float)):
+            target_x = int(sash_x)
+        else:
+            ratio = ui_layout.get("paned_ratio")
+            if isinstance(ratio, (int, float)):
+                target_x = int(total_width * ratio)
+            else:
+                return
+
+        min_x = 120
+        max_x = max(min_x, total_width - 120)
+        self.body.sash_place(0, min(max_x, max(min_x, target_x)), 0)
 
     def save_ui_layout(self):
-        ratio = self.get_current_paned_ratio()
-        if ratio is None:
+        sash_x = self.get_current_paned_sash_x()
+        if sash_x is None:
             messagebox.showwarning("提醒", "目前無法取得 UI 版面資訊，請稍後再試")
             return
 
@@ -591,11 +609,11 @@ class App:
                 pass
 
         self.config["ui_layout"] = {
-            "paned_ratio": round(float(ratio), 4),
+            "paned_sash_x": int(sash_x),
             "tree_column_widths": column_widths
         }
         save_config(self.config)
-        self.set_status("已保存 UI 版面（PanedWindow 比例 + 欄寬）")
+        self.set_status("已保存 UI 版面（PanedWindow 像素位置 + 欄寬）")
 
     def update_current_labels(self):
         if self.current_name:
