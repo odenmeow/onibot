@@ -61,6 +61,7 @@ def load_config():
             "send_delay_sec": 1.0,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
+            "manual_offset_sec": 0.2,
             "ui_layout": {
                 "paned_sash_x": None,
                 "window_size": None,
@@ -82,6 +83,7 @@ def load_config():
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
+            "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
             "ui_layout": {
                 "paned_sash_x": ui_layout.get("paned_sash_x"),
                 "paned_ratio": ui_layout.get("paned_ratio"),
@@ -95,6 +97,7 @@ def load_config():
             "send_delay_sec": 1.0,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
+            "manual_offset_sec": 0.2,
             "ui_layout": {
                 "paned_sash_x": None,
                 "window_size": None,
@@ -304,12 +307,26 @@ class App:
         row = dict(ev)
         row.setdefault("type", "")
         row.setdefault("button", "")
-        row["at"] = round(max(0.0, float(row.get("at", 0.0))), 4)
+        row["at"] = round(max(0.0, float(row.get("at", 0.0))), 2)
         row["at_jitter"] = round(abs(float(row.get("at_jitter", 0.0))), 4)
         row["buff_group"] = str(row.get("buff_group", "")).strip()
         row["buff_cycle_sec"] = round(max(0.0, float(row.get("buff_cycle_sec", 0.0))), 4)
         row["buff_jitter_sec"] = round(abs(float(row.get("buff_jitter_sec", 0.0))), 4)
         return self._sync_replicated_row(row)
+
+    def get_manual_offset_sec(self):
+        raw = ""
+        if hasattr(self, "offset_sec_entry"):
+            raw = self.offset_sec_entry.get().strip()
+        if not raw:
+            raw = str(self.config.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC))
+        try:
+            val = float(raw)
+        except ValueError:
+            raise ValueError("自/手動偏移時間必須是數字")
+        self.config["manual_offset_sec"] = val
+        save_config(self.config)
+        return val
 
     def new_meta(self):
         return {
@@ -374,10 +391,12 @@ class App:
             return
         save_named_timeline(self.current_name, self.timeline, self.timeline_meta)
 
-    def recalculate_timeline_for_runtime(self):
+    def recalculate_timeline_for_runtime(self, anchor_gap_sec=None):
         events = self.copy_events(self.timeline)
         if not events:
             return events
+        if anchor_gap_sec is None:
+            anchor_gap_sec = float(self.config.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC))
 
         seen_negative_group = {}
         cursor_at = 0.0
@@ -389,7 +408,7 @@ class App:
             if not is_negative_group:
                 original_at = float(events[i].get("at", 0.0))
                 shifted_at = max(original_at, cursor_at)
-                events[i]["at"] = round(shifted_at, 4)
+                events[i]["at"] = round(shifted_at, 2)
                 cursor_at = shifted_at
                 i += 1
                 continue
@@ -416,11 +435,11 @@ class App:
             if start == 0:
                 anchor = 0.0
             else:
-                anchor = cursor_at + NEGATIVE_GROUP_ANCHOR_GAP_SEC
+                anchor = cursor_at + anchor_gap_sec
 
             duration = max(relative_at for _, relative_at in relative_rows) if relative_rows else 0.0
             for row, relative_at in relative_rows:
-                row["at"] = round(anchor + relative_at, 4)
+                row["at"] = round(anchor + relative_at, 2)
 
             cursor_at = anchor + duration
             i = end
@@ -758,6 +777,15 @@ class App:
         tk.Button(edit_row, text="複製列", command=self.duplicate_selected_rows, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
 
+        offset_row = tk.Frame(right_panel)
+        offset_row.pack(fill="x", pady=(0, 8))
+        tk.Label(offset_row, text="自/手動偏移時間:").pack(side="left", padx=(2, 5))
+        self.offset_sec_entry = tk.Entry(offset_row, width=10)
+        self.offset_sec_entry.insert(0, "{:.3f}".format(float(self.config.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC))))
+        self.offset_sec_entry.pack(side="left", padx=(0, 5))
+        tk.Label(offset_row, text="秒").pack(side="left", padx=(0, 5))
+        tk.Button(offset_row, text="套用偏移", command=self.apply_offset_from_selected).pack(side="left", padx=2)
+
         bottom = tk.Frame(right_panel)
         bottom.pack(fill="both", expand=True)
 
@@ -886,7 +914,7 @@ class App:
                 i,
                 ev["type"],
                 ev["button"],
-                ev["at"],
+                "{:.2f}".format(float(ev["at"])),
                 ev["at_jitter"],
                 buff_group,
                 ev.get("buff_cycle_sec", 0.0),
@@ -1052,11 +1080,12 @@ class App:
                 return
 
         try:
+            offset_sec = self.get_manual_offset_sec()
             self.push_history("before_save")
             self.timeline = [self._sync_replicated_row(ev) for ev in self.timeline]
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
             self.validate_negative_group_monotonic_by_index(self.timeline)
-            recalculated = self.recalculate_timeline_for_runtime()
+            recalculated = self.recalculate_timeline_for_runtime(anchor_gap_sec=offset_sec)
         except Exception as e:
             messagebox.showerror("保存失敗", str(e))
             return
@@ -1200,6 +1229,39 @@ class App:
             self.tree.selection_add(str(idx))
         self.set_status("已將選取列 jitter 清為 0")
 
+    def apply_offset_from_selected(self):
+        if not self.timeline:
+            messagebox.showwarning("提醒", "目前沒有 timeline 資料")
+            return
+
+        selected = sorted(self.get_selected_indexes())
+        if not selected:
+            messagebox.showwarning("提醒", "請先選取一列或多列")
+            return
+
+        try:
+            offset_sec = self.get_manual_offset_sec()
+        except Exception as e:
+            messagebox.showerror("錯誤", str(e))
+            return
+
+        start_idx = selected[0]
+        old_at = [float(ev.get("at", 0.0)) for ev in self.timeline]
+        base = old_at[start_idx]
+
+        if start_idx == 0:
+            anchor = max(0.0, base + offset_sec)
+        else:
+            anchor = max(0.0, float(self.timeline[start_idx - 1].get("at", 0.0)) + offset_sec)
+
+        for idx in range(start_idx, len(self.timeline)):
+            delta = old_at[idx] - base
+            self.timeline[idx]["at"] = round(max(0.0, anchor + delta), 2)
+
+        self.mark_timeline_dirty()
+        self.tree.selection_set(str(start_idx))
+        self.set_status("已自第 {} 列起偏移 {:.3f} 秒，共 {} 列".format(start_idx, offset_sec, len(self.timeline) - start_idx))
+
     def ping_pi(self, show_popup=True):
         try:
             self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
@@ -1335,11 +1397,12 @@ class App:
 
     def prepare_events_for_send(self, action_reason="before_send"):
         try:
+            offset_sec = self.get_manual_offset_sec()
             self.push_history(action_reason)
             self.timeline = [self._sync_replicated_row(ev) for ev in self.timeline]
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
             self.validate_negative_group_monotonic_by_index(self.timeline)
-            self.timeline = self.recalculate_timeline_for_runtime()
+            self.timeline = self.recalculate_timeline_for_runtime(anchor_gap_sec=offset_sec)
             self.current_loaded_from_saved = False
             self.update_current_labels()
             self.refresh_tree()
@@ -1444,9 +1507,10 @@ class App:
                 value = float(new_value)
                 if field == "at":
                     value = max(0.0, value)
+                    self.timeline[idx][field] = round(value, 2)
                 else:
                     value = abs(value)
-                self.timeline[idx][field] = round(value, 4)
+                    self.timeline[idx][field] = round(value, 4)
             else:
                 value = new_value.strip().lower()
                 if field == "type" and value not in ("press", "release"):
