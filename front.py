@@ -644,10 +644,10 @@ class App:
         self.runtime_recent_skipped_indices = []
         self.runtime_latest_index = None
         self.last_runtime_signature = ""
-        self._overlay_refresh_after_id = None
-        self._overlay_refresh_min_interval_ms = 80
-        self._overlay_refresh_next_allowed_at = 0.0
-        self._overlay_refresh_pending = False
+        self.pre_run_timeline_snapshot = []
+        self.has_pre_run_snapshot = False
+        self.runtime_display_frozen = False
+        self.runtime_manual_restore_active = False
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -786,10 +786,17 @@ class App:
         tk.Button(jitter_frame, text="計算偏移量", command=self.calculate_offsets_only).grid(
             row=0, column=2, padx=(5, 8), pady=5
         )
+        self.restore_pre_run_btn = tk.Button(
+            jitter_frame,
+            text="恢復執行前狀態",
+            command=self.restore_pre_run_state,
+            state="disabled"
+        )
+        self.restore_pre_run_btn.grid(row=0, column=3, padx=(0, 8), pady=5)
         tk.Label(
             jitter_frame,
             text="【註: buff_goup 如果設定 -1 可計算偏移量，不同複製按鈕群請用不同負值 】"
-        ).grid(row=1, column=0, columnspan=3, padx=(8, 8), pady=(0, 6), sticky="w")
+        ).grid(row=1, column=0, columnspan=4, padx=(8, 8), pady=(0, 6), sticky="w")
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -812,14 +819,6 @@ class App:
         self.tree.bind("<Control-C>", self.on_tree_copy, add="+")
         self.tree.bind("<Control-v>", self.on_tree_paste, add="+")
         self.tree.bind("<Control-V>", self.on_tree_paste, add="+")
-        self.tree.bind("<Configure>", self._schedule_tree_overlay_refresh, add="+")
-        self.tree.bind("<MouseWheel>", self._schedule_tree_overlay_refresh, add="+")
-        self.tree.bind("<Button-4>", self._schedule_tree_overlay_refresh, add="+")
-        self.tree.bind("<Button-5>", self._schedule_tree_overlay_refresh, add="+")
-        self.tree.bind("<Expose>", self._schedule_tree_overlay_refresh, add="+")
-        self.tree.bind("<<TreeviewSelect>>", self._schedule_tree_overlay_refresh, add="+")
-        self.tree_overlay_labels = {}
-        self._tree_font = ttk.Style().lookup("Treeview", "font")
 
         edit_row = tk.Frame(right_panel)
         edit_row.pack(fill="x", pady=(0, 8))
@@ -1017,17 +1016,19 @@ class App:
             if not self.offline_mode and self.conn is not None and self.connected:
                 res = self.request_pi({"action": "status"}, write_response=False)
                 if isinstance(res, dict):
-                    prev_signature = self.last_runtime_signature
                     changed = self.update_runtime_from_status(res)
                     if changed:
                         state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
-                        if not (
-                            state in ("stopped", "idle")
-                            and self.last_runtime_signature == prev_signature
-                        ):
+                        if state == "running":
+                            self.runtime_manual_restore_active = False
+                            self.runtime_display_frozen = False
                             self.refresh_tree()
-                            if state == "running":
-                                self.focus_latest_runtime_row()
+                            self.focus_latest_runtime_row()
+                        elif state in ("stopped", "idle"):
+                            if self.has_pre_run_snapshot and not self.runtime_manual_restore_active:
+                                self.runtime_display_frozen = True
+                        else:
+                            self.runtime_display_frozen = False
         except Exception:
             pass
         finally:
@@ -1048,122 +1049,8 @@ class App:
         if not self.tree.exists(row_id):
             return
         self.tree.see(row_id)
-        self._schedule_tree_overlay_refresh()
-
-    def _schedule_tree_overlay_refresh(self, _event=None):
-        if not hasattr(self, "tree"):
-            return
-        now = time.monotonic()
-        min_interval_sec = max(0.05, float(getattr(self, "_overlay_refresh_min_interval_ms", 80)) / 1000.0)
-        next_allowed = float(getattr(self, "_overlay_refresh_next_allowed_at", 0.0))
-
-        if now >= next_allowed:
-            if self._overlay_refresh_after_id is None:
-                self._overlay_refresh_after_id = self.root.after(1, self._run_tree_overlay_refresh)
-            self._overlay_refresh_pending = False
-            self._overlay_refresh_next_allowed_at = now + min_interval_sec
-            return
-
-        self._overlay_refresh_pending = True
-        if self._overlay_refresh_after_id is not None:
-            return
-        delay_ms = max(1, int((next_allowed - now) * 1000))
-        self._overlay_refresh_after_id = self.root.after(delay_ms, self._run_tree_overlay_refresh)
-
-    def _run_tree_overlay_refresh(self):
-        self._overlay_refresh_after_id = None
-        self._refresh_tree_buff_group_overlays()
-        if self._overlay_refresh_pending:
-            self._overlay_refresh_pending = False
-            self._overlay_refresh_next_allowed_at = time.monotonic() + (
-                max(0.05, float(getattr(self, "_overlay_refresh_min_interval_ms", 80)) / 1000.0)
-            )
-            self._overlay_refresh_after_id = self.root.after(1, self._run_tree_overlay_refresh)
-
-    def _refresh_tree_buff_group_overlays(self):
-        if not hasattr(self, "tree"):
-            return
-
-        overlay_labels = getattr(self, "tree_overlay_labels", {})
-        if not isinstance(overlay_labels, dict):
-            overlay_labels = {}
-
-        active_iids = set()
-        should_hide_iids = set()
-        for iid in self.tree.get_children():
-            active_iids.add(iid)
-            try:
-                idx = int(iid)
-            except Exception:
-                continue
-            if idx < 0 or idx >= len(self.timeline):
-                continue
-
-            ev = self.timeline[idx]
-            original_buff_group = str(ev.get("buff_group", "")).strip()
-            is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
-            runtime_event = self.timeline_runtime_by_index.get(idx, {})
-            runtime_status = str(runtime_event.get("status", "")).strip().lower()
-
-            bg_color = None
-            display_text = original_buff_group
-            if runtime_status == "skipped_by_cooldown":
-                bg_color = "#e3e3e3"
-            elif is_replicated:
-                bg_color = "#fff4b3"
-
-            if not bg_color:
-                should_hide_iids.add(iid)
-                continue
-
-            bbox = self.tree.bbox(iid, column="buff_group")
-            if not bbox:
-                continue
-            x, y, w, h = bbox
-            label = overlay_labels.get(iid)
-            if label is None:
-                label = tk.Label(
-                    self.tree,
-                    anchor="w",
-                    padx=4,
-                    borderwidth=0,
-                    highlightthickness=0,
-                    takefocus=0,
-                    font=self._tree_font
-                )
-                overlay_labels[iid] = label
-            label.configure(
-                text=display_text,
-                background=bg_color
-            )
-            label.place(x=x, y=y, width=w, height=h)
-
-        for iid in should_hide_iids:
-            label = overlay_labels.get(iid)
-            if label is None:
-                continue
-            try:
-                label.place_forget()
-            except Exception:
-                pass
-
-        stale_iids = [iid for iid in overlay_labels.keys() if iid not in active_iids]
-        for iid in stale_iids:
-            try:
-                overlay_labels[iid].destroy()
-            except Exception:
-                pass
-            overlay_labels.pop(iid, None)
-        self.tree_overlay_labels = overlay_labels
 
     def refresh_tree(self):
-        overlay_labels = getattr(self, "tree_overlay_labels", {})
-        if isinstance(overlay_labels, dict):
-            for label in overlay_labels.values():
-                try:
-                    label.place_forget()
-                except Exception:
-                    pass
         for item in self.tree.get_children():
             self.tree.delete(item)
 
@@ -1183,6 +1070,10 @@ class App:
             original_buff_group = str(ev.get("buff_group", "")).strip()
             buff_group = original_buff_group
             is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
+            runtime_event = self.timeline_runtime_by_index.get(i, {})
+            runtime_status = str(runtime_event.get("status", "")).strip().lower()
+            if runtime_status == "skipped_by_cooldown":
+                buff_group = "{}（冷卻中）".format(original_buff_group) if original_buff_group else "冷卻中"
             at_value = "{:.2f}".format(float(ev["at"]))
             tags = []
             is_recent_ok = i in self.runtime_recent_ok_indices
@@ -1207,7 +1098,33 @@ class App:
                 ev.get("buff_jitter_sec", 0.0),
                 grp
             ), tags=tuple(tags))
-        self._schedule_tree_overlay_refresh()
+
+    def _is_runtime_readonly(self):
+        state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+        return state == "running" or bool(self.runtime_display_frozen)
+
+    def _ensure_runtime_editable(self):
+        if not self._is_runtime_readonly():
+            return True
+        messagebox.showwarning("提醒", "執行中或停止後凍結中，請先「恢復執行前狀態」再編輯")
+        return False
+
+    def _set_restore_pre_run_button_state(self):
+        btn = getattr(self, "restore_pre_run_btn", None)
+        if btn is None:
+            return
+        btn.config(state=("normal" if self.has_pre_run_snapshot else "disabled"))
+
+    def restore_pre_run_state(self):
+        if not self.has_pre_run_snapshot:
+            messagebox.showwarning("提醒", "沒有可恢復內容")
+            return
+        self.timeline = self.copy_events(self.pre_run_timeline_snapshot)
+        self.runtime_manual_restore_active = True
+        self.runtime_display_frozen = False
+        self.clear_runtime_highlight()
+        self.refresh_tree()
+        self.refresh_preview()
 
     def refresh_saved_list(self):
         names = list_saved_timeline_names()
@@ -1527,6 +1444,8 @@ class App:
         self.set_status("已計算偏移量並套用到 timeline（共 {} 筆）".format(len(prepared_events)))
 
     def apply_offset_from_selected(self):
+        if not self._ensure_runtime_editable():
+            return
         if not self.timeline:
             messagebox.showwarning("提醒", "目前沒有 timeline 資料")
             return
@@ -1585,8 +1504,8 @@ class App:
 
             self.set_frontend_error("")
             self.request_pi({"action": "stop"})
-            self.clear_runtime_highlight()
-            self.refresh_tree()
+            self.runtime_manual_restore_active = False
+            self.runtime_display_frozen = True
             self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
         except Exception as e:
             self.set_frontend_error(str(e))
@@ -1596,6 +1515,11 @@ class App:
         if not self.timeline:
             messagebox.showwarning("提醒", "請先錄製並分析，或載入已保存項目")
             return
+        self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
+        self.has_pre_run_snapshot = True
+        self.runtime_manual_restore_active = False
+        self.runtime_display_frozen = False
+        self._set_restore_pre_run_button_state()
 
         self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
         try:
@@ -1650,6 +1574,11 @@ class App:
         if not self.timeline:
             messagebox.showwarning("提醒", "請先錄製並分析，或載入已保存項目")
             return
+        self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
+        self.has_pre_run_snapshot = True
+        self.runtime_manual_restore_active = False
+        self.runtime_display_frozen = False
+        self._set_restore_pre_run_button_state()
 
         self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
         try:
@@ -1788,6 +1717,8 @@ class App:
         save_config(self.config)
 
     def on_tree_double_click(self, event):
+        if not self._ensure_runtime_editable():
+            return
         region = self.tree.identify("region", event.x, event.y)
         col_id = self.tree.identify_column(event.x)
         if not col_id:
@@ -2017,6 +1948,8 @@ class App:
         event[field] = value
 
     def move_selected_up(self):
+        if not self._ensure_runtime_editable():
+            return
         selected = sorted(self.get_selected_indexes())
         if not selected:
             messagebox.showwarning("提醒", "請先選取列")
@@ -2029,6 +1962,8 @@ class App:
         self.tree.selection_set([str(i - 1) for i in selected])
 
     def move_selected_down(self):
+        if not self._ensure_runtime_editable():
+            return
         selected = sorted(self.get_selected_indexes(), reverse=True)
         if not selected:
             messagebox.showwarning("提醒", "請先選取列")
@@ -2041,6 +1976,8 @@ class App:
         self.tree.selection_set([str(i + 1) for i in sorted(selected)])
 
     def duplicate_selected_rows(self):
+        if not self._ensure_runtime_editable():
+            return
         selected = sorted(self.get_selected_indexes())
         if not selected:
             messagebox.showwarning("提醒", "請先選取列")
@@ -2059,6 +1996,8 @@ class App:
         self.tree.selection_set([str(i) for i in new_ids])
 
     def delete_selected_rows(self):
+        if not self._ensure_runtime_editable():
+            return
         selected = sorted(self.get_selected_indexes(), reverse=True)
         if not selected:
             messagebox.showwarning("提醒", "請先選取列")
