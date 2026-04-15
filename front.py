@@ -813,7 +813,9 @@ class App:
         self.tree.bind("<Button-4>", self._schedule_tree_overlay_refresh, add="+")
         self.tree.bind("<Button-5>", self._schedule_tree_overlay_refresh, add="+")
         self.tree.bind("<Expose>", self._schedule_tree_overlay_refresh, add="+")
-        self.tree_overlay_labels = []
+        self.tree.bind("<<TreeviewSelect>>", self._schedule_tree_overlay_refresh, add="+")
+        self.tree_overlay_labels = {}
+        self._tree_font = ttk.Style().lookup("Treeview", "font")
 
         edit_row = tk.Frame(right_panel)
         edit_row.pack(fill="x", pady=(0, 8))
@@ -1052,14 +1054,18 @@ class App:
         if not hasattr(self, "tree"):
             return
 
-        for label in getattr(self, "tree_overlay_labels", []):
+        overlay_labels = getattr(self, "tree_overlay_labels", {})
+        if not isinstance(overlay_labels, dict):
+            overlay_labels = {}
+        for label in overlay_labels.values():
             try:
-                label.destroy()
+                label.place_forget()
             except Exception:
                 pass
-        self.tree_overlay_labels = []
 
+        active_iids = set()
         for iid in self.tree.get_children():
+            active_iids.add(iid)
             try:
                 idx = int(iid)
             except Exception:
@@ -1087,18 +1093,31 @@ class App:
             if not bbox:
                 continue
             x, y, w, h = bbox
-            label = tk.Label(
-                self.tree,
+            label = overlay_labels.get(iid)
+            if label is None:
+                label = tk.Label(
+                    self.tree,
+                    anchor="w",
+                    padx=4,
+                    borderwidth=0,
+                    highlightthickness=0,
+                    takefocus=0,
+                    font=self._tree_font
+                )
+                overlay_labels[iid] = label
+            label.configure(
                 text=display_text,
-                background=bg_color,
-                font=ttk.Style().lookup("Treeview", "font"),
-                anchor="w",
-                padx=4,
-                borderwidth=0,
-                highlightthickness=0
+                background=bg_color
             )
             label.place(x=x, y=y, width=w, height=h)
-            self.tree_overlay_labels.append(label)
+        stale_iids = [iid for iid in overlay_labels.keys() if iid not in active_iids]
+        for iid in stale_iids:
+            try:
+                overlay_labels[iid].destroy()
+            except Exception:
+                pass
+            overlay_labels.pop(iid, None)
+        self.tree_overlay_labels = overlay_labels
 
     def refresh_tree(self):
         for item in self.tree.get_children():
