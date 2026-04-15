@@ -273,6 +273,29 @@ def build_overlap_summary(timeline):
 
 
 class App:
+    def _is_negative_buff_group(self, value):
+        group = str(value or "").strip()
+        return group.startswith("-")
+
+    def _normalize_replicated_row_flag(self, value):
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, (int, float)):
+            return 1 if int(value) != 0 else 0
+        text = str(value or "").strip().lower()
+        if text in ("1", "true", "yes", "y"):
+            return 1
+        return 0
+
+    def _sync_replicated_row(self, row):
+        buff_group = str(row.get("buff_group", "")).strip()
+        replicated = self._normalize_replicated_row_flag(row.get("replicatedRow", 0))
+        if self._is_negative_buff_group(buff_group):
+            replicated = 1
+        row["buff_group"] = buff_group
+        row["replicatedRow"] = replicated
+        return row
+
     def normalize_event_schema(self, ev):
         row = dict(ev)
         row.setdefault("type", "")
@@ -282,7 +305,7 @@ class App:
         row["buff_group"] = str(row.get("buff_group", "")).strip()
         row["buff_cycle_sec"] = round(max(0.0, float(row.get("buff_cycle_sec", 0.0))), 4)
         row["buff_jitter_sec"] = round(abs(float(row.get("buff_jitter_sec", 0.0))), 4)
-        return row
+        return self._sync_replicated_row(row)
 
     def new_meta(self):
         return {
@@ -832,10 +855,12 @@ class App:
                 event_to_group[key] = group_id
 
         for i, ev in enumerate(self.timeline):
+            self._sync_replicated_row(ev)
             key = (ev["type"], ev["button"], ev["at"])
             grp = event_to_group.get(key, "")
             buff_group = str(ev.get("buff_group", "")).strip()
-            tags = ("copied_group",) if buff_group.startswith("-") else ()
+            is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
+            tags = ("copied_group",) if is_replicated else ()
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
@@ -979,6 +1004,7 @@ class App:
 
         try:
             self.push_history("before_save")
+            self.timeline = [self._sync_replicated_row(ev) for ev in self.timeline]
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
             self.validate_negative_group_monotonic_by_index(self.timeline)
             recalculated = self.recalculate_timeline_for_runtime()
@@ -1245,6 +1271,7 @@ class App:
     def prepare_events_for_send(self, action_reason="before_send"):
         try:
             self.push_history(action_reason)
+            self.timeline = [self._sync_replicated_row(ev) for ev in self.timeline]
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
             self.validate_negative_group_monotonic_by_index(self.timeline)
             self.timeline = self.recalculate_timeline_for_runtime()
@@ -1363,7 +1390,16 @@ class App:
                     raise ValueError("button 不可空白")
                 if field == "buff_group":
                     value = new_value.strip()
+                    is_replicated = self._normalize_replicated_row_flag(
+                        self.timeline[idx].get("replicatedRow", 0)
+                    ) == 1
+                    if is_replicated and value and not value.startswith("-"):
+                        if value.startswith("+"):
+                            value = value[1:].strip()
+                        value = "-{}".format(value)
                 self.timeline[idx][field] = value
+                if field == "buff_group":
+                    self._sync_replicated_row(self.timeline[idx])
         except Exception as e:
             messagebox.showerror("修改失敗", str(e))
             return
@@ -1424,6 +1460,8 @@ class App:
         for idx in selected:
             insert_at = idx + 1 + offset
             copied = dict(self.timeline[idx + offset])
+            copied["replicatedRow"] = 1
+            copied = self._sync_replicated_row(copied)
             self.timeline.insert(insert_at, copied)
             new_ids.append(insert_at)
             offset += 1
