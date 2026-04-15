@@ -11,6 +11,8 @@ PORT = 5000
 
 ACTIVE_LOW = True
 DEFAULT_PRESS_TIME = 0.25
+BUFF_SKIP_MODE_WALK = "walk"          # 走過：不按，但保留原時間軸（照等）
+BUFF_SKIP_MODE_COMPRESS = "compress"  # 略過：不按，並壓縮時間軸（不等）
 
 BUTTONS = {
     "fn": 26,
@@ -148,9 +150,11 @@ def run_macro(steps):
     return results
 
 
-def run_timeline(events, reset_stop_event=True, buff_runtime=None):
+def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mode=BUFF_SKIP_MODE_WALK):
     if not isinstance(events, list):
         raise ValueError("events 必須是 list")
+    if buff_skip_mode not in (BUFF_SKIP_MODE_WALK, BUFF_SKIP_MODE_COMPRESS):
+        raise ValueError("buff_skip_mode 錯誤: {}".format(buff_skip_mode))
 
     if reset_stop_event:
         stop_event.clear()
@@ -192,12 +196,14 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None):
     with run_lock:
         start = time.monotonic()
         skip_cache = {}
+        timeline_shift = 0.0
 
         for i, ev in enumerate(normalized):
             if stop_event.is_set():
                 raise InterruptedError("執行已被停止")
 
-            target = ev["at"]
+            source_target = ev["at"]
+            target = max(0.0, source_target - timeline_shift)
             now = time.monotonic() - start
             wait_time = target - now
             skip_by_cooldown = False
@@ -218,13 +224,20 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None):
                     skip_cache[buff_group] = skip_by_cooldown
 
             if skip_by_cooldown:
+                compressed_sec = 0.0
+                if buff_skip_mode == BUFF_SKIP_MODE_COMPRESS:
+                    compressed_sec = max(0.0, wait_time)
+                    timeline_shift += compressed_sec
                 results.append({
                     "index": i,
                     "type": ev["type"],
                     "button": ev["button"],
+                    "source_target_at": round(source_target, 4),
                     "target_at": round(target, 4),
                     "actual_at": round(time.monotonic() - start, 4),
-                    "status": "skipped_by_cooldown"
+                    "status": "skipped_by_cooldown",
+                    "buff_skip_mode": buff_skip_mode,
+                    "compressed_sec": round(compressed_sec, 4)
                 })
                 continue
 
@@ -241,6 +254,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None):
                 "index": i,
                 "type": ev["type"],
                 "button": ev["button"],
+                "source_target_at": round(source_target, 4),
                 "target_at": round(target, 4),
                 "actual_at": round(actual_now, 4),
                 "status": "ok"
@@ -249,7 +263,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None):
     return results
 
 
-def run_timeline_background(events):
+def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
     global current_run_status
     try:
         current_run_status = {
@@ -257,7 +271,7 @@ def run_timeline_background(events):
             "mode": "timeline",
             "message": "正在執行 timeline"
         }
-        run_timeline(events)
+        run_timeline(events, buff_skip_mode=buff_skip_mode)
         release_all()
         current_run_status = {
             "state": "idle",
@@ -280,7 +294,7 @@ def run_timeline_background(events):
         }
 
 
-def run_timeline_loop_background(events):
+def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
     global current_run_status
     loop_count = 0
     buff_runtime = {"next_ready_at": {}}
@@ -293,7 +307,12 @@ def run_timeline_loop_background(events):
                 "mode": "timeline_loop",
                 "message": "正在第 {} 次循環".format(loop_count)
             }
-            run_timeline(events, reset_stop_event=False, buff_runtime=buff_runtime)
+            run_timeline(
+                events,
+                reset_stop_event=False,
+                buff_runtime=buff_runtime,
+                buff_skip_mode=buff_skip_mode
+            )
             release_all()
 
         current_run_status = {
@@ -368,6 +387,12 @@ def handle_request(data):
 
     action = data.get("action")
 
+    def normalize_buff_skip_mode(raw):
+        mode = str(raw or BUFF_SKIP_MODE_WALK).strip().lower()
+        if mode not in (BUFF_SKIP_MODE_WALK, BUFF_SKIP_MODE_COMPRESS):
+            raise ValueError("buff_skip_mode 只能是 walk 或 compress")
+        return mode
+
     if action == "ping":
         return {"status": "ok", "message": "pong"}
 
@@ -399,28 +424,40 @@ def handle_request(data):
             return {"status": "busy", "message": "Pi 目前已有執行中的工作"}
 
         events = data.get("events", [])
+        buff_skip_mode = normalize_buff_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_WALK))
         stop_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
-            args=(events,),
+            args=(events, buff_skip_mode),
             daemon=True
         )
         current_run_thread.start()
-        return {"status": "ok", "mode": "timeline", "message": "已收到 timeline，開始背景執行"}
+        return {
+            "status": "ok",
+            "mode": "timeline",
+            "buff_skip_mode": buff_skip_mode,
+            "message": "已收到 timeline，開始背景執行"
+        }
 
     if action == "run_timeline_loop":
         if current_run_thread is not None and current_run_thread.is_alive():
             return {"status": "busy", "message": "Pi 目前已有執行中的工作"}
 
         events = data.get("events", [])
+        buff_skip_mode = normalize_buff_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_WALK))
         stop_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_loop_background,
-            args=(events,),
+            args=(events, buff_skip_mode),
             daemon=True
         )
         current_run_thread.start()
-        return {"status": "ok", "mode": "timeline_loop", "message": "已收到 timeline，開始重複執行"}
+        return {
+            "status": "ok",
+            "mode": "timeline_loop",
+            "buff_skip_mode": buff_skip_mode,
+            "message": "已收到 timeline，開始重複執行"
+        }
 
     return {"status": "error", "message": "未知 action"}
 
