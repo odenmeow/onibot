@@ -132,12 +132,13 @@ def list_saved_timeline_names():
     return names
 
 
-def save_named_timeline(name, timeline):
+def save_named_timeline(name, timeline, meta=None):
     path = timeline_file_path(name)
     data = {
         "name": name,
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "events": timeline
+        "events": timeline,
+        "_meta": meta or {}
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -283,6 +284,109 @@ class App:
         row["buff_jitter_sec"] = round(abs(float(row.get("buff_jitter_sec", 0.0))), 4)
         return row
 
+    def new_meta(self):
+        return {
+            "original_events": [],
+            "history": []
+        }
+
+    def normalize_meta(self, meta):
+        if not isinstance(meta, dict):
+            return self.new_meta()
+        raw_original = meta.get("original_events", [])
+        raw_history = meta.get("history", [])
+        original_events = []
+        if isinstance(raw_original, list):
+            original_events = [self.normalize_event_schema(ev) for ev in raw_original]
+
+        history = []
+        if isinstance(raw_history, list):
+            for item in raw_history:
+                if not isinstance(item, dict):
+                    continue
+                events = item.get("events", [])
+                if not isinstance(events, list):
+                    continue
+                history.append({
+                    "ts": str(item.get("ts", "")),
+                    "reason": str(item.get("reason", "")),
+                    "events": [self.normalize_event_schema(ev) for ev in events]
+                })
+        return {
+            "original_events": original_events,
+            "history": history[-5:]
+        }
+
+    def copy_events(self, rows):
+        return [self.normalize_event_schema(ev) for ev in rows]
+
+    def push_history(self, reason):
+        snap = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": reason,
+            "events": self.copy_events(self.timeline)
+        }
+        history = self.timeline_meta.setdefault("history", [])
+        history.append(snap)
+        if len(history) > 5:
+            del history[:-5]
+
+    def restore_original_timeline(self):
+        original = self.timeline_meta.get("original_events", [])
+        if not original:
+            return False
+        self.timeline = self.copy_events(original)
+        self.current_loaded_from_saved = False
+        self.update_current_labels()
+        self.refresh_tree()
+        self.refresh_preview()
+        return True
+
+    def persist_current_timeline_if_named(self):
+        if not self.current_name:
+            return
+        save_named_timeline(self.current_name, self.timeline, self.timeline_meta)
+
+    def recalculate_timeline_for_runtime(self):
+        events = self.copy_events(self.timeline)
+        if not events:
+            return events
+
+        seen_negative_group = {}
+        i = 0
+        offset = 0.0
+        while i < len(events):
+            ev = events[i]
+            group_name = str(ev.get("buff_group", "")).strip()
+            is_negative_group = group_name.startswith("-")
+            if not is_negative_group:
+                events[i]["at"] = round(events[i]["at"] + offset, 4)
+                i += 1
+                continue
+
+            if group_name in seen_negative_group:
+                raise ValueError("負群 {} 必須成段，不可分散".format(group_name))
+            seen_negative_group[group_name] = True
+
+            start = i
+            end = i
+            while end < len(events):
+                g = str(events[end].get("buff_group", "")).strip()
+                if g != group_name:
+                    break
+                end += 1
+
+            segment = events[start:end]
+            base_at = min(item["at"] for item in segment)
+            for row in segment:
+                row["at"] = round(max(0.0, row["at"] - base_at), 4)
+
+            duration = max(row["at"] for row in segment) if segment else 0.0
+            offset = round(offset + duration, 4)
+            i = end
+
+        return events
+
     def update_error_text(self, widget, message):
         widget.config(state="normal")
         widget.delete("1.0", tk.END)
@@ -405,6 +509,7 @@ class App:
         self.root = root
         self.root.title("鍵盤錄製 / Timeline 分析 / 傳送")
         self.timeline = []
+        self.timeline_meta = self.new_meta()
         self.current_name = ""
         self.current_loaded_from_saved = False
         self.connected = False
@@ -560,6 +665,7 @@ class App:
                 width = 100
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
+        self.tree.tag_configure("copied_group", background="#fff4b3")
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start, add="+")
         self.tree.bind("<ButtonRelease-1>", self.on_tree_drag_end, add="+")
@@ -691,17 +797,19 @@ class App:
         for i, ev in enumerate(self.timeline):
             key = (ev["type"], ev["button"], ev["at"])
             grp = event_to_group.get(key, "")
+            buff_group = str(ev.get("buff_group", "")).strip()
+            tags = ("copied_group",) if buff_group.startswith("-") else ()
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
                 ev["button"],
                 ev["at"],
                 ev["at_jitter"],
-                ev.get("buff_group", ""),
+                buff_group,
                 ev.get("buff_cycle_sec", 0.0),
                 ev.get("buff_jitter_sec", 0.0),
                 grp
-            ))
+            ), tags=tags)
 
     def refresh_saved_list(self):
         names = list_saved_timeline_names()
@@ -767,6 +875,7 @@ class App:
         recording = True
         recording_start = time.time()
         self.timeline = []
+        self.timeline_meta = self.new_meta()
         self.current_loaded_from_saved = False
         self.set_frontend_error("")
         self.set_status("錄製中...")
@@ -795,10 +904,14 @@ class App:
     def analyze(self):
         global events, recording_start
         if not events:
-            messagebox.showwarning("提醒", "目前沒有錄到資料")
+            if self.restore_original_timeline():
+                self.set_status("已還原原始 Timeline（重新分析）")
+                return
+            messagebox.showwarning("提醒", "目前沒有錄到資料，也沒有可還原的原始 Timeline")
             return
 
         self.timeline = build_timeline(events, recording_start)
+        self.timeline_meta = self.new_meta()
         self.mark_timeline_dirty()
 
         if not self.current_name:
@@ -827,7 +940,16 @@ class App:
             if not yes:
                 return
 
-        save_named_timeline(name, self.timeline)
+        try:
+            self.push_history("before_save")
+            self.timeline_meta["original_events"] = self.copy_events(self.timeline)
+            recalculated = self.recalculate_timeline_for_runtime()
+        except Exception as e:
+            messagebox.showerror("保存失敗", str(e))
+            return
+
+        self.timeline = recalculated
+        save_named_timeline(name, self.timeline, self.timeline_meta)
         self.current_name = name
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = name
@@ -835,8 +957,7 @@ class App:
 
         self.refresh_saved_list()
         self.select_saved_name(name)
-        self.update_current_labels()
-        self.refresh_preview()
+        self.mark_timeline_dirty()
         self.set_status("已保存 Timeline：{}".format(name))
 
     def select_saved_name(self, name):
@@ -860,6 +981,7 @@ class App:
             return
 
         self.timeline = [self.normalize_event_schema(ev) for ev in data.get("events", [])]
+        self.timeline_meta = self.normalize_meta(data.get("_meta", {}))
         self.current_name = data.get("name", name)
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = self.current_name
@@ -892,6 +1014,7 @@ class App:
         if self.current_name == name:
             self.current_name = ""
             self.current_loaded_from_saved = False
+            self.timeline_meta = self.new_meta()
 
         if self.config.get("last_selected_name") == name:
             self.config["last_selected_name"] = ""
@@ -1004,7 +1127,7 @@ class App:
         save_config(self.config)
         self.update_current_labels()
 
-        prepared_events, resolve_note = self.prepare_events_for_send()
+        prepared_events, resolve_note = self.prepare_events_for_send(action_reason="before_send")
         if prepared_events is None:
             return
 
@@ -1048,7 +1171,7 @@ class App:
         save_config(self.config)
         self.update_current_labels()
 
-        prepared_events, resolve_note = self.prepare_events_for_send()
+        prepared_events, resolve_note = self.prepare_events_for_send(action_reason="before_send_loop")
         if prepared_events is None:
             return
 
@@ -1081,7 +1204,20 @@ class App:
             self.set_frontend_error(str(e))
             messagebox.showerror("重複傳送失敗", str(e))
 
-    def prepare_events_for_send(self):
+    def prepare_events_for_send(self, action_reason="before_send"):
+        try:
+            self.push_history(action_reason)
+            self.timeline_meta["original_events"] = self.copy_events(self.timeline)
+            self.timeline = self.recalculate_timeline_for_runtime()
+            self.current_loaded_from_saved = False
+            self.update_current_labels()
+            self.refresh_tree()
+            self.refresh_preview()
+            self.persist_current_timeline_if_named()
+        except Exception as e:
+            messagebox.showerror("時間重算失敗", str(e))
+            return None, ""
+
         events = [self.normalize_event_schema(ev) for ev in self.timeline]
         group_configs = {}
         for idx, ev in enumerate(events):
