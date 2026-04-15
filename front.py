@@ -1578,24 +1578,7 @@ class App:
         self.tree.selection_set(str(idx))
 
     def _apply_tree_field_value(self, idx, field, raw_value):
-        if field in ("at", "at_jitter", "buff_cycle_sec", "buff_jitter_sec"):
-            value = float(raw_value)
-            if field == "at":
-                value = max(0.0, value)
-                self.timeline[idx][field] = round(value, 2)
-            else:
-                value = abs(value)
-                self.timeline[idx][field] = round(value, 4)
-            return
-
-        value = raw_value.strip().lower()
-        if field == "type" and value not in ("press", "release"):
-            raise ValueError("type 只能是 press / release")
-        if field == "button" and not value:
-            raise ValueError("button 不可空白")
-        if field == "buff_group":
-            value = raw_value.strip()
-        self.timeline[idx][field] = value
+        self._apply_tree_field_value_to_event(self.timeline[idx], field, raw_value)
         if field == "buff_group":
             self._sync_replicated_row(self.timeline[idx])
 
@@ -1638,12 +1621,10 @@ class App:
             start_idx = selected[0]
 
         fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
-        expected_header = [col.lower() for col in self.tree_columns]
         parsed_rows = []
         for line in lines:
             values = [v.strip() for v in line.split("\t")]
-            lowered = [v.lower() for v in values]
-            if lowered == expected_header:
+            if values and [v.lower() for v in values] == [f.lower() for f in fields]:
                 continue
             parsed_rows.append(values)
 
@@ -1651,32 +1632,53 @@ class App:
             messagebox.showwarning("提醒", "剪貼簿只有標題列，沒有可貼上的資料")
             return "break"
 
-        changed_indexes = []
-
         try:
-            for offset, values in enumerate(parsed_rows):
-                row_idx = start_idx + offset
-                if row_idx >= len(self.timeline):
-                    break
-
-                if not values:
-                    continue
-
-                # 支援兩種貼上格式：
-                # 1) 7 欄: type~buff_jitter_sec
-                # 2) 9 欄: idx + type~buff_jitter_sec + group（忽略 idx/group）
-                if len(values) >= 9:
-                    editable_values = values[1:8]
-                else:
-                    editable_values = values[:7]
-
-                for col_idx, raw_value in enumerate(editable_values[:len(fields)]):
-                    field = fields[col_idx]
-                    self._apply_tree_field_value(row_idx, field, raw_value)
-                changed_indexes.append(row_idx)
+            parsed_rows = [self._normalize_paste_row(values) for values in parsed_rows]
         except Exception as e:
             messagebox.showerror("貼上失敗", str(e))
             return "break"
+
+        if len(parsed_rows) >= 2 and len(selected) == 1:
+            anchor = selected[0]
+            ask = messagebox.askyesnocancel(
+                "貼上位置",
+                "你選了第 {} 列。\n要貼在：\n"
+                "Yes：第 {}~{} 列之間（插入在上方）\n"
+                "No：第 {}~{} 列之間（插入在下方）\n"
+                "Cancel：取消貼上".format(
+                    anchor + 1,
+                    max(1, anchor),
+                    anchor + 1,
+                    anchor + 1,
+                    anchor + 2
+                )
+            )
+            if ask is None:
+                self.set_status("已取消貼上")
+                return "break"
+
+            insert_at = anchor if ask else anchor + 1
+            new_indexes = []
+            for offset, row_values in enumerate(parsed_rows):
+                ev = self._build_timeline_event_from_values(row_values)
+                idx = insert_at + offset
+                self.timeline.insert(idx, ev)
+                new_indexes.append(idx)
+
+            self.mark_timeline_dirty()
+            self.tree.selection_set([str(i) for i in new_indexes])
+            self.set_status("已插入貼上 {} 列（從第 {} 列開始）".format(len(new_indexes), insert_at + 1))
+            return "break"
+
+        changed_indexes = []
+        for offset, row_values in enumerate(parsed_rows):
+            row_idx = start_idx + offset
+            if row_idx >= len(self.timeline):
+                break
+            for col_idx, raw_value in enumerate(row_values):
+                field = fields[col_idx]
+                self._apply_tree_field_value(row_idx, field, raw_value)
+            changed_indexes.append(row_idx)
 
         if not changed_indexes:
             messagebox.showwarning("提醒", "貼上範圍超出目前列數，未更新任何資料")
@@ -1686,6 +1688,51 @@ class App:
         self.tree.selection_set([str(i) for i in changed_indexes])
         self.set_status("已貼上 {} 列（從第 {} 列開始）".format(len(changed_indexes), changed_indexes[0] + 1))
         return "break"
+
+    def _normalize_paste_row(self, values):
+        if not values:
+            raise ValueError("貼上資料有空白列")
+        if len(values) < 7:
+            raise ValueError("每列至少需要 7 欄（type 到 buff_jitter_sec）")
+        normalized = values[:7]
+        for i in range(7):
+            normalized[i] = normalized[i].strip()
+        return normalized
+
+    def _build_timeline_event_from_values(self, values):
+        event = {
+            "type": "press",
+            "button": "",
+            "at": 0.0,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0
+        }
+        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        for i, field in enumerate(fields):
+            self._apply_tree_field_value_to_event(event, field, values[i])
+        return self._sync_replicated_row(event)
+
+    def _apply_tree_field_value_to_event(self, event, field, raw_value):
+        if field in ("at", "at_jitter", "buff_cycle_sec", "buff_jitter_sec"):
+            value = float(raw_value)
+            if field == "at":
+                value = max(0.0, value)
+                event[field] = round(value, 2)
+            else:
+                value = abs(value)
+                event[field] = round(value, 4)
+            return
+
+        value = raw_value.strip().lower()
+        if field == "type" and value not in ("press", "release"):
+            raise ValueError("type 只能是 press / release")
+        if field == "button" and not value:
+            raise ValueError("button 不可空白")
+        if field == "buff_group":
+            value = raw_value.strip()
+        event[field] = value
 
     def move_selected_up(self):
         selected = sorted(self.get_selected_indexes())
