@@ -1,0 +1,204 @@
+{
+  "name": "超費版本測試",
+  "saved_at": "2026-04-15 05:02:16",
+  "events": [
+    {
+      "type": "press",
+      "button": "x",
+      "at": 1.0856,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 2.311,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 1.4985,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 2.6979,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "d",
+      "at": 3.2236,
+      "at_jitter": 0.0,
+      "buff_group": "1",
+      "buff_cycle_sec": 120.0,
+      "buff_jitter_sec": 15.0
+    },
+    {
+      "type": "release",
+      "button": "d",
+      "at": 3.6358,
+      "at_jitter": 0.0,
+      "buff_group": "1",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "left",
+      "at": 4.4977,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "left",
+      "at": 5.3127,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "g",
+      "at": 6.4745,
+      "at_jitter": 0.0,
+      "buff_group": "2",
+      "buff_cycle_sec": 50.0,
+      "buff_jitter_sec": 15.0
+    },
+    {
+      "type": "release",
+      "button": "g",
+      "at": 6.7737,
+      "at_jitter": 0.0,
+      "buff_group": "2",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "right",
+      "at": 7.9377,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "right",
+      "at": 8.1977,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "f",
+      "at": 8.3988,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "f",
+      "at": 8.987,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "right",
+      "at": 12.2856,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "right",
+      "at": 12.7884,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 16.6735,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 17.088,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 17.237,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 17.7119,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 18.0245,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 18.4369,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0
+    }
+  ]
+}
