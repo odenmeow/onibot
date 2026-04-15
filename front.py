@@ -58,6 +58,7 @@ def load_config():
             "last_selected_name": "",
             "ui_layout": {
                 "paned_sash_x": None,
+                "window_size": None,
                 "tree_column_widths": {}
             }
         }
@@ -77,6 +78,7 @@ def load_config():
             "ui_layout": {
                 "paned_sash_x": ui_layout.get("paned_sash_x"),
                 "paned_ratio": ui_layout.get("paned_ratio"),
+                "window_size": ui_layout.get("window_size"),
                 "tree_column_widths": tree_column_widths
             }
         }
@@ -86,6 +88,7 @@ def load_config():
             "last_selected_name": "",
             "ui_layout": {
                 "paned_sash_x": None,
+                "window_size": None,
                 "tree_column_widths": {}
             }
         }
@@ -568,6 +571,17 @@ class App:
         if not isinstance(ui_layout, dict):
             return
 
+        window_size = ui_layout.get("window_size")
+        if (
+            isinstance(window_size, (list, tuple))
+            and len(window_size) == 2
+            and all(isinstance(v, (int, float)) for v in window_size)
+        ):
+            width = max(900, int(window_size[0]))
+            height = max(620, int(window_size[1]))
+            self.root.geometry(f"{width}x{height}")
+            self.root.update_idletasks()
+
         widths = ui_layout.get("tree_column_widths", {})
         if isinstance(widths, dict):
             for col in self.tree_columns:
@@ -609,6 +623,7 @@ class App:
                 pass
 
         self.config["ui_layout"] = {
+            "window_size": [self.root.winfo_width(), self.root.winfo_height()],
             "paned_sash_x": int(sash_x),
             "tree_column_widths": column_widths
         }
