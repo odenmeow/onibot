@@ -420,8 +420,11 @@ class App:
             is_negative_group = group_name.startswith("-")
             if not is_negative_group:
                 original_at = original_at_list[i]
-                follow_gap_sec = compute_follow_gap_sec(original_at)
-                shifted_at = max(0.0, cursor_at + follow_gap_sec)
+                if not processed_original_at:
+                    shifted_at = max(0.0, original_at)
+                else:
+                    follow_gap_sec = compute_follow_gap_sec(original_at)
+                    shifted_at = max(0.0, cursor_at + follow_gap_sec)
                 events[i]["at"] = round(shifted_at, 2)
                 cursor_at = shifted_at
                 processed_original_at.append(original_at)
@@ -449,7 +452,7 @@ class App:
                 relative_rows.append((row, relative_at))
 
             if start == 0:
-                anchor = 0.0
+                anchor = max(0.0, base_at)
             else:
                 anchor = cursor_at + anchor_gap_sec
 
@@ -753,24 +756,26 @@ class App:
         error_frame.grid_rowconfigure(1, weight=1)
         self.clear_errors()
 
-        jitter_frame = tk.LabelFrame(right_panel, text="jitter 設定")
+        jitter_frame = tk.LabelFrame(right_panel, text="timeline 設定")
         jitter_frame.pack(fill="x", pady=(0, 8))
 
-        tk.Label(jitter_frame, text="at jitter").grid(row=0, column=0, padx=5, pady=5)
-        self.at_jitter_entry = tk.Entry(jitter_frame, width=10)
-        self.at_jitter_entry.insert(0, "0.00")
-        self.at_jitter_entry.grid(row=0, column=1, padx=5, pady=5)
-
-        tk.Button(jitter_frame, text="套用到選取列", command=self.apply_jitter_to_selected).grid(row=0, column=2, padx=5, pady=5)
-        tk.Button(jitter_frame, text="套用到全部 event", command=self.apply_jitter_to_all).grid(row=0, column=3, padx=5, pady=5)
-        tk.Button(jitter_frame, text="選取列清成 0", command=self.clear_jitter_selected).grid(row=0, column=4, padx=5, pady=5)
+        tk.Label(jitter_frame, text="tip : 多重選取項目後雙擊title可批量設定").grid(
+            row=0, column=0, padx=(8, 5), pady=5, sticky="w"
+        )
         tk.Button(
             jitter_frame,
             text="UI 保存",
             command=self.save_ui_layout,
             bg="#fff4b3",
             activebackground="#ffe08a"
-        ).grid(row=0, column=5, padx=(5, 8), pady=5, sticky="e")
+        ).grid(row=0, column=1, padx=5, pady=5)
+        tk.Button(jitter_frame, text="計算偏移量", command=self.calculate_offsets_only).grid(
+            row=0, column=2, padx=(5, 8), pady=5
+        )
+        tk.Label(
+            jitter_frame,
+            text="【註: buff_goup 如果設定 -1 可計算偏移量，不同複製按鈕群請用不同負值 】"
+        ).grid(row=1, column=0, columnspan=3, padx=(8, 8), pady=(0, 6), sticky="w")
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -1242,6 +1247,16 @@ class App:
         for idx in selected:
             self.tree.selection_add(str(idx))
         self.set_status("已將選取列 jitter 清為 0")
+
+    def calculate_offsets_only(self):
+        if not self.timeline:
+            messagebox.showwarning("提醒", "目前沒有 timeline 資料")
+            return
+
+        prepared_events, _ = self.prepare_events_for_send(action_reason="calculate_offset_only")
+        if prepared_events is None:
+            return
+        self.set_status("已計算偏移量並套用到 timeline（共 {} 筆）".format(len(prepared_events)))
 
     def apply_offset_from_selected(self):
         if not self.timeline:
