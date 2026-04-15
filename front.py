@@ -1611,15 +1611,14 @@ class App:
         if not selected:
             return "break"
 
-        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
-        lines = []
+        lines = ["\t".join(self.tree_columns)]
         for idx in selected:
-            row = self.timeline[idx]
-            lines.append("\t".join(str(row.get(field, "")) for field in fields))
+            values = self.tree.item(str(idx), "values")
+            lines.append("\t".join(str(v) for v in values))
 
         self.root.clipboard_clear()
         self.root.clipboard_append("\n".join(lines))
-        self.set_status("已複製 {} 列（可貼到 Excel）".format(len(selected)))
+        self.set_status("已複製 {} 列（含欄位標題，可貼到 Excel）".format(len(selected)))
         return "break"
 
     def on_tree_paste(self, _event=None):
@@ -1639,19 +1638,39 @@ class App:
             start_idx = selected[0]
 
         fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        expected_header = [col.lower() for col in self.tree_columns]
+        parsed_rows = []
+        for line in lines:
+            values = [v.strip() for v in line.split("\t")]
+            lowered = [v.lower() for v in values]
+            if lowered == expected_header:
+                continue
+            parsed_rows.append(values)
+
+        if not parsed_rows:
+            messagebox.showwarning("提醒", "剪貼簿只有標題列，沒有可貼上的資料")
+            return "break"
+
         changed_indexes = []
 
         try:
-            for offset, line in enumerate(lines):
+            for offset, values in enumerate(parsed_rows):
                 row_idx = start_idx + offset
                 if row_idx >= len(self.timeline):
                     break
 
-                values = line.split("\t")
                 if not values:
                     continue
 
-                for col_idx, raw_value in enumerate(values[:len(fields)]):
+                # 支援兩種貼上格式：
+                # 1) 7 欄: type~buff_jitter_sec
+                # 2) 9 欄: idx + type~buff_jitter_sec + group（忽略 idx/group）
+                if len(values) >= 9:
+                    editable_values = values[1:8]
+                else:
+                    editable_values = values[:7]
+
+                for col_idx, raw_value in enumerate(editable_values[:len(fields)]):
                     field = fields[col_idx]
                     self._apply_tree_field_value(row_idx, field, raw_value)
                 changed_indexes.append(row_idx)
