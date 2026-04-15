@@ -453,20 +453,21 @@ class App:
         save_frame = tk.LabelFrame(left_panel, text="儲存 / 載入")
         save_frame.pack(fill="x", pady=5)
 
-        tk.Label(save_frame, text="名稱").grid(row=0, column=0, padx=5, pady=5)
-        self.name_entry = tk.Entry(save_frame, width=25)
-        self.name_entry.grid(row=0, column=1, padx=5, pady=5)
-        save_frame.grid_columnconfigure(1, weight=1)
+        name_row = tk.Frame(save_frame)
+        name_row.pack(fill="x", padx=8, pady=(5, 3))
+        tk.Label(name_row, text="腳本名稱：").pack(side="left")
+        self.name_entry = tk.Entry(name_row, width=25)
+        self.name_entry.pack(side="left", padx=5)
 
         save_btn_row = tk.Frame(save_frame)
-        save_btn_row.grid(row=1, column=1, columnspan=5, sticky="w", padx=5, pady=(0, 5))
+        save_btn_row.pack(fill="x", padx=8, pady=(0, 5))
         tk.Button(save_btn_row, text="保存目前 Timeline", command=self.save_current_timeline).pack(side="left", padx=(0, 5))
         tk.Button(save_btn_row, text="重新整理清單", command=self.refresh_saved_list).pack(side="left", padx=5)
         tk.Button(save_btn_row, text="載入選取項目", command=self.load_selected_timeline).pack(side="left", padx=5)
         tk.Button(save_btn_row, text="刪除選取項目", command=self.delete_selected_timeline).pack(side="left", padx=5)
 
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
-        self.saved_listbox.grid(row=2, column=0, columnspan=6, sticky="we", padx=5, pady=5)
+        self.saved_listbox.pack(fill="x", padx=5, pady=5)
 
         error_frame = tk.LabelFrame(left_panel, text="錯誤訊息（前端 / 後端）")
         error_frame.pack(fill="both", expand=True, pady=(5, 0))
