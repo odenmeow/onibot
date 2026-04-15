@@ -80,122 +80,152 @@ class RecalculateRuntimeTimelineTests(unittest.TestCase):
         self.assertEqual(recalculated[14]["at"], round(recalculated[13]["at"] + 1.5, 2))
 
 
-class _FakeLabel:
-    def __init__(self):
-        self.text = ""
-        self.background = ""
-        self.visible = False
-        self.place_calls = []
-
-    def configure(self, **kwargs):
-        self.text = kwargs.get("text", self.text)
-        self.background = kwargs.get("background", self.background)
-
-    def place(self, **kwargs):
-        self.visible = True
-        self.place_calls.append(kwargs)
-
-    def place_forget(self):
-        self.visible = False
-
-    def destroy(self):
-        self.visible = False
-
-
 class _FakeTree:
-    def __init__(self, children, bbox_by_iid):
-        self._children = [str(v) for v in children]
-        self._bbox_by_iid = bbox_by_iid
+    def __init__(self):
+        self._children = []
         self.deleted = []
+        self.rows = {}
+        self.seen = None
 
     def get_children(self):
         return tuple(self._children)
 
-    def bbox(self, iid, column=None):
-        return self._bbox_by_iid.get(str(iid))
-
     def delete(self, item):
         self.deleted.append(str(item))
         self._children = [iid for iid in self._children if iid != str(item)]
+        self.rows.pop(str(item), None)
+
+    def insert(self, _parent, _where, iid, values, tags=()):
+        row_id = str(iid)
+        if row_id not in self._children:
+            self._children.append(row_id)
+        self.rows[row_id] = {"values": values, "tags": tuple(tags)}
+
+    def item(self, iid, option=None):
+        row = self.rows[str(iid)]
+        if option is None:
+            return row
+        return row[option]
+
+    def exists(self, iid):
+        return str(iid) in self.rows
+
+    def see(self, iid):
+        self.seen = str(iid)
 
 
-class OverlayStabilityTests(unittest.TestCase):
+class _FakeRoot:
+    def after(self, _delay, _callback):
+        return "after-id"
+
+
+class RuntimeDisplayTests(unittest.TestCase):
     def setUp(self):
-        self._orig_label = sys.modules["front"].tk.Label
-        sys.modules["front"].tk.Label = lambda *args, **kwargs: _FakeLabel()
+        self._orig_showwarning = sys.modules["front"].messagebox.showwarning
+        self.warning_calls = []
+        sys.modules["front"].messagebox.showwarning = (
+            lambda title, msg: self.warning_calls.append((title, msg))
+        )
 
     def tearDown(self):
-        sys.modules["front"].tk.Label = self._orig_label
+        sys.modules["front"].messagebox.showwarning = self._orig_showwarning
 
     def _new_app(self):
         app = App.__new__(App)
-        app._tree_font = "TkDefaultFont"
-        app.tree_overlay_labels = {}
+        app.tree = _FakeTree()
+        app.root = _FakeRoot()
+        app.timeline = []
         app.runtime_recent_ok_indices = []
         app.runtime_recent_skipped_indices = []
         app.timeline_runtime_by_index = {}
+        app.timeline_runtime_info = {"events": []}
+        app.runtime_latest_index = None
+        app.last_runtime_signature = ""
+        app.runtime_display_frozen = False
+        app.runtime_manual_restore_active = False
+        app.pre_run_timeline_snapshot = []
+        app.has_pre_run_snapshot = False
+        app.copy_events = App.copy_events.__get__(app, App)
+        app._normalize_replicated_row_flag = App._normalize_replicated_row_flag.__get__(app, App)
+        app._sync_replicated_row = App._sync_replicated_row.__get__(app, App)
+        app.update_runtime_from_status = App.update_runtime_from_status.__get__(app, App)
+        app.refresh_tree = App.refresh_tree.__get__(app, App)
+        app.poll_runtime_status = App.poll_runtime_status.__get__(app, App)
+        app.restore_pre_run_state = App.restore_pre_run_state.__get__(app, App)
+        app._is_runtime_readonly = App._is_runtime_readonly.__get__(app, App)
+        app.clear_runtime_highlight = App.clear_runtime_highlight.__get__(app, App)
+        app.refresh_preview = lambda: None
+        app.focus_latest_runtime_row = lambda: None
+        app.offline_mode = False
+        app.conn = object()
+        app.connected = True
         return app
 
-    def test_overlay_keeps_previous_visible_state_when_bbox_temporarily_missing(self):
+    def test_running_shows_cooldown_text_in_buff_group_column(self):
         app = self._new_app()
-        app.timeline = [{"buff_group": "", "replicatedRow": 0} for _ in range(11)]
-        app.timeline[9]["replicatedRow"] = 1
-        app.timeline[10]["replicatedRow"] = 1
-        app.tree = _FakeTree(
-            children=[9, 10],
-            bbox_by_iid={
-                "9": (0, 90, 120, 20),
-                "10": (0, 110, 120, 20),
-            },
-        )
+        app.timeline = [
+            {"type": "press", "button": "a", "at": 0.0, "at_jitter": 0.0, "buff_group": "A", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.timeline_runtime_by_index = {0: {"status": "skipped_by_cooldown"}}
+        app.refresh_tree()
 
-        app._refresh_tree_buff_group_overlays()
-        self.assertTrue(app.tree_overlay_labels["9"].visible)
-        self.assertTrue(app.tree_overlay_labels["10"].visible)
-        self.assertEqual(app.tree_overlay_labels["9"].background, "#fff4b3")
-        self.assertEqual(app.tree_overlay_labels["10"].background, "#fff4b3")
+        values = app.tree.item("0", "values")
+        self.assertEqual(values[5], "A（冷卻中）")
 
-        app.tree._bbox_by_iid = {}
-        app._refresh_tree_buff_group_overlays()
-
-        self.assertTrue(app.tree_overlay_labels["9"].visible)
-        self.assertTrue(app.tree_overlay_labels["10"].visible)
-        self.assertEqual(app.tree_overlay_labels["9"].place_calls[-1]["y"], 90)
-        self.assertEqual(app.tree_overlay_labels["10"].place_calls[-1]["y"], 110)
-
-    def test_overlay_state_is_stable_and_deterministic_across_repeated_refresh(self):
+    def test_poll_stopped_freezes_and_repeated_poll_does_not_refresh_table(self):
         app = self._new_app()
-        app.timeline = [{"buff_group": "", "replicatedRow": 0} for _ in range(11)]
-        app.timeline[9]["replicatedRow"] = 1
-        app.timeline[10]["replicatedRow"] = 1
-        app.tree = _FakeTree(
-            children=[9, 10],
-            bbox_by_iid={
-                "9": (0, 90, 120, 20),
-                "10": (0, 110, 120, 20),
-            },
-        )
+        app.timeline = [
+            {"type": "press", "button": "a", "at": 0.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.has_pre_run_snapshot = True
+        refresh_count = {"count": 0}
 
-        snapshots = []
-        for _ in range(5):
-            app._refresh_tree_buff_group_overlays()
-            snapshots.append(
-                (
-                    app.tree_overlay_labels["9"].visible,
-                    app.tree_overlay_labels["9"].background,
-                    app.tree_overlay_labels["9"].place_calls[-1]["y"],
-                    app.tree_overlay_labels["10"].visible,
-                    app.tree_overlay_labels["10"].background,
-                    app.tree_overlay_labels["10"].place_calls[-1]["y"],
-                )
-            )
+        def _count_refresh():
+            refresh_count["count"] += 1
+        app.refresh_tree = _count_refresh
 
-        self.assertEqual(len(set(snapshots)), 1)
+        stopped_payload = {"timeline_runtime": {"state": "stopped", "events": []}}
+        app.request_pi = lambda *_args, **_kwargs: stopped_payload
 
-        app.timeline[10]["replicatedRow"] = 0
-        app._refresh_tree_buff_group_overlays()
-        self.assertTrue(app.tree_overlay_labels["9"].visible)
-        self.assertFalse(app.tree_overlay_labels["10"].visible)
+        app.poll_runtime_status()
+        app.poll_runtime_status()
+
+        self.assertTrue(app.runtime_display_frozen)
+        self.assertEqual(refresh_count["count"], 0)
+
+    def test_poll_stopped_after_manual_restore_does_not_refreeze(self):
+        app = self._new_app()
+        app.has_pre_run_snapshot = True
+        app.runtime_manual_restore_active = True
+        app.runtime_display_frozen = False
+        app.request_pi = lambda *_args, **_kwargs: {"timeline_runtime": {"state": "stopped", "events": []}}
+
+        app.poll_runtime_status()
+
+        self.assertFalse(app.runtime_display_frozen)
+
+    def test_restore_pre_run_state_restores_snapshot(self):
+        app = self._new_app()
+        app.timeline = [{"type": "press", "button": "z", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
+        app.pre_run_timeline_snapshot = [{"type": "press", "button": "a", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
+        app.has_pre_run_snapshot = True
+        app.runtime_display_frozen = True
+
+        app.restore_pre_run_state()
+
+        self.assertEqual(app.timeline[0]["button"], "a")
+        self.assertFalse(app.runtime_display_frozen)
+
+    def test_restore_without_snapshot_does_not_change_data(self):
+        app = self._new_app()
+        app.timeline = [{"type": "press", "button": "z", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
+        app.pre_run_timeline_snapshot = []
+        app.has_pre_run_snapshot = False
+
+        app.restore_pre_run_state()
+
+        self.assertEqual(app.timeline[0]["button"], "z")
+        self.assertTrue(any("沒有可恢復內容" in msg for _, msg in self.warning_calls))
 
 
 if __name__ == "__main__":
