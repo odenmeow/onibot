@@ -530,7 +530,7 @@ class App:
             width = 92
             if col in ("buff_group", "buff_cycle_sec", "buff_jitter_sec"):
                 width = 100
-            self.tree.column(col, width=width)
+            self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start, add="+")
@@ -573,7 +573,7 @@ class App:
             for col in self.tree_columns:
                 width = widths.get(col)
                 if isinstance(width, (int, float)) and width >= 40:
-                    self.tree.column(col, width=int(width))
+                    self.tree.column(col, width=int(width), minwidth=40, stretch=False)
 
         self.root.update_idletasks()
         total_width = self.body.winfo_width()
