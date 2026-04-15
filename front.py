@@ -55,20 +55,38 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         return {
             "pi_host": DEFAULT_PI_HOST,
-            "last_selected_name": ""
+            "last_selected_name": "",
+            "ui_layout": {
+                "paned_ratio": None,
+                "tree_column_widths": {}
+            }
         }
 
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
+        ui_layout = data.get("ui_layout", {})
+        if not isinstance(ui_layout, dict):
+            ui_layout = {}
+        tree_column_widths = ui_layout.get("tree_column_widths", {})
+        if not isinstance(tree_column_widths, dict):
+            tree_column_widths = {}
         return {
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
-            "last_selected_name": data.get("last_selected_name", "")
+            "last_selected_name": data.get("last_selected_name", ""),
+            "ui_layout": {
+                "paned_ratio": ui_layout.get("paned_ratio"),
+                "tree_column_widths": tree_column_widths
+            }
         }
     except Exception:
         return {
             "pi_host": DEFAULT_PI_HOST,
-            "last_selected_name": ""
+            "last_selected_name": "",
+            "ui_layout": {
+                "paned_ratio": None,
+                "tree_column_widths": {}
+            }
         }
 
 
@@ -392,19 +410,15 @@ class App:
 
         body = tk.PanedWindow(container, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         body.pack(fill="both", expand=True)
+        self.body = body
 
         left_panel = tk.Frame(body)
         right_panel = tk.Frame(body)
-        body.add(left_panel, minsize=560)
-        body.add(right_panel, minsize=420)
+        body.add(left_panel, minsize=440)
+        body.add(right_panel, minsize=320)
 
         top = tk.LabelFrame(left_panel, text="操作區")
         top.pack(fill="x", pady=(0, 6))
-
-        self.status_var = tk.StringVar(value="尚未錄製")
-        tk.Label(top, textvariable=self.status_var, anchor="w").grid(
-            row=0, column=0, columnspan=5, sticky="we", padx=8, pady=(6, 2)
-        )
 
         btn_specs = [
             ("重新分析", self.analyze, "#fff4b3"),
@@ -413,6 +427,12 @@ class App:
             ("重複執行", self.send_timeline_loop, "#b7f0ad"),
             ("停止", self.stop_pi, "#ff8c69"),
         ]
+        btn_count = len(btn_specs)
+
+        self.status_var = tk.StringVar(value="尚未錄製")
+        tk.Label(top, textvariable=self.status_var, anchor="w").grid(
+            row=0, column=0, columnspan=btn_count, sticky="we", padx=8, pady=(6, 2)
+        )
         self.record_button = None
         for idx, (txt, cmd, color) in enumerate(btn_specs):
             kwargs = {"text": txt, "command": cmd, "width": 10}
@@ -429,7 +449,7 @@ class App:
             textvariable=self.current_script_var,
             anchor="w",
             fg="#1a4fb8"
-        ).grid(row=2, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 8))
+        ).grid(row=2, column=0, columnspan=btn_count, sticky="w", padx=8, pady=(0, 8))
 
         info = tk.LabelFrame(left_panel, text="目前套用資訊")
         row = tk.Frame(info)
@@ -493,8 +513,10 @@ class App:
         tk.Button(jitter_frame, text="套用到選取列", command=self.apply_jitter_to_selected).grid(row=0, column=2, padx=5, pady=5)
         tk.Button(jitter_frame, text="套用到全部 event", command=self.apply_jitter_to_all).grid(row=0, column=3, padx=5, pady=5)
         tk.Button(jitter_frame, text="選取列清成 0", command=self.clear_jitter_selected).grid(row=0, column=4, padx=5, pady=5)
+        tk.Button(jitter_frame, text="UI 保存", command=self.save_ui_layout).grid(row=0, column=5, padx=(5, 8), pady=5)
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
+        self.tree_columns = columns
         self.tree = ttk.Treeview(right_panel, columns=columns, show="headings", height=8, selectmode="extended")
         for col in columns:
             self.tree.heading(col, text=col)
@@ -523,7 +545,57 @@ class App:
 
         self.refresh_saved_list()
         self.restore_last_selected()
+        self.root.after(50, self.apply_saved_ui_layout)
         self.root.after(150, self.auto_connect)
+
+    def get_current_paned_ratio(self):
+        self.root.update_idletasks()
+        total_width = self.body.winfo_width()
+        if total_width <= 0:
+            return None
+        sash_x, _ = self.body.sash_coord(0)
+        ratio = sash_x / float(total_width)
+        return max(0.05, min(0.95, ratio))
+
+    def apply_saved_ui_layout(self):
+        ui_layout = self.config.get("ui_layout", {})
+        if not isinstance(ui_layout, dict):
+            return
+
+        widths = ui_layout.get("tree_column_widths", {})
+        if isinstance(widths, dict):
+            for col in self.tree_columns:
+                width = widths.get(col)
+                if isinstance(width, (int, float)) and width >= 40:
+                    self.tree.column(col, width=int(width))
+
+        ratio = ui_layout.get("paned_ratio")
+        if isinstance(ratio, (int, float)):
+            self.root.update_idletasks()
+            total_width = self.body.winfo_width()
+            if total_width > 0:
+                self.body.sash_place(0, int(total_width * ratio), 0)
+
+    def save_ui_layout(self):
+        ratio = self.get_current_paned_ratio()
+        if ratio is None:
+            messagebox.showwarning("提醒", "目前無法取得 UI 版面資訊，請稍後再試")
+            return
+
+        column_widths = {}
+        for col in self.tree_columns:
+            width = self.tree.column(col, option="width")
+            try:
+                column_widths[col] = int(width)
+            except Exception:
+                pass
+
+        self.config["ui_layout"] = {
+            "paned_ratio": round(float(ratio), 4),
+            "tree_column_widths": column_widths
+        }
+        save_config(self.config)
+        self.set_status("已保存 UI 版面（PanedWindow 比例 + 欄寬）")
 
     def update_current_labels(self):
         if self.current_name:
