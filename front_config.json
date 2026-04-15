@@ -1,23 +1,25 @@
 {
   "pi_host": "192.168.100.140",
-  "last_selected_name": "超費版本測試",
+  "send_delay_sec": 1.0,
+  "last_selected_name": "影子跳舞3人少",
+  "buff_skip_mode": "compress",
+  "manual_offset_sec": 0.2,
   "ui_layout": {
-    "paned_sash_x": 462,
-    "paned_ratio": null,
     "window_size": [
-      1020,
-      560
+      1061,
+      620
     ],
+    "paned_sash_x": 462,
     "tree_column_widths": {
       "idx": 40,
-      "type": 43,
+      "type": 56,
       "button": 51,
       "at": 42,
-      "at_jitter": 55,
-      "buff_group": 73,
-      "buff_cycle_sec": 88,
-      "buff_jitter_sec": 86,
-      "group": 54
+      "at_jitter": 54,
+      "buff_group": 81,
+      "buff_cycle_sec": 107,
+      "buff_jitter_sec": 84,
+      "group": 57
     }
   }
 }

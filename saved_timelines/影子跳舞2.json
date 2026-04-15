@@ -1,0 +1,1038 @@
+{
+  "name": "影子跳舞2",
+  "saved_at": "2026-04-15 20:37:03",
+  "events": [
+    {
+      "type": "press",
+      "button": "right",
+      "at": 1.81,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 1.96,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "right",
+      "at": 2.14,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 2.15,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 3.01,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 3.2,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 4.35,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 4.61,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "c",
+      "at": 6.15,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "c",
+      "at": 6.31,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "left",
+      "at": 8.14,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 8.19,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "left",
+      "at": 8.36,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 8.38,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 9.36,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 9.61,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "d",
+      "at": 11.94,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "d",
+      "at": 12.1,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "right",
+      "at": 13.06,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 13.13,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 13.33,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "right",
+      "at": 13.35,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 13.98,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 14.2,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "left",
+      "at": 15.43,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 15.51,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "left",
+      "at": 15.7,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 15.73,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 16.33,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 16.54,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "f",
+      "at": 18.15,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "f",
+      "at": 18.45,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 20.93,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 21.2,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0
+    }
+  ],
+  "_meta": {
+    "original_events": [
+      {
+        "type": "press",
+        "button": "right",
+        "at": 1.81,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 1.96,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "right",
+        "at": 2.14,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 2.15,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 3.01,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 3.2,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 4.35,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 4.61,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "c",
+        "at": 6.15,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "c",
+        "at": 6.31,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "left",
+        "at": 8.14,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 8.19,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "left",
+        "at": 8.36,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 8.38,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 9.36,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 9.61,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "d",
+        "at": 11.94,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "d",
+        "at": 12.1,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "right",
+        "at": 13.06,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 13.13,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 13.33,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "right",
+        "at": 13.35,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 13.98,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 14.2,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "left",
+        "at": 15.43,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 15.51,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "left",
+        "at": 15.7,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 15.73,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 16.33,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 16.54,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "f",
+        "at": 18.15,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "f",
+        "at": 18.45,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 20.93,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 21.2,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0
+      }
+    ],
+    "history": [
+      {
+        "ts": "2026-04-15 20:37:03",
+        "reason": "before_send_loop",
+        "events": [
+          {
+            "type": "press",
+            "button": "right",
+            "at": 1.81,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "shift",
+            "at": 1.96,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "right",
+            "at": 2.14,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "shift",
+            "at": 2.15,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "x",
+            "at": 3.01,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "x",
+            "at": 3.2,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "x",
+            "at": 4.35,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "x",
+            "at": 4.61,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "c",
+            "at": 6.15,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "c",
+            "at": 6.31,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "left",
+            "at": 8.14,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "shift",
+            "at": 8.19,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "left",
+            "at": 8.36,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "shift",
+            "at": 8.38,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "x",
+            "at": 9.36,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "x",
+            "at": 9.61,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "d",
+            "at": 11.94,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "d",
+            "at": 12.1,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "right",
+            "at": 13.06,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "shift",
+            "at": 13.13,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "shift",
+            "at": 13.33,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "right",
+            "at": 13.35,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "x",
+            "at": 13.98,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "x",
+            "at": 14.2,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "left",
+            "at": 15.43,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "shift",
+            "at": 15.51,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "left",
+            "at": 15.7,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "shift",
+            "at": 15.73,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "x",
+            "at": 16.33,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "x",
+            "at": 16.54,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "f",
+            "at": 18.15,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "f",
+            "at": 18.45,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "press",
+            "button": "x",
+            "at": 20.93,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          },
+          {
+            "type": "release",
+            "button": "x",
+            "at": 21.2,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "replicatedRow": 0
+          }
+        ]
+      }
+    ]
+  }
+}
