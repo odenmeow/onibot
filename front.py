@@ -1482,56 +1482,94 @@ class App:
         save_config(self.config)
 
     def on_tree_double_click(self, event):
-        row_id = self.tree.identify_row(event.y)
+        region = self.tree.identify("region", event.x, event.y)
         col_id = self.tree.identify_column(event.x)
-        if not row_id or not col_id:
+        if not col_id:
+            return
+
+        columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
+        col_index = int(col_id[1:]) - 1
+        field = columns[col_index]
+        editable_fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        if field not in editable_fields:
+            return
+
+        if region == "heading":
+            selected = sorted(self.get_selected_indexes())
+            if not selected:
+                messagebox.showwarning("提醒", "請先選取一列或多列，再雙擊欄位標題")
+                return
+            initial_value = str(self.timeline[selected[0]].get(field, ""))
+            new_value = simpledialog.askstring(
+                "批量修改欄位",
+                "請輸入 {}（將套用到 {} 筆選取列）:".format(field, len(selected)),
+                initialvalue=initial_value
+            )
+            if new_value is None:
+                return
+
+            try:
+                for idx in selected:
+                    self._apply_tree_field_value(idx, field, new_value)
+            except Exception as e:
+                messagebox.showerror("修改失敗", str(e))
+                return
+
+            self.mark_timeline_dirty()
+            self.tree.selection_set([str(idx) for idx in selected])
+            self.set_status("已將 {} 套用到 {} 筆選取列".format(field, len(selected)))
+            return
+
+        if region != "cell":
+            return
+
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
             return
 
         idx = int(row_id)
-        col_index = int(col_id[1:]) - 1
-        columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
-        field = columns[col_index]
-        if field not in ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec"):
-            return
-
         current_value = str(self.timeline[idx].get(field, ""))
         new_value = simpledialog.askstring("修改欄位", "請輸入 {}:".format(field), initialvalue=current_value)
         if new_value is None:
             return
 
         try:
-            if field in ("at", "at_jitter", "buff_cycle_sec", "buff_jitter_sec"):
-                value = float(new_value)
-                if field == "at":
-                    value = max(0.0, value)
-                    self.timeline[idx][field] = round(value, 2)
-                else:
-                    value = abs(value)
-                    self.timeline[idx][field] = round(value, 4)
-            else:
-                value = new_value.strip().lower()
-                if field == "type" and value not in ("press", "release"):
-                    raise ValueError("type 只能是 press / release")
-                if field == "button" and not value:
-                    raise ValueError("button 不可空白")
-                if field == "buff_group":
-                    value = new_value.strip()
-                    is_replicated = self._normalize_replicated_row_flag(
-                        self.timeline[idx].get("replicatedRow", 0)
-                    ) == 1
-                    if is_replicated and value and not value.startswith("-"):
-                        if value.startswith("+"):
-                            value = value[1:].strip()
-                        value = "-{}".format(value)
-                self.timeline[idx][field] = value
-                if field == "buff_group":
-                    self._sync_replicated_row(self.timeline[idx])
+            self._apply_tree_field_value(idx, field, new_value)
         except Exception as e:
             messagebox.showerror("修改失敗", str(e))
             return
 
         self.mark_timeline_dirty()
         self.tree.selection_set(str(idx))
+
+    def _apply_tree_field_value(self, idx, field, raw_value):
+        if field in ("at", "at_jitter", "buff_cycle_sec", "buff_jitter_sec"):
+            value = float(raw_value)
+            if field == "at":
+                value = max(0.0, value)
+                self.timeline[idx][field] = round(value, 2)
+            else:
+                value = abs(value)
+                self.timeline[idx][field] = round(value, 4)
+            return
+
+        value = raw_value.strip().lower()
+        if field == "type" and value not in ("press", "release"):
+            raise ValueError("type 只能是 press / release")
+        if field == "button" and not value:
+            raise ValueError("button 不可空白")
+        if field == "buff_group":
+            value = raw_value.strip()
+            is_replicated = self._normalize_replicated_row_flag(
+                self.timeline[idx].get("replicatedRow", 0)
+            ) == 1
+            if is_replicated and value and not value.startswith("-"):
+                if value.startswith("+"):
+                    value = value[1:].strip()
+                value = "-{}".format(value)
+        self.timeline[idx][field] = value
+        if field == "buff_group":
+            self._sync_replicated_row(self.timeline[idx])
 
     def on_tree_drag_start(self, event):
         self.drag_iid = self.tree.identify_row(event.y)
