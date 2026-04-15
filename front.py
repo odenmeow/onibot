@@ -631,7 +631,6 @@ class App:
         self.connected = False
         self.offline_mode = False
         self.request_lock = threading.Lock()
-        self.drag_iid = None
         self.conn = None
         self.conn_file = None
 
@@ -789,8 +788,12 @@ class App:
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.tag_configure("copied_group", background="#fff4b3")
         self.tree.bind("<Double-1>", self.on_tree_double_click)
-        self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start, add="+")
-        self.tree.bind("<ButtonRelease-1>", self.on_tree_drag_end, add="+")
+        self.tree.bind("<Control-a>", self.on_tree_select_all, add="+")
+        self.tree.bind("<Control-A>", self.on_tree_select_all, add="+")
+        self.tree.bind("<Control-c>", self.on_tree_copy, add="+")
+        self.tree.bind("<Control-C>", self.on_tree_copy, add="+")
+        self.tree.bind("<Control-v>", self.on_tree_paste, add="+")
+        self.tree.bind("<Control-V>", self.on_tree_paste, add="+")
 
         edit_row = tk.Frame(right_panel)
         edit_row.pack(fill="x", pady=(0, 8))
@@ -1596,24 +1599,74 @@ class App:
         if field == "buff_group":
             self._sync_replicated_row(self.timeline[idx])
 
-    def on_tree_drag_start(self, event):
-        self.drag_iid = self.tree.identify_row(event.y)
+    def on_tree_select_all(self, _event=None):
+        if not self.timeline:
+            return "break"
+        self.tree.selection_set([str(i) for i in range(len(self.timeline))])
+        self.set_status("已全選 {} 列".format(len(self.timeline)))
+        return "break"
 
-    def on_tree_drag_end(self, event):
-        if not self.drag_iid:
-            return
-        target_iid = self.tree.identify_row(event.y)
-        if not target_iid or target_iid == self.drag_iid:
-            self.drag_iid = None
-            return
+    def on_tree_copy(self, _event=None):
+        selected = sorted(self.get_selected_indexes())
+        if not selected:
+            return "break"
 
-        src = int(self.drag_iid)
-        dst = int(target_iid)
-        ev = self.timeline.pop(src)
-        self.timeline.insert(dst, ev)
+        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        lines = []
+        for idx in selected:
+            row = self.timeline[idx]
+            lines.append("\t".join(str(row.get(field, "")) for field in fields))
+
+        self.root.clipboard_clear()
+        self.root.clipboard_append("\n".join(lines))
+        self.set_status("已複製 {} 列（可貼到 Excel）".format(len(selected)))
+        return "break"
+
+    def on_tree_paste(self, _event=None):
+        try:
+            raw = self.root.clipboard_get()
+        except tk.TclError:
+            messagebox.showwarning("提醒", "剪貼簿沒有可貼上的內容")
+            return "break"
+
+        lines = [line for line in raw.splitlines() if line.strip()]
+        if not lines:
+            return "break"
+
+        start_idx = 0
+        selected = sorted(self.get_selected_indexes())
+        if selected:
+            start_idx = selected[0]
+
+        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        changed_indexes = []
+
+        try:
+            for offset, line in enumerate(lines):
+                row_idx = start_idx + offset
+                if row_idx >= len(self.timeline):
+                    break
+
+                values = line.split("\t")
+                if not values:
+                    continue
+
+                for col_idx, raw_value in enumerate(values[:len(fields)]):
+                    field = fields[col_idx]
+                    self._apply_tree_field_value(row_idx, field, raw_value)
+                changed_indexes.append(row_idx)
+        except Exception as e:
+            messagebox.showerror("貼上失敗", str(e))
+            return "break"
+
+        if not changed_indexes:
+            messagebox.showwarning("提醒", "貼上範圍超出目前列數，未更新任何資料")
+            return "break"
+
         self.mark_timeline_dirty()
-        self.tree.selection_set(str(dst))
-        self.drag_iid = None
+        self.tree.selection_set([str(i) for i in changed_indexes])
+        self.set_status("已貼上 {} 列（從第 {} 列開始）".format(len(changed_indexes), changed_indexes[0] + 1))
+        return "break"
 
     def move_selected_up(self):
         selected = sorted(self.get_selected_indexes())
