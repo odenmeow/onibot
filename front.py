@@ -798,7 +798,9 @@ class App:
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.tag_configure("copied_group", background="#fff4b3")
-        self.tree.tag_configure("runtime_skipped", foreground="#8f8f8f")
+        self.tree.tag_configure("runtime_ok_1", background="#bfe8bf")
+        self.tree.tag_configure("runtime_ok_2", background="#d9f2d9")
+        self.tree.tag_configure("runtime_ok_3", background="#edf9ed")
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<Control-a>", self.on_tree_select_all, add="+")
         self.tree.bind("<Control-A>", self.on_tree_select_all, add="+")
@@ -806,6 +808,12 @@ class App:
         self.tree.bind("<Control-C>", self.on_tree_copy, add="+")
         self.tree.bind("<Control-v>", self.on_tree_paste, add="+")
         self.tree.bind("<Control-V>", self.on_tree_paste, add="+")
+        self.tree.bind("<Configure>", self._schedule_tree_overlay_refresh, add="+")
+        self.tree.bind("<MouseWheel>", self._schedule_tree_overlay_refresh, add="+")
+        self.tree.bind("<Button-4>", self._schedule_tree_overlay_refresh, add="+")
+        self.tree.bind("<Button-5>", self._schedule_tree_overlay_refresh, add="+")
+        self.tree.bind("<Expose>", self._schedule_tree_overlay_refresh, add="+")
+        self.tree_overlay_labels = []
 
         edit_row = tk.Frame(right_panel)
         edit_row.pack(fill="x", pady=(0, 8))
@@ -1027,6 +1035,70 @@ class App:
         if not self.tree.exists(row_id):
             return
         self.tree.see(row_id)
+        self._schedule_tree_overlay_refresh()
+
+    def _schedule_tree_overlay_refresh(self, _event=None):
+        if not hasattr(self, "tree"):
+            return
+        if hasattr(self, "_overlay_refresh_after_id") and self._overlay_refresh_after_id is not None:
+            try:
+                self.root.after_cancel(self._overlay_refresh_after_id)
+            except Exception:
+                pass
+        self._overlay_refresh_after_id = self.root.after(10, self._refresh_tree_buff_group_overlays)
+
+    def _refresh_tree_buff_group_overlays(self):
+        self._overlay_refresh_after_id = None
+        if not hasattr(self, "tree"):
+            return
+
+        for label in getattr(self, "tree_overlay_labels", []):
+            try:
+                label.destroy()
+            except Exception:
+                pass
+        self.tree_overlay_labels = []
+
+        for iid in self.tree.get_children():
+            try:
+                idx = int(iid)
+            except Exception:
+                continue
+            if idx < 0 or idx >= len(self.timeline):
+                continue
+
+            ev = self.timeline[idx]
+            original_buff_group = str(ev.get("buff_group", "")).strip()
+            is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
+            runtime_event = self.timeline_runtime_by_index.get(idx, {})
+            runtime_status = str(runtime_event.get("status", "")).strip().lower()
+
+            bg_color = None
+            display_text = original_buff_group
+            if runtime_status == "skipped_by_cooldown":
+                bg_color = "#e3e3e3"
+            elif is_replicated:
+                bg_color = "#fff4b3"
+
+            if not bg_color:
+                continue
+
+            bbox = self.tree.bbox(iid, column="buff_group")
+            if not bbox:
+                continue
+            x, y, w, h = bbox
+            label = tk.Label(
+                self.tree,
+                text=display_text,
+                background=bg_color,
+                font=ttk.Style().lookup("Treeview", "font"),
+                anchor="w",
+                padx=4,
+                borderwidth=0,
+                highlightthickness=0
+            )
+            label.place(x=x, y=y, width=w, height=h)
+            self.tree_overlay_labels.append(label)
 
     def refresh_tree(self):
         for item in self.tree.get_children():
@@ -1045,28 +1117,21 @@ class App:
             self._sync_replicated_row(ev)
             key = (ev["type"], ev["button"], ev["at"])
             grp = event_to_group.get(key, "")
-            buff_group = str(ev.get("buff_group", "")).strip()
-            at_value = "{:.2f}".format(float(ev["at"]))
+            original_buff_group = str(ev.get("buff_group", "")).strip()
+            buff_group = original_buff_group
             is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
-            runtime_event = self.timeline_runtime_by_index.get(i, {})
-            runtime_status = str(runtime_event.get("status", "")).strip().lower()
+            at_value = "{:.2f}".format(float(ev["at"]))
             tags = []
+            if is_replicated:
+                tags.append("copied_group")
             if i in self.runtime_recent_ok_indices:
                 recent_rank = self.runtime_recent_ok_indices.index(i)
                 if recent_rank == 0:
-                    at_value = "🟩 {}".format(at_value)
+                    tags.append("runtime_ok_1")
                 elif recent_rank == 1:
-                    at_value = "🟩· {}".format(at_value)
+                    tags.append("runtime_ok_2")
                 else:
-                    at_value = "🟩·· {}".format(at_value)
-            elif runtime_status == "skipped_by_cooldown" and i in self.runtime_recent_skipped_indices:
-                tags.append("runtime_skipped")
-                if buff_group:
-                    buff_group = "◼{} (cooldown)".format(buff_group)
-                else:
-                    buff_group = "◼cooldown"
-            if is_replicated:
-                tags.append("copied_group")
+                    tags.append("runtime_ok_3")
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
@@ -1078,6 +1143,7 @@ class App:
                 ev.get("buff_jitter_sec", 0.0),
                 grp
             ), tags=tuple(tags))
+        self._schedule_tree_overlay_refresh()
 
     def refresh_saved_list(self):
         names = list_saved_timeline_names()
