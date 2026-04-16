@@ -6,7 +6,7 @@ import socket
 import time
 import threading 
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, colorchooser
 from pynput import keyboard
 
 DEFAULT_PI_HOST = "192.168.100.140"
@@ -62,6 +62,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
+            "ui_recent_colors": [],
             "ui_layout": {
                 "paned_sash_x": None,
                 "window_size": None,
@@ -78,12 +79,22 @@ def load_config():
         tree_column_widths = ui_layout.get("tree_column_widths", {})
         if not isinstance(tree_column_widths, dict):
             tree_column_widths = {}
+        ui_recent_colors = data.get("ui_recent_colors", [])
+        if not isinstance(ui_recent_colors, list):
+            ui_recent_colors = []
+        normalized_recent = []
+        for raw in ui_recent_colors:
+            text = str(raw or "").strip().lower()
+            if re.fullmatch(r"#[0-9a-f]{6}", text) and text not in normalized_recent:
+                normalized_recent.append(text)
+        normalized_recent = normalized_recent[:7]
         return {
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
+            "ui_recent_colors": normalized_recent,
             "ui_layout": {
                 "paned_sash_x": ui_layout.get("paned_sash_x"),
                 "paned_ratio": ui_layout.get("paned_ratio"),
@@ -98,6 +109,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
+            "ui_recent_colors": [],
             "ui_layout": {
                 "paned_sash_x": None,
                 "window_size": None,
@@ -368,11 +380,15 @@ class App:
     def _sync_replicated_row(self, row):
         buff_group = str(row.get("buff_group", "")).strip()
         replicated = self._normalize_replicated_row_flag(row.get("replicatedRow", 0))
-        if self._is_negative_buff_group(buff_group):
-            replicated = 1
         row["buff_group"] = buff_group
         row["replicatedRow"] = replicated
         return row
+
+    def _normalize_row_color(self, value):
+        text = str(value or "").strip().lower()
+        if re.fullmatch(r"#[0-9a-f]{6}", text):
+            return text
+        return ""
 
     def normalize_event_schema(self, ev):
         row = dict(ev)
@@ -383,6 +399,10 @@ class App:
         row["buff_group"] = str(row.get("buff_group", "")).strip()
         row["buff_cycle_sec"] = round(max(0.0, float(row.get("buff_cycle_sec", 0.0))), 4)
         row["buff_jitter_sec"] = round(abs(float(row.get("buff_jitter_sec", 0.0))), 4)
+        row["row_color"] = self._normalize_row_color(row.get("row_color", ""))
+        replicated = self._normalize_replicated_row_flag(row.get("replicatedRow", 0))
+        if replicated == 1 and not row["row_color"]:
+            row["row_color"] = "#fff4b3"
         return self._sync_replicated_row(row)
 
     def get_manual_offset_sec(self):
@@ -648,6 +668,7 @@ class App:
         self.has_pre_run_snapshot = False
         self.runtime_display_frozen = False
         self.runtime_manual_restore_active = False
+        self.tree_row_color_tags = set()
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -786,17 +807,20 @@ class App:
         tk.Button(jitter_frame, text="計算偏移量", command=self.calculate_offsets_only).grid(
             row=0, column=2, padx=(5, 8), pady=5
         )
+        tk.Button(jitter_frame, text="改顏色", command=self.open_row_color_dialog).grid(
+            row=0, column=3, padx=(0, 8), pady=5
+        )
         self.restore_pre_run_btn = tk.Button(
             jitter_frame,
             text="恢復執行前狀態",
             command=self.restore_pre_run_state,
             state="disabled"
         )
-        self.restore_pre_run_btn.grid(row=0, column=3, padx=(0, 8), pady=5)
+        self.restore_pre_run_btn.grid(row=0, column=4, padx=(0, 8), pady=5)
         tk.Label(
             jitter_frame,
             text="【註: buff_goup 如果設定 -1 可計算偏移量，不同複製按鈕群請用不同負值 】"
-        ).grid(row=1, column=0, columnspan=4, padx=(8, 8), pady=(0, 6), sticky="w")
+        ).grid(row=1, column=0, columnspan=5, padx=(8, 8), pady=(0, 6), sticky="w")
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -808,7 +832,6 @@ class App:
                 width = 100
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
-        self.tree.tag_configure("copied_group", background="#fff4b3")
         self.tree.tag_configure("runtime_ok_1", background="#bfe8bf")
         self.tree.tag_configure("runtime_ok_2", background="#d9f2d9")
         self.tree.tag_configure("runtime_ok_3", background="#edf9ed")
@@ -915,8 +938,96 @@ class App:
             "paned_sash_x": int(sash_x),
             "tree_column_widths": column_widths
         }
+        self.config["ui_recent_colors"] = self._get_recent_colors()
         save_config(self.config)
         self.set_status("已保存 UI 版面（PanedWindow 像素位置 + 欄寬）")
+
+    def _get_recent_colors(self):
+        raw = self.config.get("ui_recent_colors", [])
+        if not isinstance(raw, list):
+            return []
+        normalized = []
+        for color in raw:
+            code = self._normalize_row_color(color)
+            if code and code not in normalized:
+                normalized.append(code)
+            if len(normalized) >= 7:
+                break
+        return normalized
+
+    def _remember_recent_color(self, color_code):
+        color = self._normalize_row_color(color_code)
+        if not color:
+            return
+        recent = [c for c in self._get_recent_colors() if c != color]
+        recent.insert(0, color)
+        self.config["ui_recent_colors"] = recent[:7]
+        save_config(self.config)
+
+    def _apply_color_to_selected_rows(self, color_code):
+        if not self._ensure_runtime_editable():
+            return False
+        color = self._normalize_row_color(color_code)
+        selected = sorted(self.get_selected_indexes())
+        if not selected:
+            messagebox.showwarning("提醒", "請先選取列")
+            return False
+        if not color:
+            messagebox.showwarning("提醒", "請選擇有效顏色")
+            return False
+        for idx in selected:
+            self.timeline[idx]["row_color"] = color
+        self.mark_timeline_dirty()
+        self.tree.selection_set([str(i) for i in selected])
+        self._remember_recent_color(color)
+        self.set_status("已套用顏色 {} 到 {} 列".format(color, len(selected)))
+        return True
+
+    def open_row_color_dialog(self):
+        selected = sorted(self.get_selected_indexes())
+        if not selected:
+            messagebox.showwarning("提醒", "請先選取列")
+            return
+        if not self._ensure_runtime_editable():
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("改顏色")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        tk.Label(dialog, text="套用到目前選取列（含 Shift 多選）").pack(anchor="w", padx=12, pady=(10, 8))
+
+        recent_frame = tk.Frame(dialog)
+        recent_frame.pack(fill="x", padx=12, pady=(0, 8))
+        tk.Label(recent_frame, text="Recent：").pack(side="left")
+        recent = self._get_recent_colors()
+        if recent:
+            for color in recent:
+                tk.Button(
+                    recent_frame,
+                    text=color,
+                    bg=color,
+                    width=10,
+                    command=lambda c=color: (
+                        self._apply_color_to_selected_rows(c) and dialog.destroy()
+                    )
+                ).pack(side="left", padx=2)
+        else:
+            tk.Label(recent_frame, text="（尚無）").pack(side="left", padx=4)
+
+        action_row = tk.Frame(dialog)
+        action_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        def pick_from_system():
+            initial = self.timeline[selected[0]].get("row_color", "") if selected else ""
+            _rgb, code = colorchooser.askcolor(color=initial or "#fff4b3", parent=dialog, title="選擇列顏色")
+            if not code:
+                return
+            if self._apply_color_to_selected_rows(code):
+                dialog.destroy()
+
+        tk.Button(action_row, text="系統選色器", command=pick_from_system).pack(side="left")
+        tk.Button(action_row, text="取消", command=dialog.destroy).pack(side="right")
 
     def update_current_labels(self):
         if self.current_name:
@@ -1050,6 +1161,16 @@ class App:
             return
         self.tree.see(row_id)
 
+    def _ensure_tree_color_tag(self, color_code):
+        color = self._normalize_row_color(color_code)
+        if not color:
+            return ""
+        tag = "row_color_{}".format(color.replace("#", ""))
+        if tag not in self.tree_row_color_tags:
+            self.tree.tag_configure(tag, background=color)
+            self.tree_row_color_tags.add(tag)
+        return tag
+
     def refresh_tree(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -1069,7 +1190,6 @@ class App:
             grp = event_to_group.get(key, "")
             original_buff_group = str(ev.get("buff_group", "")).strip()
             buff_group = original_buff_group
-            is_replicated = self._normalize_replicated_row_flag(ev.get("replicatedRow", 0)) == 1
             runtime_event = self.timeline_runtime_by_index.get(i, {})
             runtime_status = str(runtime_event.get("status", "")).strip().lower()
             if runtime_status == "skipped_by_cooldown":
@@ -1085,8 +1205,10 @@ class App:
                     tags.append("runtime_ok_2")
                 else:
                     tags.append("runtime_ok_3")
-            elif is_replicated:
-                tags.append("copied_group")
+            else:
+                row_color_tag = self._ensure_tree_color_tag(ev.get("row_color", ""))
+                if row_color_tag:
+                    tags.append(row_color_tag)
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
@@ -1286,7 +1408,7 @@ class App:
         try:
             offset_sec = self.get_manual_offset_sec()
             self.push_history("before_save")
-            self.timeline = [self._sync_replicated_row(ev) for ev in self.timeline]
+            self.timeline = [self.normalize_event_schema(ev) for ev in self.timeline]
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
             self.validate_negative_group_monotonic_by_index(self.timeline)
             recalculated = self.recalculate_timeline_for_runtime(anchor_gap_sec=offset_sec)
@@ -1631,7 +1753,7 @@ class App:
         try:
             offset_sec = self.get_manual_offset_sec()
             self.push_history(action_reason)
-            self.timeline = [self._sync_replicated_row(ev) for ev in self.timeline]
+            self.timeline = [self.normalize_event_schema(ev) for ev in self.timeline]
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
             self.validate_negative_group_monotonic_by_index(self.timeline)
             self.timeline = self.recalculate_timeline_for_runtime(anchor_gap_sec=offset_sec)
@@ -1867,6 +1989,7 @@ class App:
             try:
                 for offset, row_values in enumerate(parsed_rows):
                     ev = self._build_timeline_event_from_values(row_values)
+                    ev["row_color"] = "#fff4b3"
                     idx = insert_at + offset
                     self.timeline.insert(idx, ev)
                     new_indexes.append(idx)
@@ -1887,6 +2010,7 @@ class App:
             for col_idx, raw_value in enumerate(row_values):
                 field = fields[col_idx]
                 self._apply_tree_field_value(row_idx, field, raw_value)
+            self.timeline[row_idx]["row_color"] = "#fff4b3"
             changed_indexes.append(row_idx)
 
         if not changed_indexes:
@@ -1920,7 +2044,8 @@ class App:
             "at_jitter": 0.0,
             "buff_group": "",
             "buff_cycle_sec": 0.0,
-            "buff_jitter_sec": 0.0
+            "buff_jitter_sec": 0.0,
+            "row_color": ""
         }
         fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
         for i, field in enumerate(fields):
@@ -1988,6 +2113,7 @@ class App:
             insert_at = idx + 1 + offset
             copied = dict(self.timeline[idx + offset])
             copied["replicatedRow"] = 1
+            copied["row_color"] = "#fff4b3"
             copied = self._sync_replicated_row(copied)
             self.timeline.insert(insert_at, copied)
             new_ids.append(insert_at)
