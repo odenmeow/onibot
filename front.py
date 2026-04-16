@@ -41,6 +41,15 @@ KEY_MAP = {
     "Key.cmd": "fn",
     "Key.cmd_r": "fn",
 }
+SUPPORTED_BUTTONS = {
+    "fn", "g", "shift", "f", "c", "v", "d", "alt", "ctrl",
+    "left", "up", "down", "right", "x", "space", "6"
+}
+DEFAULT_HINT_NOTE_TEXT = (
+    "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n"
+    "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
+    "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。"
+)
 
 events = []
 recording = False
@@ -62,6 +71,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
+            "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
                 "paned_sash_x": None,
@@ -94,6 +104,7 @@ def load_config():
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
+            "hint_note_text": str(data.get("hint_note_text", DEFAULT_HINT_NOTE_TEXT)),
             "ui_recent_colors": normalized_recent,
             "ui_layout": {
                 "paned_sash_x": ui_layout.get("paned_sash_x"),
@@ -109,6 +120,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
+            "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
                 "paned_sash_x": None,
@@ -128,6 +140,17 @@ def normalize_key(key):
         return str(key)
     except Exception:
         return None
+
+
+def fallback_button_name(key_name):
+    if not key_name:
+        return ""
+    raw = str(key_name).strip()
+    if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
+        return raw[1:-1].lower()
+    if raw.startswith("Key."):
+        return raw[4:].lower()
+    return raw.lower()
 
 
 def sanitize_filename(name):
@@ -199,7 +222,7 @@ def on_press(key):
         return
 
     key_name = normalize_key(key)
-    mapped = KEY_MAP.get(key_name)
+    mapped = KEY_MAP.get(key_name) or fallback_button_name(key_name)
     if not mapped:
         return
 
@@ -222,7 +245,7 @@ def on_release(key):
         return
 
     key_name = normalize_key(key)
-    mapped = KEY_MAP.get(key_name)
+    mapped = KEY_MAP.get(key_name) or fallback_button_name(key_name)
     if not mapped:
         return
 
@@ -564,6 +587,15 @@ class App:
     def set_status(self, message):
         self.status_var.set(message)
 
+    def get_unsupported_buttons(self, events):
+        unknown = sorted({
+            str(ev.get("button", "")).strip().lower()
+            for ev in events
+            if str(ev.get("button", "")).strip()
+            and str(ev.get("button", "")).strip().lower() not in SUPPORTED_BUTTONS
+        })
+        return unknown
+
     def set_connection_status(self, message):
         self.connection_var.set(message)
 
@@ -823,11 +855,18 @@ class App:
             bg="#fff4b3",
             activebackground="#ffe08a"
         ).grid(row=0, column=1, padx=5, pady=5)
+        tk.Button(
+            jitter_frame,
+            text="提示",
+            command=self.open_hint_note_dialog,
+            bg="#fff4b3",
+            activebackground="#ffe08a"
+        ).grid(row=0, column=2, padx=(0, 5), pady=5)
         tk.Button(jitter_frame, text="計算偏移量", command=self.calculate_offsets_only).grid(
-            row=0, column=2, padx=(5, 8), pady=5
+            row=0, column=3, padx=(5, 8), pady=5
         )
         tk.Button(jitter_frame, text="改顏色", command=self.open_row_color_dialog).grid(
-            row=0, column=3, padx=(0, 8), pady=5
+            row=0, column=4, padx=(0, 8), pady=5
         )
         self.restore_pre_run_btn = tk.Button(
             jitter_frame,
@@ -835,11 +874,11 @@ class App:
             command=self.restore_pre_run_state,
             state="disabled"
         )
-        self.restore_pre_run_btn.grid(row=0, column=4, padx=(0, 8), pady=5)
+        self.restore_pre_run_btn.grid(row=0, column=5, padx=(0, 8), pady=5)
         tk.Label(
             jitter_frame,
             text="【註: buff_goup 如果設定 -1 可計算偏移量，不同複製按鈕群請用不同負值 】"
-        ).grid(row=1, column=0, columnspan=5, padx=(8, 8), pady=(0, 6), sticky="w")
+        ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 6), sticky="w")
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -854,6 +893,7 @@ class App:
         self.tree.tag_configure("runtime_ok_1", background="#bfe8bf")
         self.tree.tag_configure("runtime_ok_2", background="#d9f2d9")
         self.tree.tag_configure("runtime_ok_3", background="#edf9ed")
+        self.tree.tag_configure("unsupported_button", background="#ffcaca")
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<Control-a>", self.on_tree_select_all, add="+")
         self.tree.bind("<Control-A>", self.on_tree_select_all, add="+")
@@ -960,6 +1000,49 @@ class App:
         self.config["ui_recent_colors"] = self._get_recent_colors()
         save_config(self.config)
         self.set_status("已保存 UI 版面（PanedWindow 像素位置 + 欄寬）")
+
+    def get_hint_note_text(self):
+        text = str(self.config.get("hint_note_text", "")).strip()
+        return text or DEFAULT_HINT_NOTE_TEXT
+
+    def open_hint_note_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("提示說明")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry("700x420")
+
+        tk.Label(dialog, text="此內容會與 UI 版面一起保存到 front_config.json", anchor="w").pack(
+            fill="x", padx=12, pady=(10, 4)
+        )
+        text_widget = tk.Text(dialog, wrap="word")
+        text_widget.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        text_widget.insert("1.0", self.get_hint_note_text())
+
+        btn_row = tk.Frame(dialog)
+        btn_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        def save_note():
+            note = text_widget.get("1.0", tk.END).strip() or DEFAULT_HINT_NOTE_TEXT
+            self.config["hint_note_text"] = note
+            save_config(self.config)
+            self.write_text({"action": "hint_note_saved", "hint_note_text": note})
+            self.set_status("提示說明已保存（與 UI 設定同檔）")
+            dialog.destroy()
+
+        def reset_default():
+            text_widget.delete("1.0", tk.END)
+            text_widget.insert("1.0", DEFAULT_HINT_NOTE_TEXT)
+
+        tk.Button(btn_row, text="恢復預設", command=reset_default).pack(side="left")
+        tk.Button(btn_row, text="取消", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        tk.Button(
+            btn_row,
+            text="保存",
+            bg="#fff4b3",
+            activebackground="#ffe08a",
+            command=save_note
+        ).pack(side="right")
 
     def _get_recent_colors(self):
         raw = self.config.get("ui_recent_colors", [])
@@ -1228,6 +1311,8 @@ class App:
                 row_color_tag = self._ensure_tree_color_tag(ev.get("row_color", ""))
                 if row_color_tag:
                     tags.append(row_color_tag)
+            if str(ev.get("button", "")).strip().lower() not in SUPPORTED_BUTTONS:
+                tags.append("unsupported_button")
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
                 ev["type"],
@@ -1404,6 +1489,14 @@ class App:
         self.name_entry.delete(0, tk.END)
         self.name_entry.insert(0, self.current_name)
 
+        unsupported = self.get_unsupported_buttons(self.timeline)
+        if unsupported:
+            self.set_frontend_error(
+                "錄製完成，但包含前端可錄製、後端未支援的按鍵：{}\n"
+                "這些列已在 timeline 以紅底顯示；請改成可用 button 後再送出。".format(", ".join(unsupported))
+            )
+        else:
+            self.set_frontend_error("")
         self.set_status("Timeline 分析完成，共 {} 筆 event".format(len(self.timeline)))
 
     def save_current_timeline(self):
@@ -1827,6 +1920,16 @@ class App:
             return None, ""
 
         events = [self.normalize_event_schema(ev) for ev in self.timeline]
+        unsupported = self.get_unsupported_buttons(events)
+        if unsupported:
+            msg = (
+                "前端偵測到不支援的 button：{}\n"
+                "已用紅底標記對應列。請先修改 button 欄位後再送出。".format(", ".join(unsupported))
+            )
+            self.set_frontend_error(msg)
+            messagebox.showwarning("送出前檢查", msg)
+            self.refresh_tree()
+            return None, ""
         group_configs = {}
         for idx, ev in enumerate(events):
             group_name = ev.get("buff_group", "").strip()
