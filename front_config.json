@@ -1,9 +1,13 @@
 {
   "pi_host": "192.168.100.140",
   "send_delay_sec": 1.0,
-  "last_selected_name": "空白鍵開方塊",
+  "last_selected_name": "影子跳舞3人少",
   "buff_skip_mode": "compress",
-  "manual_offset_sec": 0.2,
+  "manual_offset_sec": 1.0,
+  "hint_note_text": "前端可接受按鍵(button)：\n\nfn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n\n\n\n\n注意：\t\t多數電腦的實體 Fn 鍵\t\t無法直接被前端鍵盤監聽。\n\n\n建議用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。",
+  "ui_recent_colors": [
+    "#ffffff"
+  ],
   "ui_layout": {
     "paned_sash_x": 462,
     "paned_ratio": null,
