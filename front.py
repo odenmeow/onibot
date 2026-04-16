@@ -175,6 +175,24 @@ def delete_named_timeline(name):
         os.remove(path)
 
 
+def rename_named_timeline(old_name, new_name, overwrite=False):
+    old_path = timeline_file_path(old_name)
+    new_path = timeline_file_path(new_name)
+
+    if not os.path.exists(old_path):
+        raise FileNotFoundError("找不到來源檔案：{}".format(old_name))
+    if os.path.exists(new_path) and not overwrite:
+        raise FileExistsError("名稱 '{}' 已存在".format(new_name))
+
+    data = load_named_timeline(old_name)
+    data["name"] = new_name
+    with open(new_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    if old_path != new_path and os.path.exists(old_path):
+        os.remove(old_path)
+
+
 def on_press(key):
     global events
     if not recording:
@@ -770,10 +788,11 @@ class App:
 
         save_btn_row = tk.Frame(save_frame)
         save_btn_row.pack(fill="x", padx=8, pady=(0, 5))
-        tk.Button(save_btn_row, text="保存目前 Timeline", command=self.save_current_timeline).pack(side="left", padx=(0, 5))
-        tk.Button(save_btn_row, text="重新整理清單", command=self.refresh_saved_list).pack(side="left", padx=5)
-        tk.Button(save_btn_row, text="載入選取項目", command=self.load_selected_timeline).pack(side="left", padx=5)
-        tk.Button(save_btn_row, text="刪除選取項目", command=self.delete_selected_timeline).pack(side="left", padx=5)
+        tk.Button(save_btn_row, text="保存目前 Timeline", command=self.save_current_timeline).pack(side="left", padx=(0, 3))
+        tk.Button(save_btn_row, text="重新整理", command=self.refresh_saved_list).pack(side="left", padx=3)
+        tk.Button(save_btn_row, text="重新命名", command=self.rename_selected_timeline).pack(side="left", padx=3)
+        tk.Button(save_btn_row, text="載入選取項目", command=self.load_selected_timeline).pack(side="left", padx=3)
+        tk.Button(save_btn_row, text="刪除選取項目", command=self.delete_selected_timeline).pack(side="left", padx=3)
 
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
         self.saved_listbox.pack(fill="x", padx=5, pady=5)
@@ -1491,6 +1510,47 @@ class App:
         self.refresh_saved_list()
         self.update_current_labels()
         self.set_status("已刪除：{}".format(name))
+
+    def rename_selected_timeline(self):
+        old_name = self.get_selected_saved_name()
+        if not old_name:
+            messagebox.showwarning("提醒", "請先從清單選一個已保存項目")
+            return
+
+        new_name = sanitize_filename(self.name_entry.get().strip())
+        if not new_name:
+            messagebox.showwarning("提醒", "請先輸入新的腳本名稱")
+            return
+
+        if new_name == old_name:
+            self.set_status("名稱未變更：{}".format(old_name))
+            return
+
+        overwrite = False
+        if os.path.exists(timeline_file_path(new_name)):
+            overwrite = messagebox.askyesno("確認覆蓋", "名稱 '{}' 已存在，是否覆蓋？".format(new_name))
+            if not overwrite:
+                return
+
+        try:
+            rename_named_timeline(old_name, new_name, overwrite=overwrite)
+        except Exception as e:
+            messagebox.showerror("重新命名失敗", str(e))
+            return
+
+        if self.current_name == old_name:
+            self.current_name = new_name
+            self.current_loaded_from_saved = True
+        if self.config.get("last_selected_name") == old_name:
+            self.config["last_selected_name"] = new_name
+            save_config(self.config)
+
+        self.name_entry.delete(0, tk.END)
+        self.name_entry.insert(0, new_name)
+        self.refresh_saved_list()
+        self.select_saved_name(new_name)
+        self.update_current_labels()
+        self.set_status("已重新命名：{} → {}".format(old_name, new_name))
 
     def get_selected_indexes(self):
         selection = self.tree.selection()
