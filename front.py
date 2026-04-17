@@ -464,49 +464,38 @@ class App:
     def new_meta(self):
         return {
             "original_events": [],
-            "history": []
+            "latest_saved_events": []
         }
 
     def normalize_meta(self, meta):
         if not isinstance(meta, dict):
             return self.new_meta()
         raw_original = meta.get("original_events", [])
+        raw_latest_saved = meta.get("latest_saved_events", [])
         raw_history = meta.get("history", [])
         original_events = []
         if isinstance(raw_original, list):
             original_events = [self.normalize_event_schema(ev) for ev in raw_original]
 
-        history = []
-        if isinstance(raw_history, list):
-            for item in raw_history:
+        latest_saved_events = []
+        if isinstance(raw_latest_saved, list):
+            latest_saved_events = [self.normalize_event_schema(ev) for ev in raw_latest_saved]
+        elif isinstance(raw_history, list):
+            # 舊格式相容：history 最後一筆視為新版快照。
+            for item in reversed(raw_history):
                 if not isinstance(item, dict):
                     continue
                 events = item.get("events", [])
-                if not isinstance(events, list):
-                    continue
-                history.append({
-                    "ts": str(item.get("ts", "")),
-                    "reason": str(item.get("reason", "")),
-                    "events": [self.normalize_event_schema(ev) for ev in events]
-                })
+                if isinstance(events, list):
+                    latest_saved_events = [self.normalize_event_schema(ev) for ev in events]
+                    break
         return {
             "original_events": original_events,
-            "history": history[-5:]
+            "latest_saved_events": latest_saved_events
         }
 
     def copy_events(self, rows):
         return [self.normalize_event_schema(ev) for ev in rows]
-
-    def push_history(self, reason):
-        snap = {
-            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "reason": reason,
-            "events": self.copy_events(self.timeline)
-        }
-        history = self.timeline_meta.setdefault("history", [])
-        history.append(snap)
-        if len(history) > 5:
-            del history[:-5]
 
     def restore_original_timeline(self):
         original = self.timeline_meta.get("original_events", [])
@@ -519,10 +508,16 @@ class App:
         self.refresh_preview()
         return True
 
-    def persist_current_timeline_if_named(self):
-        if not self.current_name:
-            return
-        save_named_timeline(self.current_name, self.timeline, self.timeline_meta)
+    def restore_latest_saved_timeline(self):
+        latest_saved = self.timeline_meta.get("latest_saved_events", [])
+        if not latest_saved:
+            return False
+        self.timeline = self.copy_events(latest_saved)
+        self.current_loaded_from_saved = False
+        self.update_current_labels()
+        self.refresh_tree()
+        self.refresh_preview()
+        return True
 
     def recalculate_timeline_for_runtime(self, anchor_gap_sec=None):
         events = self.copy_events(self.timeline)
@@ -716,11 +711,11 @@ class App:
         self.runtime_latest_index = None
         self.last_runtime_signature = ""
         self.pre_run_timeline_snapshot = []
+        self.runtime_working_timeline = []
         self.has_pre_run_snapshot = False
         self.runtime_display_frozen = False
         self.runtime_manual_restore_active = False
         self.tree_row_color_tags = set()
-        self.next_auto_negative_group = -1
         self.last_tree_copy_payload = ""
 
         container = tk.Frame(root)
@@ -1242,6 +1237,8 @@ class App:
                         elif state in ("stopped", "idle"):
                             if self.has_pre_run_snapshot and not self.runtime_manual_restore_active:
                                 self.runtime_display_frozen = True
+                            else:
+                                self.runtime_display_frozen = False
                         else:
                             self.runtime_display_frozen = False
         except Exception:
@@ -1332,6 +1329,8 @@ class App:
         return state == "running" or bool(self.runtime_display_frozen)
 
     def _ensure_runtime_editable(self):
+        if not self.has_pre_run_snapshot and self.runtime_display_frozen:
+            self.runtime_display_frozen = False
         if not self._is_runtime_readonly():
             return True
         messagebox.showwarning("提醒", "執行中或停止後凍結中，請先「恢復執行前狀態」再編輯")
@@ -1475,10 +1474,28 @@ class App:
     def analyze(self):
         global events, recording_start
         if not events:
-            if self.restore_original_timeline():
-                self.set_status("已還原原始 Timeline（重新分析）")
+            has_original = bool(self.timeline_meta.get("original_events"))
+            has_latest_saved = bool(self.timeline_meta.get("latest_saved_events"))
+            if has_original and has_latest_saved:
+                selected = messagebox.askyesnocancel(
+                    "重新分析",
+                    "目前無新錄製資料。\n是否回到「初版 Timeline」？\n"
+                    "按「是」= 初版；按「否」= 上次保存新版；按「取消」= 不變更。"
+                )
+                if selected is None:
+                    self.set_status("已取消重新分析")
+                    return
+                restored = self.restore_original_timeline() if selected else self.restore_latest_saved_timeline()
+                if restored:
+                    if selected:
+                        self.set_status("已還原初版 Timeline（重新分析）")
+                    else:
+                        self.set_status("已還原上次保存新版 Timeline（重新分析）")
                 return
-            messagebox.showwarning("提醒", "目前沒有錄到資料，也沒有可還原的原始 Timeline")
+            if self.restore_original_timeline():
+                self.set_status("已還原初版 Timeline（重新分析）")
+                return
+            messagebox.showwarning("提醒", "目前沒有錄到資料，也沒有可還原的初版/新版 Timeline")
             return
 
         self.timeline = build_timeline(events, recording_start)
@@ -1521,11 +1538,12 @@ class App:
 
         try:
             offset_sec = self.get_manual_offset_sec()
-            self.push_history("before_save")
             self.timeline = [self.normalize_event_schema(ev) for ev in self.timeline]
-            self.timeline_meta["original_events"] = self.copy_events(self.timeline)
+            if not self.timeline_meta.get("original_events"):
+                self.timeline_meta["original_events"] = self.copy_events(self.timeline)
             self.validate_negative_group_monotonic_by_index(self.timeline)
             recalculated = self.recalculate_timeline_for_runtime(anchor_gap_sec=offset_sec)
+            self.timeline_meta["latest_saved_events"] = self.copy_events(recalculated)
         except Exception as e:
             messagebox.showerror("保存失敗", str(e))
             return
@@ -1718,7 +1736,13 @@ class App:
         prepared_events, _ = self.prepare_events_for_send(action_reason="calculate_offset_only")
         if prepared_events is None:
             return
-        self.set_status("已糾正複製體並套用到 timeline（共 {} 筆）".format(len(prepared_events)))
+        self.runtime_working_timeline = self.copy_events(prepared_events)
+        self.timeline = self.copy_events(prepared_events)
+        self.current_loaded_from_saved = False
+        self.update_current_labels()
+        self.refresh_tree()
+        self.refresh_preview()
+        self.set_status("已糾正複製體並更新 table（尚未保存，共 {} 筆）".format(len(prepared_events)))
 
     def apply_offset_from_selected(self):
         if not self._ensure_runtime_editable():
@@ -1785,7 +1809,8 @@ class App:
             self.set_frontend_error("")
             self.request_pi({"action": "stop"})
             self.runtime_manual_restore_active = False
-            self.runtime_display_frozen = True
+            self.runtime_display_frozen = bool(self.has_pre_run_snapshot)
+            self._set_restore_pre_run_button_state()
             self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
         except Exception as e:
             self.set_frontend_error(str(e))
@@ -1910,21 +1935,12 @@ class App:
     def prepare_events_for_send(self, action_reason="before_send"):
         try:
             offset_sec = self.get_manual_offset_sec()
-            self.push_history(action_reason)
-            self.timeline = [self.normalize_event_schema(ev) for ev in self.timeline]
-            self.timeline_meta["original_events"] = self.copy_events(self.timeline)
-            self.validate_negative_group_monotonic_by_index(self.timeline)
-            self.timeline = self.recalculate_timeline_for_runtime(anchor_gap_sec=offset_sec)
-            self.current_loaded_from_saved = False
-            self.update_current_labels()
-            self.refresh_tree()
-            self.refresh_preview()
-            self.persist_current_timeline_if_named()
+            base_events = [self.normalize_event_schema(ev) for ev in self.timeline]
+            self.validate_negative_group_monotonic_by_index(base_events)
+            events = recalculate_runtime_events_by_index(base_events, offset_sec)
         except Exception as e:
             messagebox.showerror("時間重算失敗", str(e))
             return None, ""
-
-        events = [self.normalize_event_schema(ev) for ev in self.timeline]
         unsupported = self.get_unsupported_buttons(events)
         if unsupported:
             msg = (
@@ -2109,10 +2125,9 @@ class App:
             except ValueError:
                 continue
 
-        candidate = int(self.next_auto_negative_group)
+        candidate = -1
         while candidate in used:
             candidate -= 1
-        self.next_auto_negative_group = candidate - 1
         return str(candidate)
 
     def on_tree_paste(self, _event=None):
@@ -2230,6 +2245,30 @@ class App:
         tk.Button(btn_row, text="上方", width=10, command=lambda: choose("above")).pack(side="left")
         tk.Button(btn_row, text="下方", width=10, command=lambda: choose("below")).pack(side="left", padx=(6, 0))
         tk.Button(btn_row, text="取消", width=10, command=dialog.destroy).pack(side="right")
+
+        dialog.update_idletasks()
+        dialog_w = dialog.winfo_width()
+        dialog_h = dialog.winfo_height()
+
+        try:
+            tree = self.tree
+            tree_x = tree.winfo_rootx()
+            tree_y = tree.winfo_rooty()
+            tree_w = tree.winfo_width()
+            tree_h = tree.winfo_height()
+        except Exception:
+            tree_x = self.root.winfo_rootx()
+            tree_y = self.root.winfo_rooty()
+            tree_w = self.root.winfo_width()
+            tree_h = self.root.winfo_height()
+
+        x = int(tree_x + (tree_w - dialog_w) / 2)
+        y = int(tree_y + (tree_h - dialog_h) / 2 + 45)
+        screen_w = dialog.winfo_screenwidth()
+        screen_h = dialog.winfo_screenheight()
+        x = max(0, min(x, screen_w - dialog_w))
+        y = max(0, min(y, screen_h - dialog_h))
+        dialog.geometry("{}x{}+{}+{}".format(dialog_w, dialog_h, x, y))
 
         self.root.wait_window(dialog)
         return choice["value"]
