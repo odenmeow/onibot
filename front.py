@@ -49,6 +49,10 @@ DEFAULT_HINT_NOTE_TEXT = (
     "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n"
     "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
     "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n"
+    "jitter 說明：at_jitter 套用在每列 event，實際時間為 at ± at_jitter，且最小值會被夾到 0。\n"
+    "jitter 說明：press 與 release 都填 at_jitter 時，兩列會各自獨立隨機，可能導致排序改變。\n"
+    "jitter 說明：buff_jitter_sec 僅在 buff_group 搭配 buff_cycle_sec > 0 時生效，作用於冷卻秒數隨機。\n"
+    "jitter 說明：at_jitter 與 buff_jitter_sec 輸入負值都會先取絕對值，建議一律填非負。\n"
     "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at。"
 )
 
