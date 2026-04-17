@@ -385,6 +385,7 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.calculate_offsets_only()
 
         self.assertEqual(app.timeline[0]["at"], 1.23)
+        self.assertEqual(app.timeline[0]["buff_group"], "")
         self.assertEqual(app.timeline_meta["original_events"][0]["at"], 6.12)
         self.assertEqual(refreshed["tree"], 1)
         self.assertEqual(refreshed["preview"], 1)

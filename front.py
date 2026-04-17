@@ -1736,6 +1736,9 @@ class App:
         prepared_events, _ = self.prepare_events_for_send(action_reason="calculate_offset_only")
         if prepared_events is None:
             return
+        for ev in prepared_events:
+            if self._is_negative_buff_group(ev.get("buff_group", "")):
+                ev["buff_group"] = ""
         self.runtime_working_timeline = self.copy_events(prepared_events)
         self.timeline = self.copy_events(prepared_events)
         self.current_loaded_from_saved = False
