@@ -1600,6 +1600,42 @@ class App:
             self.set_frontend_error("")
         self.set_status("Timeline 分析完成，共 {} 筆 event".format(len(self.timeline)))
 
+    def ask_save_existing_timeline_mode(self, name):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("保存同名 Timeline")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        result = {"mode": None}
+
+        msg = (
+            "名稱 '{}' 已存在。\n\n"
+            "請選擇保存方式：\n"
+            "・存為新版：保留初版 original_events，只更新 latest_saved_events。\n"
+            "・完全取代：重建初版與新版，會覆蓋整份版本資訊。"
+        ).format(name)
+        tk.Label(dialog, text=msg, justify="left", anchor="w").pack(padx=18, pady=(16, 8))
+
+        btn_row = tk.Frame(dialog)
+        btn_row.pack(padx=12, pady=(8, 14), fill="x")
+
+        def choose(mode):
+            result["mode"] = mode
+            dialog.destroy()
+
+        btn_new = tk.Button(btn_row, text="存為新版", width=12, command=lambda: choose("new_version"))
+        btn_new.pack(side="left", padx=5)
+        tk.Button(btn_row, text="完全取代", width=12, command=lambda: choose("full_replace")).pack(side="left", padx=5)
+        tk.Button(btn_row, text="取消", width=10, command=lambda: choose(None)).pack(side="left", padx=5)
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+        btn_new.focus_set()
+        dialog.bind("<Return>", lambda _e: choose("new_version"))
+        dialog.bind("<Escape>", lambda _e: choose(None))
+        self.root.wait_window(dialog)
+        return result["mode"]
+
     def save_current_timeline(self):
         if not self.timeline:
             messagebox.showwarning("提醒", "目前沒有 timeline 可保存")
@@ -1615,17 +1651,10 @@ class App:
         save_mode = "new_version"
 
         if os.path.exists(path):
-            overwrite_choice = messagebox.askyesnocancel(
-                "保存同名 Timeline",
-                "名稱 '{}' 已存在。\n\n"
-                "按「是」：完全取代（重建初版與新版，會覆蓋整份版本資訊）。\n"
-                "按「否」：存為新版（保留初版 original_events，只更新 latest_saved_events）。\n"
-                "按「取消」：不保存。".format(name)
-            )
-            if overwrite_choice is None:
+            save_mode = self.ask_save_existing_timeline_mode(name)
+            if save_mode is None:
                 self.set_status("已取消保存")
                 return
-            save_mode = "full_replace" if overwrite_choice else "new_version"
 
         try:
             offset_sec = self.get_manual_offset_sec()
