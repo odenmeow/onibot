@@ -353,6 +353,44 @@ class TimelineWorkflowTests(unittest.TestCase):
         self.assertTrue(app.timeline_meta["latest_saved_events"])
         save_mock.assert_called_once()
 
+    def test_save_same_name_as_new_version_keeps_original_events(self):
+        app = self._new_workflow_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 3.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.timeline_meta["original_events"] = [
+            {"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        original_before = [dict(ev) for ev in app.timeline_meta["original_events"]]
+
+        with mock.patch("front.save_named_timeline") as save_mock, \
+             mock.patch("front.save_config"), \
+             mock.patch("front.os.path.exists", return_value=True), \
+             mock.patch("front.messagebox.askyesnocancel", return_value=False):
+            app.save_current_timeline()
+
+        self.assertEqual(app.timeline_meta["original_events"], original_before)
+        self.assertNotEqual(app.timeline_meta["latest_saved_events"][0]["at"], original_before[0]["at"])
+        save_mock.assert_called_once()
+
+    def test_save_same_name_full_replace_rebuilds_original_events(self):
+        app = self._new_workflow_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 4.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.timeline_meta["original_events"] = [
+            {"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+
+        with mock.patch("front.save_named_timeline") as save_mock, \
+             mock.patch("front.save_config"), \
+             mock.patch("front.os.path.exists", return_value=True), \
+             mock.patch("front.messagebox.askyesnocancel", return_value=True):
+            app.save_current_timeline()
+
+        self.assertEqual(app.timeline_meta["original_events"][0]["at"], 4.0)
+        save_mock.assert_called_once()
+
     def test_analyze_without_new_events_chooses_original_or_latest_saved(self):
         app = self._new_workflow_app()
         front_mod = sys.modules["front"]
@@ -373,6 +411,40 @@ class TimelineWorkflowTests(unittest.TestCase):
             with mock.patch("front.messagebox.askyesnocancel", return_value=False):
                 app.analyze()
                 self.assertEqual(app.timeline[0]["at"], 2.0)
+        finally:
+            front_mod.events = original_events_backup
+            front_mod.recording_start = original_recording_start
+
+    def test_load_legacy_timeline_backfills_original_events(self):
+        app = self._new_workflow_app()
+        app.get_selected_saved_name = lambda: "legacy"
+        app.load_selected_timeline = App.load_selected_timeline.__get__(app, App)
+        app.normalize_meta = App.normalize_meta.__get__(app, App)
+        app.new_meta = App.new_meta.__get__(app, App)
+
+        legacy_event = {"type": "press", "button": "space", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        with mock.patch("front.load_named_timeline", return_value={"name": "legacy", "events": [legacy_event], "_meta": {}}), \
+             mock.patch("front.save_config"):
+            app.load_selected_timeline()
+
+        self.assertEqual(app.timeline_meta["original_events"][0]["at"], 9.0)
+
+    def test_analyze_without_new_events_only_latest_saved_shows_clear_status(self):
+        app = self._new_workflow_app()
+        front_mod = sys.modules["front"]
+        original_events_backup = list(front_mod.events)
+        original_recording_start = front_mod.recording_start
+        try:
+            front_mod.events = []
+            front_mod.recording_start = 0.0
+            app.timeline_meta = {
+                "original_events": [],
+                "latest_saved_events": [{"type": "press", "button": "space", "at": 2.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}],
+            }
+            with mock.patch("front.messagebox.showinfo") as info_mock:
+                app.analyze()
+            self.assertEqual(app.timeline[0]["at"], 2.0)
+            info_mock.assert_called_once()
         finally:
             front_mod.events = original_events_backup
             front_mod.recording_start = original_recording_start
