@@ -1737,7 +1737,12 @@ class App:
         if prepared_events is None:
             return
         self.runtime_working_timeline = self.copy_events(prepared_events)
-        self.set_status("已糾正複製體（僅工作副本，共 {} 筆）".format(len(prepared_events)))
+        self.timeline = self.copy_events(prepared_events)
+        self.current_loaded_from_saved = False
+        self.update_current_labels()
+        self.refresh_tree()
+        self.refresh_preview()
+        self.set_status("已糾正複製體並更新 table（尚未保存，共 {} 筆）".format(len(prepared_events)))
 
     def apply_offset_from_selected(self):
         if not self._ensure_runtime_editable():

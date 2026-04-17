@@ -279,6 +279,7 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.validate_negative_group_monotonic_by_index = App.validate_negative_group_monotonic_by_index.__get__(app, App)
         app.get_unsupported_buttons = App.get_unsupported_buttons.__get__(app, App)
         app.prepare_events_for_send = App.prepare_events_for_send.__get__(app, App)
+        app.calculate_offsets_only = App.calculate_offsets_only.__get__(app, App)
         app._allocate_auto_negative_group = App._allocate_auto_negative_group.__get__(app, App)
         app.save_current_timeline = App.save_current_timeline.__get__(app, App)
         app.analyze = App.analyze.__get__(app, App)
@@ -367,6 +368,26 @@ class TimelineWorkflowTests(unittest.TestCase):
         finally:
             front_mod.events = original_events_backup
             front_mod.recording_start = original_recording_start
+
+    def test_calculate_offsets_only_refreshes_table_without_touching_original_slot(self):
+        app = self._new_workflow_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 6.12, "at_jitter": 0.0, "buff_group": "-1", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.timeline_meta["original_events"] = app.copy_events(app.timeline)
+        refreshed = {"tree": 0, "preview": 0}
+        app.refresh_tree = lambda: refreshed.__setitem__("tree", refreshed["tree"] + 1)
+        app.refresh_preview = lambda: refreshed.__setitem__("preview", refreshed["preview"] + 1)
+        app.prepare_events_for_send = lambda action_reason="calculate_offset_only": ([
+            {"type": "press", "button": "space", "at": 1.23, "at_jitter": 0.0, "buff_group": "-1", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0, "row_color": ""}
+        ], "")
+
+        app.calculate_offsets_only()
+
+        self.assertEqual(app.timeline[0]["at"], 1.23)
+        self.assertEqual(app.timeline_meta["original_events"][0]["at"], 6.12)
+        self.assertEqual(refreshed["tree"], 1)
+        self.assertEqual(refreshed["preview"], 1)
 
 
 if __name__ == "__main__":
