@@ -49,7 +49,8 @@ DEFAULT_HINT_NOTE_TEXT = (
     "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n"
     "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
     "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n"
-    "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at。"
+    "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at。\n"
+    "at_random_sec：執行期會每輪重新隨機運算 at 時間，不是固定腳本。"
 )
 
 events = []
@@ -72,6 +73,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
+            "timeline_at_random_sec": 0.0,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -105,6 +107,7 @@ def load_config():
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
+            "timeline_at_random_sec": max(0.0, float(data.get("timeline_at_random_sec", 0.0))),
             "hint_note_text": str(data.get("hint_note_text", DEFAULT_HINT_NOTE_TEXT)),
             "ui_recent_colors": normalized_recent,
             "ui_layout": {
@@ -121,6 +124,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
+            "timeline_at_random_sec": 0.0,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -369,6 +373,7 @@ def build_timeline(raw_events, start_time):
             "button": ev["button"],
             "at": round(max(0.0, ev["time"] - start_time), 4),
             "at_jitter": 0.0,
+            "at_random_sec": 0.0,
             "buff_group": "",
             "buff_cycle_sec": 0.0,
             "buff_jitter_sec": 0.0
@@ -438,6 +443,7 @@ class App:
         row.setdefault("button", "")
         row["at"] = round(max(0.0, float(row.get("at", 0.0))), 2)
         row["at_jitter"] = round(abs(float(row.get("at_jitter", 0.0))), 4)
+        row["at_random_sec"] = round(abs(float(row.get("at_random_sec", 0.0))), 4)
         row["buff_group"] = str(row.get("buff_group", "")).strip()
         row["buff_cycle_sec"] = round(max(0.0, float(row.get("buff_cycle_sec", 0.0))), 4)
         row["buff_jitter_sec"] = round(abs(float(row.get("buff_jitter_sec", 0.0))), 4)
@@ -458,6 +464,22 @@ class App:
         except ValueError:
             raise ValueError("自/手動偏移時間必須是數字")
         self.config["manual_offset_sec"] = val
+        save_config(self.config)
+        return val
+
+    def get_timeline_at_random_sec(self):
+        raw = ""
+        if hasattr(self, "timeline_at_random_entry"):
+            raw = self.timeline_at_random_entry.get().strip()
+        if not raw:
+            raw = str(self.config.get("timeline_at_random_sec", 0.0))
+        try:
+            val = float(raw)
+        except ValueError:
+            raise ValueError("at 隨機秒數必須是數字")
+        if val < 0:
+            raise ValueError("at 隨機秒數不可小於 0")
+        self.config["timeline_at_random_sec"] = val
         save_config(self.config)
         return val
 
@@ -940,7 +962,14 @@ class App:
         tk.Label(
             jitter_frame,
             text="【註：buff_group 為負值時，請用「糾正複製體」重算；「套用偏移」僅手動平移時間。】"
-        ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 6), sticky="w")
+        ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 4), sticky="w")
+        tk.Label(jitter_frame, text="at 隨機：").grid(row=2, column=0, padx=(8, 5), pady=(0, 6), sticky="w")
+        self.timeline_at_random_entry = tk.Entry(jitter_frame, width=10)
+        self.timeline_at_random_entry.insert(0, "{:.4f}".format(float(self.config.get("timeline_at_random_sec", 0.0))))
+        self.timeline_at_random_entry.grid(row=2, column=1, padx=(0, 5), pady=(0, 6), sticky="w")
+        tk.Label(jitter_frame, text="秒（統一套用，執行時每輪重算）").grid(
+            row=2, column=2, columnspan=4, padx=(0, 8), pady=(0, 6), sticky="w"
+        )
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -2079,9 +2108,12 @@ class App:
     def prepare_events_for_send(self, action_reason="before_send"):
         try:
             offset_sec = self.get_manual_offset_sec()
+            at_random_sec = self.get_timeline_at_random_sec()
             base_events = [self.normalize_event_schema(ev) for ev in self.timeline]
             self.validate_negative_group_monotonic_by_index(base_events)
             events = recalculate_runtime_events_by_index(base_events, offset_sec)
+            for ev in events:
+                ev["at_random_sec"] = round(at_random_sec, 4)
         except Exception as e:
             messagebox.showerror("時間重算失敗", str(e))
             return None, ""

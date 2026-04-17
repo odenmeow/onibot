@@ -209,13 +209,15 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
     if reset_stop_event:
         stop_event.clear()
     normalized = []
+    raw_ats = [max(0.0, float(ev.get("at", 0.0))) for ev in events]
 
     group_config = {}
     for i, ev in enumerate(events):
         ev_type = ev.get("type")
         button = ev.get("button")
-        at = float(ev.get("at", 0.0))
+        at = raw_ats[i]
         at_jitter = abs(float(ev.get("at_jitter", 0.0)))
+        at_random_sec = abs(float(ev.get("at_random_sec", 0.0)))
         buff_group = str(ev.get("buff_group", "")).strip()
         buff_cycle_sec = max(0.0, float(ev.get("buff_cycle_sec", 0.0)))
         buff_jitter_sec = abs(float(ev.get("buff_jitter_sec", 0.0)))
@@ -225,7 +227,24 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
         if button not in BUTTONS:
             raise ValueError("第 {} 筆找不到按鍵: {}".format(i, button))
 
-        actual_at = max(0.0, at + random.uniform(-at_jitter, at_jitter))
+        neighbor_gaps = []
+        if i - 1 >= 0:
+            gap = abs(at - raw_ats[i - 1])
+            if gap > 0:
+                neighbor_gaps.append(gap)
+        if i + 1 < len(raw_ats):
+            gap = abs(raw_ats[i + 1] - at)
+            if gap > 0:
+                neighbor_gaps.append(gap)
+
+        if neighbor_gaps:
+            nearest_gap = min(neighbor_gaps)
+            auto_jitter = min(at_random_sec, nearest_gap * 0.35)
+        else:
+            auto_jitter = at_random_sec
+
+        effective_jitter = max(at_jitter, auto_jitter)
+        actual_at = max(0.0, at + random.uniform(-effective_jitter, effective_jitter))
         if buff_group and buff_cycle_sec > 0:
             cfg = group_config.get(buff_group)
             if cfg is None:
@@ -238,6 +257,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
             "type": ev_type,
             "button": button,
             "at": actual_at,
+            "effective_jitter": effective_jitter,
             "buff_group": buff_group
         })
 
