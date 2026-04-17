@@ -497,11 +497,73 @@ class App:
     def copy_events(self, rows):
         return [self.normalize_event_schema(ev) for ev in rows]
 
+    def _history_key(self):
+        name = str(getattr(self, "current_name", "") or "").strip()
+        return name if name else "__unsaved__"
+
+    def _history_bucket(self):
+        if not hasattr(self, "timeline_histories") or not isinstance(self.timeline_histories, dict):
+            self.timeline_histories = {}
+        key = self._history_key()
+        if key not in self.timeline_histories:
+            self.timeline_histories[key] = {"undo": [], "redo": []}
+        return self.timeline_histories[key]
+
+    def _timeline_signature(self, rows):
+        return json.dumps(rows, ensure_ascii=False, sort_keys=True)
+
+    def _begin_timeline_change(self):
+        return self.copy_events(self.timeline)
+
+    def _finalize_timeline_change(self, before_snapshot):
+        if self._timeline_signature(before_snapshot) == self._timeline_signature(self.timeline):
+            return False
+        bucket = self._history_bucket()
+        bucket["undo"].append(before_snapshot)
+        if len(bucket["undo"]) > 100:
+            bucket["undo"] = bucket["undo"][-100:]
+        bucket["redo"].clear()
+        return True
+
+    def _reset_timeline_history(self):
+        if not hasattr(self, "timeline_histories") or not isinstance(self.timeline_histories, dict):
+            self.timeline_histories = {}
+        self.timeline_histories[self._history_key()] = {"undo": [], "redo": []}
+
+    def undo_timeline(self, _event=None):
+        if not self._ensure_runtime_editable():
+            return "break"
+        bucket = self._history_bucket()
+        if not bucket["undo"]:
+            self.set_status("沒有可復原的上一步")
+            return "break"
+        before = bucket["undo"].pop()
+        bucket["redo"].append(self.copy_events(self.timeline))
+        self.timeline = self.copy_events(before)
+        self.mark_timeline_dirty()
+        self.set_status("已復原上一步")
+        return "break"
+
+    def redo_timeline(self, _event=None):
+        if not self._ensure_runtime_editable():
+            return "break"
+        bucket = self._history_bucket()
+        if not bucket["redo"]:
+            self.set_status("沒有可重做的下一步")
+            return "break"
+        after = bucket["redo"].pop()
+        bucket["undo"].append(self.copy_events(self.timeline))
+        self.timeline = self.copy_events(after)
+        self.mark_timeline_dirty()
+        self.set_status("已重做下一步")
+        return "break"
+
     def restore_original_timeline(self):
         original = self.timeline_meta.get("original_events", [])
         if not original:
             return False
         self.timeline = self.copy_events(original)
+        self._reset_timeline_history()
         self.current_loaded_from_saved = False
         self.update_current_labels()
         self.refresh_tree()
@@ -513,6 +575,7 @@ class App:
         if not latest_saved:
             return False
         self.timeline = self.copy_events(latest_saved)
+        self._reset_timeline_history()
         self.current_loaded_from_saved = False
         self.update_current_labels()
         self.refresh_tree()
@@ -717,6 +780,7 @@ class App:
         self.runtime_manual_restore_active = False
         self.tree_row_color_tags = set()
         self.last_tree_copy_payload = ""
+        self.timeline_histories = {}
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -899,9 +963,15 @@ class App:
         self.tree.bind("<Control-C>", self.on_tree_copy, add="+")
         self.tree.bind("<Control-v>", self.on_tree_paste, add="+")
         self.tree.bind("<Control-V>", self.on_tree_paste, add="+")
+        self.tree.bind("<Control-z>", self.undo_timeline, add="+")
+        self.tree.bind("<Control-Z>", self.undo_timeline, add="+")
+        self.tree.bind("<Control-y>", self.redo_timeline, add="+")
+        self.tree.bind("<Control-Y>", self.redo_timeline, add="+")
 
         edit_row = tk.Frame(right_panel)
         edit_row.pack(fill="x", pady=(0, 8))
+        tk.Button(edit_row, text="上一步", command=self.undo_timeline, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="下一步", command=self.redo_timeline, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="上移", command=self.move_selected_up, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
@@ -1074,8 +1144,10 @@ class App:
         if not color:
             messagebox.showwarning("提醒", "請選擇有效顏色")
             return False
+        before = self._begin_timeline_change()
         for idx in selected:
             self.timeline[idx]["row_color"] = color
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.tree.selection_set([str(i) for i in selected])
         self._remember_recent_color(color)
@@ -1347,6 +1419,7 @@ class App:
             messagebox.showwarning("提醒", "沒有可恢復內容")
             return
         self.timeline = self.copy_events(self.pre_run_timeline_snapshot)
+        self._reset_timeline_history()
         self.runtime_manual_restore_active = True
         self.runtime_display_frozen = False
         self.clear_runtime_highlight()
@@ -1445,6 +1518,7 @@ class App:
         recording = True
         recording_start = time.time()
         self.timeline = []
+        self._reset_timeline_history()
         self.timeline_meta = self.new_meta()
         self.current_loaded_from_saved = False
         self.set_frontend_error("")
@@ -1499,6 +1573,7 @@ class App:
             return
 
         self.timeline = build_timeline(events, recording_start)
+        self._reset_timeline_history()
         self.timeline_meta = self.new_meta()
         self.mark_timeline_dirty()
 
@@ -1583,6 +1658,7 @@ class App:
         self.timeline = [self.normalize_event_schema(ev) for ev in data.get("events", [])]
         self.timeline_meta = self.normalize_meta(data.get("_meta", {}))
         self.current_name = data.get("name", name)
+        self._reset_timeline_history()
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = self.current_name
         save_config(self.config)
@@ -1685,9 +1761,11 @@ class App:
             messagebox.showerror("錯誤", "at jitter 必須是數字")
             return
 
+        before = self._begin_timeline_change()
         for idx in selected:
             self.timeline[idx]["at_jitter"] = jitter
 
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         for idx in selected:
             self.tree.selection_add(str(idx))
@@ -1704,9 +1782,11 @@ class App:
             messagebox.showerror("錯誤", "at jitter 必須是數字")
             return
 
+        before = self._begin_timeline_change()
         for ev in self.timeline:
             ev["at_jitter"] = jitter
 
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.set_status("已套用 jitter 到全部 event")
 
@@ -1720,9 +1800,11 @@ class App:
             messagebox.showwarning("提醒", "請先選取一列或多列")
             return
 
+        before = self._begin_timeline_change()
         for idx in selected:
             self.timeline[idx]["at_jitter"] = 0.0
 
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         for idx in selected:
             self.tree.selection_add(str(idx))
@@ -1739,8 +1821,10 @@ class App:
         for ev in prepared_events:
             if self._is_negative_buff_group(ev.get("buff_group", "")):
                 ev["buff_group"] = ""
+        before = self._begin_timeline_change()
         self.runtime_working_timeline = self.copy_events(prepared_events)
         self.timeline = self.copy_events(prepared_events)
+        self._finalize_timeline_change(before)
         self.current_loaded_from_saved = False
         self.update_current_labels()
         self.refresh_tree()
@@ -1768,6 +1852,7 @@ class App:
             messagebox.showerror("錯誤", str(e))
             return
 
+        before = self._begin_timeline_change()
         start_idx = selected[0]
         old_at = [float(ev.get("at", 0.0)) for ev in self.timeline]
         base = old_at[start_idx]
@@ -1781,6 +1866,7 @@ class App:
             delta = old_at[idx] - base
             self.timeline[idx]["at"] = round(max(0.0, anchor + delta), 2)
 
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.tree.selection_set(str(start_idx))
         self.set_status("已自第 {} 列起偏移 {:.3f} 秒，共 {} 列".format(start_idx, offset_sec, len(self.timeline) - start_idx))
@@ -2054,6 +2140,7 @@ class App:
             if new_value is None:
                 return
 
+            before = self._begin_timeline_change()
             try:
                 for idx in selected:
                     self._apply_tree_field_value(idx, field, new_value)
@@ -2061,6 +2148,7 @@ class App:
                 messagebox.showerror("修改失敗", str(e))
                 return
 
+            self._finalize_timeline_change(before)
             self.mark_timeline_dirty()
             self.tree.selection_set([str(idx) for idx in selected])
             self.set_status("已將 {} 套用到 {} 筆選取列".format(field, len(selected)))
@@ -2079,12 +2167,14 @@ class App:
         if new_value is None:
             return
 
+        before = self._begin_timeline_change()
         try:
             self._apply_tree_field_value(idx, field, new_value)
         except Exception as e:
             messagebox.showerror("修改失敗", str(e))
             return
 
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.tree.selection_set(str(idx))
 
@@ -2186,6 +2276,7 @@ class App:
                 return "break"
             insert_at = anchor if position == "above" else anchor + 1
             new_indexes = []
+            before = self._begin_timeline_change()
             try:
                 for offset, row_values in enumerate(parsed_rows):
                     ev = self._build_timeline_event_from_values(row_values)
@@ -2197,11 +2288,13 @@ class App:
                 messagebox.showerror("貼上失敗", str(e))
                 return "break"
 
+            self._finalize_timeline_change(before)
             self.mark_timeline_dirty()
             self.tree.selection_set([str(i) for i in new_indexes])
             self.set_status("已插入貼上 {} 列（從 idx {} 開始）".format(len(new_indexes), insert_at))
             return "break"
 
+        before = self._begin_timeline_change()
         changed_indexes = []
         for offset, row_values in enumerate(parsed_rows):
             row_idx = start_idx + offset
@@ -2217,6 +2310,7 @@ class App:
             messagebox.showwarning("提醒", "貼上範圍超出目前列數，未更新任何資料")
             return "break"
 
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.tree.selection_set([str(i) for i in changed_indexes])
         self.set_status("已貼上 {} 列（從 idx {} 開始）".format(len(changed_indexes), changed_indexes[0]))
@@ -2335,8 +2429,10 @@ class App:
             return
         if selected[0] == 0:
             return
+        before = self._begin_timeline_change()
         for idx in selected:
             self.timeline[idx - 1], self.timeline[idx] = self.timeline[idx], self.timeline[idx - 1]
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.tree.selection_set([str(i - 1) for i in selected])
 
@@ -2349,8 +2445,10 @@ class App:
             return
         if selected[0] == len(self.timeline) - 1:
             return
+        before = self._begin_timeline_change()
         for idx in selected:
             self.timeline[idx + 1], self.timeline[idx] = self.timeline[idx], self.timeline[idx + 1]
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.tree.selection_set([str(i + 1) for i in sorted(selected)])
 
@@ -2361,8 +2459,10 @@ class App:
         if not selected:
             messagebox.showwarning("提醒", "請先選取列")
             return
+        before = self._begin_timeline_change()
         for idx in selected:
             self.timeline.pop(idx)
+        self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.set_status("已刪除 {} 列".format(len(selected)))
 

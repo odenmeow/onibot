@@ -281,6 +281,14 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.prepare_events_for_send = App.prepare_events_for_send.__get__(app, App)
         app.calculate_offsets_only = App.calculate_offsets_only.__get__(app, App)
         app._allocate_auto_negative_group = App._allocate_auto_negative_group.__get__(app, App)
+        app._history_key = App._history_key.__get__(app, App)
+        app._history_bucket = App._history_bucket.__get__(app, App)
+        app._begin_timeline_change = App._begin_timeline_change.__get__(app, App)
+        app._finalize_timeline_change = App._finalize_timeline_change.__get__(app, App)
+        app._reset_timeline_history = App._reset_timeline_history.__get__(app, App)
+        app.undo_timeline = App.undo_timeline.__get__(app, App)
+        app.redo_timeline = App.redo_timeline.__get__(app, App)
+        app._ensure_runtime_editable = lambda: True
         app.save_current_timeline = App.save_current_timeline.__get__(app, App)
         app.analyze = App.analyze.__get__(app, App)
         app.restore_original_timeline = App.restore_original_timeline.__get__(app, App)
@@ -389,6 +397,27 @@ class TimelineWorkflowTests(unittest.TestCase):
         self.assertEqual(app.timeline_meta["original_events"][0]["at"], 6.12)
         self.assertEqual(refreshed["tree"], 1)
         self.assertEqual(refreshed["preview"], 1)
+
+    def test_undo_redo_groups_multi_row_change_in_one_step(self):
+        app = self._new_workflow_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+            {"type": "release", "button": "space", "at": 1.2, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+        ]
+        before = app.copy_events(app.timeline)
+        snapshot = app._begin_timeline_change()
+        app.timeline.extend([
+            {"type": "press", "button": "x", "at": 2.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+            {"type": "release", "button": "x", "at": 2.2, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+        ])
+        app._finalize_timeline_change(snapshot)
+        self.assertEqual(len(app.timeline), 4)
+
+        app.undo_timeline()
+        self.assertEqual(app.timeline, before)
+
+        app.redo_timeline()
+        self.assertEqual(len(app.timeline), 4)
 
 
 if __name__ == "__main__":
