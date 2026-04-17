@@ -48,7 +48,8 @@ SUPPORTED_BUTTONS = {
 DEFAULT_HINT_NOTE_TEXT = (
     "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n"
     "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
-    "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。"
+    "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n"
+    "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at。"
 )
 
 events = []
@@ -719,6 +720,8 @@ class App:
         self.runtime_display_frozen = False
         self.runtime_manual_restore_active = False
         self.tree_row_color_tags = set()
+        self.next_auto_negative_group = -1
+        self.last_tree_copy_payload = ""
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -862,7 +865,7 @@ class App:
             bg="#fff4b3",
             activebackground="#ffe08a"
         ).grid(row=0, column=2, padx=(0, 5), pady=5)
-        tk.Button(jitter_frame, text="計算偏移量", command=self.calculate_offsets_only).grid(
+        tk.Button(jitter_frame, text="糾正複製體", command=self.calculate_offsets_only).grid(
             row=0, column=3, padx=(5, 8), pady=5
         )
         tk.Button(jitter_frame, text="改顏色", command=self.open_row_color_dialog).grid(
@@ -877,7 +880,7 @@ class App:
         self.restore_pre_run_btn.grid(row=0, column=5, padx=(0, 8), pady=5)
         tk.Label(
             jitter_frame,
-            text="【註: buff_goup 如果設定 -1 可計算偏移量，不同複製按鈕群請用不同負值 】"
+            text="【註：buff_group 為負值時，請用「糾正複製體」重算；「套用偏移」僅手動平移時間。】"
         ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 6), sticky="w")
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
@@ -906,7 +909,6 @@ class App:
         edit_row.pack(fill="x", pady=(0, 8))
         tk.Button(edit_row, text="上移", command=self.move_selected_up, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
-        tk.Button(edit_row, text="複製列", command=self.duplicate_selected_rows, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
         tk.Label(edit_row, text="自/手動偏移 :").pack(side="left", padx=(14, 5))
         self.offset_sec_entry = tk.Entry(edit_row, width=10)
@@ -1716,7 +1718,7 @@ class App:
         prepared_events, _ = self.prepare_events_for_send(action_reason="calculate_offset_only")
         if prepared_events is None:
             return
-        self.set_status("已計算偏移量並套用到 timeline（共 {} 筆）".format(len(prepared_events)))
+        self.set_status("已糾正複製體並套用到 timeline（共 {} 筆）".format(len(prepared_events)))
 
     def apply_offset_from_selected(self):
         if not self._ensure_runtime_editable():
@@ -1728,6 +1730,9 @@ class App:
         selected = sorted(self.get_selected_indexes())
         if not selected:
             messagebox.showwarning("提醒", "請先選取一列或多列")
+            return
+        if any(self._is_negative_buff_group(self.timeline[idx].get("buff_group", "")) for idx in selected):
+            messagebox.showwarning("提醒", "選到複製體負群（buff_group < 0），請改用「糾正複製體」。")
             return
 
         try:
@@ -2086,12 +2091,33 @@ class App:
             values = self.tree.item(str(idx), "values")
             lines.append("\t".join(str(v) for v in values))
 
+        payload = "\n".join(lines)
         self.root.clipboard_clear()
-        self.root.clipboard_append("\n".join(lines))
+        self.root.clipboard_append(payload)
+        self.last_tree_copy_payload = payload
         self.set_status("已複製 {} 列（含欄位標題，可貼到 Excel）".format(len(selected)))
         return "break"
 
+    def _allocate_auto_negative_group(self):
+        used = set()
+        for ev in self.timeline:
+            group = str(ev.get("buff_group", "")).strip()
+            if not group.startswith("-"):
+                continue
+            try:
+                used.add(int(group))
+            except ValueError:
+                continue
+
+        candidate = int(self.next_auto_negative_group)
+        while candidate in used:
+            candidate -= 1
+        self.next_auto_negative_group = candidate - 1
+        return str(candidate)
+
     def on_tree_paste(self, _event=None):
+        if not self._ensure_runtime_editable():
+            return "break"
         try:
             raw = self.root.clipboard_get()
         except tk.TclError:
@@ -2111,6 +2137,7 @@ class App:
         full_header = [col.lower() for col in self.tree_columns]
         short_header = [f.lower() for f in fields]
         parsed_rows = []
+        copied_from_tree = raw.strip() == self.last_tree_copy_payload.strip() and bool(self.last_tree_copy_payload.strip())
         for line in lines:
             values = [v.strip() for v in line.split("\t")]
             lowered = [v.lower() for v in values]
@@ -2128,26 +2155,18 @@ class App:
             messagebox.showerror("貼上失敗", str(e))
             return "break"
 
-        if len(parsed_rows) >= 2 and len(selected) == 1:
+        if copied_from_tree:
+            auto_group = self._allocate_auto_negative_group()
+            for row_values in parsed_rows:
+                row_values[4] = auto_group
+
+        if len(selected) == 1:
             anchor = selected[0]
-            ask = messagebox.askyesnocancel(
-                "貼上位置",
-                "你選了第 {} 列。\n要貼在：\n"
-                "Yes：第 {}~{} 列之間（插入在上方）\n"
-                "No：第 {}~{} 列之間（插入在下方）\n"
-                "Cancel：取消貼上".format(
-                    anchor,
-                    max(0, anchor - 1),
-                    anchor,
-                    anchor,
-                    anchor + 1
-                )
-            )
-            if ask is None:
+            position = self.ask_paste_position(anchor, len(parsed_rows))
+            if position is None:
                 self.set_status("已取消貼上")
                 return "break"
-
-            insert_at = anchor if ask else anchor + 1
+            insert_at = anchor if position == "above" else anchor + 1
             new_indexes = []
             try:
                 for offset, row_values in enumerate(parsed_rows):
@@ -2184,6 +2203,36 @@ class App:
         self.tree.selection_set([str(i) for i in changed_indexes])
         self.set_status("已貼上 {} 列（從 idx {} 開始）".format(len(changed_indexes), changed_indexes[0]))
         return "break"
+
+    def ask_paste_position(self, anchor_idx, row_count):
+        choice = {"value": None}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("貼上位置")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        msg = (
+            "你選了第 {} 列，要把 {} 列資料貼在目標的哪裡？"
+            .format(anchor_idx, row_count)
+        )
+        tk.Label(dialog, text=msg, justify="left", anchor="w").pack(
+            fill="x", padx=14, pady=(12, 8)
+        )
+
+        btn_row = tk.Frame(dialog)
+        btn_row.pack(fill="x", padx=14, pady=(0, 12))
+
+        def choose(value):
+            choice["value"] = value
+            dialog.destroy()
+
+        tk.Button(btn_row, text="上方", width=10, command=lambda: choose("above")).pack(side="left")
+        tk.Button(btn_row, text="下方", width=10, command=lambda: choose("below")).pack(side="left", padx=(6, 0))
+        tk.Button(btn_row, text="取消", width=10, command=dialog.destroy).pack(side="right")
+
+        self.root.wait_window(dialog)
+        return choice["value"]
 
     def _normalize_paste_row(self, values):
         if not values:
@@ -2262,27 +2311,6 @@ class App:
             self.timeline[idx + 1], self.timeline[idx] = self.timeline[idx], self.timeline[idx + 1]
         self.mark_timeline_dirty()
         self.tree.selection_set([str(i + 1) for i in sorted(selected)])
-
-    def duplicate_selected_rows(self):
-        if not self._ensure_runtime_editable():
-            return
-        selected = sorted(self.get_selected_indexes())
-        if not selected:
-            messagebox.showwarning("提醒", "請先選取列")
-            return
-        offset = 0
-        new_ids = []
-        for idx in selected:
-            insert_at = idx + 1 + offset
-            copied = dict(self.timeline[idx + offset])
-            copied["replicatedRow"] = 1
-            copied["row_color"] = "#fff4b3"
-            copied = self._sync_replicated_row(copied)
-            self.timeline.insert(insert_at, copied)
-            new_ids.append(insert_at)
-            offset += 1
-        self.mark_timeline_dirty()
-        self.tree.selection_set([str(i) for i in new_ids])
 
     def delete_selected_rows(self):
         if not self._ensure_runtime_editable():
