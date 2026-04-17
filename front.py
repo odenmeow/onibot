@@ -1566,8 +1566,15 @@ class App:
                     else:
                         self.set_status("已還原上次保存新版 Timeline（重新分析）")
                 return
-            if self.restore_original_timeline():
+            if has_original:
+                messagebox.showinfo("重新分析", "目前無新錄製資料。\n目前僅有可回復的「初版 Timeline」。")
+                self.restore_original_timeline()
                 self.set_status("已還原初版 Timeline（重新分析）")
+                return
+            if has_latest_saved:
+                messagebox.showinfo("重新分析", "目前無新錄製資料。\n目前僅有可回復的「上次保存新版 Timeline」。")
+                self.restore_latest_saved_timeline()
+                self.set_status("已還原上次保存新版 Timeline（重新分析）")
                 return
             messagebox.showwarning("提醒", "目前沒有錄到資料，也沒有可還原的初版/新版 Timeline")
             return
@@ -1605,26 +1612,40 @@ class App:
 
         name = sanitize_filename(name)
         path = timeline_file_path(name)
+        save_mode = "new_version"
 
         if os.path.exists(path):
-            yes = messagebox.askyesno("確認覆蓋", "名稱 '{}' 已存在，是否覆蓋？".format(name))
-            if not yes:
+            overwrite_choice = messagebox.askyesnocancel(
+                "保存同名 Timeline",
+                "名稱 '{}' 已存在。\n\n"
+                "按「是」：完全取代（重建初版與新版，會覆蓋整份版本資訊）。\n"
+                "按「否」：存為新版（保留初版 original_events，只更新 latest_saved_events）。\n"
+                "按「取消」：不保存。".format(name)
+            )
+            if overwrite_choice is None:
+                self.set_status("已取消保存")
                 return
+            save_mode = "full_replace" if overwrite_choice else "new_version"
 
         try:
             offset_sec = self.get_manual_offset_sec()
-            self.timeline = [self.normalize_event_schema(ev) for ev in self.timeline]
-            if not self.timeline_meta.get("original_events"):
-                self.timeline_meta["original_events"] = self.copy_events(self.timeline)
-            self.validate_negative_group_monotonic_by_index(self.timeline)
-            recalculated = self.recalculate_timeline_for_runtime(anchor_gap_sec=offset_sec)
+            working_timeline = self.copy_events(self.timeline)
+            self.validate_negative_group_monotonic_by_index(working_timeline)
+            recalculated = recalculate_runtime_events_by_index(self.copy_events(working_timeline), offset_sec)
+            if save_mode == "full_replace":
+                self.timeline_meta["original_events"] = self.copy_events(working_timeline)
+            elif not self.timeline_meta.get("original_events"):
+                self.timeline_meta["original_events"] = self.copy_events(working_timeline)
             self.timeline_meta["latest_saved_events"] = self.copy_events(recalculated)
         except Exception as e:
             messagebox.showerror("保存失敗", str(e))
             return
 
-        self.timeline = recalculated
-        save_named_timeline(name, self.timeline, self.timeline_meta)
+        save_payload = self.copy_events(recalculated)
+        if save_mode == "full_replace":
+            self.timeline = self.copy_events(recalculated)
+            save_payload = self.copy_events(self.timeline)
+        save_named_timeline(name, save_payload, self.timeline_meta)
         self.current_name = name
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = name
@@ -1633,7 +1654,10 @@ class App:
         self.refresh_saved_list()
         self.select_saved_name(name)
         self.mark_timeline_dirty()
-        self.set_status("已保存 Timeline：{}".format(name))
+        if save_mode == "full_replace":
+            self.set_status("已完全取代保存 Timeline：{}".format(name))
+        else:
+            self.set_status("已保存新版 Timeline（保留初版）：{}".format(name))
 
     def select_saved_name(self, name):
         names = list_saved_timeline_names()
@@ -1657,6 +1681,8 @@ class App:
 
         self.timeline = [self.normalize_event_schema(ev) for ev in data.get("events", [])]
         self.timeline_meta = self.normalize_meta(data.get("_meta", {}))
+        if not self.timeline_meta.get("original_events") and self.timeline:
+            self.timeline_meta["original_events"] = self.copy_events(self.timeline)
         self.current_name = data.get("name", name)
         self._reset_timeline_history()
         self.current_loaded_from_saved = True
