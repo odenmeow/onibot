@@ -1,6 +1,7 @@
 import unittest
 import sys
 import types
+from unittest import mock
 
 if "pynput" not in sys.modules:
     pynput_stub = types.ModuleType("pynput")
@@ -159,12 +160,20 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.offline_mode = False
         app.conn = object()
         app.connected = True
+        app._set_restore_pre_run_button_state = App._set_restore_pre_run_button_state.__get__(app, App)
+        app._ensure_runtime_editable = App._ensure_runtime_editable.__get__(app, App)
+        app.stop_pi = App.stop_pi.__get__(app, App)
+        app.update_current_labels = lambda: None
+        app.set_frontend_error = lambda *_args, **_kwargs: None
+        app.set_status = lambda *_args, **_kwargs: None
+        app.config = {"pi_host": "127.0.0.1"}
+        app.pi_ip_entry = types.SimpleNamespace(get=lambda: "127.0.0.1")
         return app
 
     def test_running_shows_cooldown_text_in_buff_group_column(self):
         app = self._new_app()
         app.timeline = [
-            {"type": "press", "button": "a", "at": 0.0, "at_jitter": 0.0, "buff_group": "A", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+            {"type": "press", "button": "space", "at": 0.0, "at_jitter": 0.0, "buff_group": "A", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
         ]
         app.timeline_runtime_by_index = {0: {"status": "skipped_by_cooldown"}}
         app.refresh_tree()
@@ -175,7 +184,7 @@ class RuntimeDisplayTests(unittest.TestCase):
     def test_poll_stopped_freezes_and_repeated_poll_does_not_refresh_table(self):
         app = self._new_app()
         app.timeline = [
-            {"type": "press", "button": "a", "at": 0.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+            {"type": "press", "button": "space", "at": 0.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
         ]
         app.has_pre_run_snapshot = True
         refresh_count = {"count": 0}
@@ -207,13 +216,13 @@ class RuntimeDisplayTests(unittest.TestCase):
     def test_restore_pre_run_state_restores_snapshot(self):
         app = self._new_app()
         app.timeline = [{"type": "press", "button": "z", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
-        app.pre_run_timeline_snapshot = [{"type": "press", "button": "a", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
+        app.pre_run_timeline_snapshot = [{"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
         app.has_pre_run_snapshot = True
         app.runtime_display_frozen = True
 
         app.restore_pre_run_state()
 
-        self.assertEqual(app.timeline[0]["button"], "a")
+        self.assertEqual(app.timeline[0]["button"], "space")
         self.assertFalse(app.runtime_display_frozen)
 
     def test_restore_without_snapshot_does_not_change_data(self):
@@ -226,6 +235,138 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertEqual(app.timeline[0]["button"], "z")
         self.assertTrue(any("沒有可恢復內容" in msg for _, msg in self.warning_calls))
+
+    def test_stop_without_snapshot_keeps_runtime_editable(self):
+        app = self._new_app()
+        app.has_pre_run_snapshot = False
+        app.runtime_display_frozen = True
+        app.request_pi = lambda *_args, **_kwargs: {"status": "ok"}
+        app.restore_pre_run_btn = types.SimpleNamespace(config=lambda **_kwargs: None)
+
+        app.stop_pi()
+
+        self.assertFalse(app.runtime_display_frozen)
+        self.assertTrue(app._ensure_runtime_editable())
+
+    def test_stop_with_snapshot_freezes_runtime_display(self):
+        app = self._new_app()
+        app.has_pre_run_snapshot = True
+        app.runtime_display_frozen = False
+        app.request_pi = lambda *_args, **_kwargs: {"status": "ok"}
+        states = []
+        app.restore_pre_run_btn = types.SimpleNamespace(config=lambda **kwargs: states.append(kwargs.get("state")))
+
+        app.stop_pi()
+
+        self.assertTrue(app.runtime_display_frozen)
+        self.assertIn("normal", states)
+
+
+class TimelineWorkflowTests(unittest.TestCase):
+    def _new_workflow_app(self):
+        app = App.__new__(App)
+        app.timeline = []
+        app.timeline_meta = {"original_events": [], "latest_saved_events": []}
+        app.current_name = "demo"
+        app.current_loaded_from_saved = True
+        app.runtime_display_frozen = False
+        app.has_pre_run_snapshot = False
+        app.root = types.SimpleNamespace()
+        app.name_entry = types.SimpleNamespace(get=lambda: "demo", delete=lambda *_: None, insert=lambda *_: None)
+        app.saved_listbox = types.SimpleNamespace(selection_clear=lambda *_: None, selection_set=lambda *_: None, activate=lambda *_: None)
+        app.normalize_event_schema = App.normalize_event_schema.__get__(app, App)
+        app.copy_events = App.copy_events.__get__(app, App)
+        app.validate_negative_group_monotonic_by_index = App.validate_negative_group_monotonic_by_index.__get__(app, App)
+        app.get_unsupported_buttons = App.get_unsupported_buttons.__get__(app, App)
+        app.prepare_events_for_send = App.prepare_events_for_send.__get__(app, App)
+        app._allocate_auto_negative_group = App._allocate_auto_negative_group.__get__(app, App)
+        app.save_current_timeline = App.save_current_timeline.__get__(app, App)
+        app.analyze = App.analyze.__get__(app, App)
+        app.restore_original_timeline = App.restore_original_timeline.__get__(app, App)
+        app.restore_latest_saved_timeline = App.restore_latest_saved_timeline.__get__(app, App)
+        app.get_manual_offset_sec = lambda: 0.2
+        app.refresh_tree = lambda: None
+        app.refresh_preview = lambda: None
+        app.update_current_labels = lambda: None
+        app.mark_timeline_dirty = lambda: None
+        app.refresh_saved_list = lambda: None
+        app.select_saved_name = lambda _name: None
+        app.set_status = lambda *_args, **_kwargs: None
+        app.set_frontend_error = lambda *_args, **_kwargs: None
+        app.validate_negative_group_monotonic_by_index = App.validate_negative_group_monotonic_by_index.__get__(app, App)
+        app.recalculate_timeline_for_runtime = App.recalculate_timeline_for_runtime.__get__(app, App)
+        app.config = {}
+        return app
+
+    def test_auto_negative_group_reuses_minus_one_after_delete(self):
+        app = self._new_workflow_app()
+        app.timeline = [{"buff_group": "-1"}, {"buff_group": "-2"}]
+        app.timeline = [{"buff_group": "-2"}]
+        self.assertEqual(app._allocate_auto_negative_group(), "-1")
+
+    def test_auto_negative_group_assigns_minus_two_when_minus_one_exists(self):
+        app = self._new_workflow_app()
+        app.timeline = [{"buff_group": "-1"}, {"buff_group": "A"}]
+        self.assertEqual(app._allocate_auto_negative_group(), "-2")
+
+    def test_prepare_events_for_send_is_pure_and_does_not_persist(self):
+        app = self._new_workflow_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.timeline_meta["original_events"] = app.copy_events(app.timeline)
+        timeline_before = [dict(ev) for ev in app.timeline]
+        original_before = app.copy_events(app.timeline_meta["original_events"])
+
+        with mock.patch("front.save_named_timeline") as save_mock:
+            prepared, _ = app.prepare_events_for_send("before_send")
+
+        self.assertEqual(app.timeline, timeline_before)
+        self.assertEqual(app.timeline_meta["original_events"], original_before)
+        self.assertIsNotNone(prepared)
+        save_mock.assert_not_called()
+
+    def test_save_updates_latest_saved_only(self):
+        app = self._new_workflow_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.timeline_meta["original_events"] = [
+            {"type": "press", "button": "space", "at": 0.5, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+
+        with mock.patch("front.save_named_timeline") as save_mock, \
+             mock.patch("front.save_config"), \
+             mock.patch("front.os.path.exists", return_value=False):
+            app.save_current_timeline()
+
+        self.assertEqual(app.timeline_meta["original_events"][0]["at"], 0.5)
+        self.assertTrue(app.timeline_meta["latest_saved_events"])
+        save_mock.assert_called_once()
+
+    def test_analyze_without_new_events_chooses_original_or_latest_saved(self):
+        app = self._new_workflow_app()
+        front_mod = sys.modules["front"]
+        original_events_backup = list(front_mod.events)
+        original_recording_start = front_mod.recording_start
+        try:
+            front_mod.events = []
+            front_mod.recording_start = 0.0
+            app.timeline_meta = {
+                "original_events": [{"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}],
+                "latest_saved_events": [{"type": "press", "button": "space", "at": 2.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}],
+            }
+
+            with mock.patch("front.messagebox.askyesnocancel", return_value=True):
+                app.analyze()
+                self.assertEqual(app.timeline[0]["at"], 1.0)
+
+            with mock.patch("front.messagebox.askyesnocancel", return_value=False):
+                app.analyze()
+                self.assertEqual(app.timeline[0]["at"], 2.0)
+        finally:
+            front_mod.events = original_events_backup
+            front_mod.recording_start = original_recording_start
 
 
 if __name__ == "__main__":
