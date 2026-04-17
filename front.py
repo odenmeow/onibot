@@ -49,6 +49,11 @@ DEFAULT_HINT_NOTE_TEXT = (
     "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n"
     "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
     "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n"
+    "jitter 說明：at_jitter 套用在每列 event，實際時間為 at ± at_jitter，且最小值會被夾到 0。\n"
+    "jitter 說明：at_random_sec 會在執行時自動估算額外抖動（依前後間距限制幅度），每輪重跑都會重新隨機。\n"
+    "jitter 說明：press 與 release 都填 at_jitter 時，兩列會各自獨立隨機，可能導致排序改變。\n"
+    "jitter 說明：buff_jitter_sec 僅在 buff_group 搭配 buff_cycle_sec > 0 時生效，作用於冷卻秒數隨機。\n"
+    "jitter 說明：at_jitter 與 buff_jitter_sec 輸入負值都會先取絕對值，建議一律填非負。\n"
     "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at。"
 )
 
@@ -369,6 +374,7 @@ def build_timeline(raw_events, start_time):
             "button": ev["button"],
             "at": round(max(0.0, ev["time"] - start_time), 4),
             "at_jitter": 0.0,
+            "at_random_sec": 0.0,
             "buff_group": "",
             "buff_cycle_sec": 0.0,
             "buff_jitter_sec": 0.0
@@ -438,6 +444,7 @@ class App:
         row.setdefault("button", "")
         row["at"] = round(max(0.0, float(row.get("at", 0.0))), 2)
         row["at_jitter"] = round(abs(float(row.get("at_jitter", 0.0))), 4)
+        row["at_random_sec"] = round(abs(float(row.get("at_random_sec", 0.0))), 4)
         row["buff_group"] = str(row.get("buff_group", "")).strip()
         row["buff_cycle_sec"] = round(max(0.0, float(row.get("buff_cycle_sec", 0.0))), 4)
         row["buff_jitter_sec"] = round(abs(float(row.get("buff_jitter_sec", 0.0))), 4)
@@ -942,13 +949,13 @@ class App:
             text="【註：buff_group 為負值時，請用「糾正複製體」重算；「套用偏移」僅手動平移時間。】"
         ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 6), sticky="w")
 
-        columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
+        columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "at_random_sec", "group")
         self.tree_columns = columns
         self.tree = ttk.Treeview(right_panel, columns=columns, show="headings", height=8, selectmode="extended")
         for col in columns:
             self.tree.heading(col, text=col)
             width = 92
-            if col in ("buff_group", "buff_cycle_sec", "buff_jitter_sec"):
+            if col in ("buff_group", "buff_cycle_sec", "buff_jitter_sec", "at_random_sec"):
                 width = 100
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
@@ -1393,6 +1400,7 @@ class App:
                 buff_group,
                 ev.get("buff_cycle_sec", 0.0),
                 ev.get("buff_jitter_sec", 0.0),
+                ev.get("at_random_sec", 0.0),
                 grp
             ), tags=tuple(tags))
 
@@ -2174,10 +2182,10 @@ class App:
         if not col_id:
             return
 
-        columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
+        columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "at_random_sec", "group")
         col_index = int(col_id[1:]) - 1
         field = columns[col_index]
-        editable_fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        editable_fields = ("type", "button", "at", "at_jitter", "at_random_sec", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
         if field not in editable_fields:
             return
 
@@ -2296,7 +2304,7 @@ class App:
         if selected:
             start_idx = selected[0]
 
-        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "at_random_sec")
         full_header = [col.lower() for col in self.tree_columns]
         short_header = [f.lower() for f in fields]
         parsed_rows = []
@@ -2429,13 +2437,19 @@ class App:
         if not values:
             raise ValueError("貼上資料有空白列")
         if len(values) < 7:
-            raise ValueError("每列至少需要 7 欄（type 到 buff_jitter_sec）")
-        # 優先支援 7 欄格式；若是完整表格 9 欄（idx + 7 欄 + group），則忽略 idx/group。
-        if len(values) >= 9 and values[1].strip().lower() in ("press", "release"):
-            normalized = values[1:8]
+            raise ValueError("每列至少需要 7 欄（type 到 buff_jitter_sec；at_random_sec 可省略）")
+        # 優先支援 8 欄格式（at_random_sec 放最後）；若是完整表格 10 欄（idx + 8 欄 + group），則忽略 idx/group。
+        if len(values) >= 10 and values[1].strip().lower() in ("press", "release"):
+            normalized = values[1:9]
+        elif len(values) >= 9 and values[1].strip().lower() in ("press", "release"):
+            # 舊格式 9 欄：idx + 7 欄 + group（沒有 at_random_sec）
+            normalized = values[1:8] + ["0"]
+        elif len(values) >= 8:
+            normalized = values[:8]
         else:
-            normalized = values[:7]
-        for i in range(7):
+            # 舊格式 7 欄（沒有 at_random_sec）
+            normalized = values[:7] + ["0"]
+        for i in range(8):
             normalized[i] = normalized[i].strip()
         return normalized
 
@@ -2445,18 +2459,19 @@ class App:
             "button": "",
             "at": 0.0,
             "at_jitter": 0.0,
+            "at_random_sec": 0.0,
             "buff_group": "",
             "buff_cycle_sec": 0.0,
             "buff_jitter_sec": 0.0,
             "row_color": ""
         }
-        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec")
+        fields = ("type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "at_random_sec")
         for i, field in enumerate(fields):
             self._apply_tree_field_value_to_event(event, field, values[i])
         return self._sync_replicated_row(event)
 
     def _apply_tree_field_value_to_event(self, event, field, raw_value):
-        if field in ("at", "at_jitter", "buff_cycle_sec", "buff_jitter_sec"):
+        if field in ("at", "at_jitter", "at_random_sec", "buff_cycle_sec", "buff_jitter_sec"):
             value = float(raw_value)
             if field == "at":
                 value = max(0.0, value)
