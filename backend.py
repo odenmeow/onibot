@@ -211,13 +211,11 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
     normalized = []
 
     group_config = {}
-    raw_rows = []
     for i, ev in enumerate(events):
         ev_type = ev.get("type")
         button = ev.get("button")
         at = float(ev.get("at", 0.0))
         at_jitter = abs(float(ev.get("at_jitter", 0.0)))
-        at_random_sec = abs(float(ev.get("at_random_sec", 0.0)))
         buff_group = str(ev.get("buff_group", "")).strip()
         buff_cycle_sec = max(0.0, float(ev.get("buff_cycle_sec", 0.0)))
         buff_jitter_sec = abs(float(ev.get("buff_jitter_sec", 0.0)))
@@ -227,15 +225,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
         if button not in BUTTONS:
             raise ValueError("第 {} 筆找不到按鍵: {}".format(i, button))
 
-        raw_rows.append({
-            "original_index": i,
-            "type": ev_type,
-            "button": button,
-            "at": max(0.0, at),
-            "at_jitter": at_jitter,
-            "at_random_sec": at_random_sec,
-            "buff_group": buff_group
-        })
+        actual_at = max(0.0, at + random.uniform(-at_jitter, at_jitter))
         if buff_group and buff_cycle_sec > 0:
             cfg = group_config.get(buff_group)
             if cfg is None:
@@ -243,31 +233,12 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     "cycle_sec": buff_cycle_sec,
                     "jitter_sec": buff_jitter_sec
                 }
-
-    for i, row in enumerate(raw_rows):
-        at_random_sec = row["at_random_sec"]
-        base_jitter = row["at_jitter"]
-        auto_jitter = 0.0
-        if at_random_sec > 0:
-            gap_candidates = []
-            if i > 0:
-                gap_candidates.append(max(0.0, row["at"] - raw_rows[i - 1]["at"]))
-            if i + 1 < len(raw_rows):
-                gap_candidates.append(max(0.0, raw_rows[i + 1]["at"] - row["at"]))
-            positive_gaps = [g for g in gap_candidates if g > 0]
-            if positive_gaps:
-                near_gap = min(positive_gaps)
-                auto_jitter = min(at_random_sec, near_gap * 0.35)
-            else:
-                auto_jitter = at_random_sec
-        effective_jitter = max(base_jitter, auto_jitter)
-        actual_at = max(0.0, row["at"] + random.uniform(-effective_jitter, effective_jitter))
         normalized.append({
-            "original_index": row["original_index"],
-            "type": row["type"],
-            "button": row["button"],
+            "original_index": i,
+            "type": ev_type,
+            "button": button,
             "at": actual_at,
-            "buff_group": row["buff_group"]
+            "buff_group": buff_group
         })
 
     normalized.sort(key=lambda x: x["at"])
