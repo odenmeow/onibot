@@ -5,6 +5,7 @@ import re
 import socket
 import time
 import threading 
+import random
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, colorchooser
 from pynput import keyboard
@@ -49,7 +50,8 @@ DEFAULT_HINT_NOTE_TEXT = (
     "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n"
     "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
     "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n"
-    "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at。"
+    "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at。\n"
+    "at_random_sec：前端會在送出前每次重算，讓每輪送到後端的 at 都不同。"
 )
 
 events = []
@@ -72,6 +74,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
+            "timeline_at_random_sec": 0.0,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -105,6 +108,7 @@ def load_config():
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
+            "timeline_at_random_sec": max(0.0, float(data.get("timeline_at_random_sec", 0.0))),
             "hint_note_text": str(data.get("hint_note_text", DEFAULT_HINT_NOTE_TEXT)),
             "ui_recent_colors": normalized_recent,
             "ui_layout": {
@@ -121,6 +125,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
+            "timeline_at_random_sec": 0.0,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -369,6 +374,7 @@ def build_timeline(raw_events, start_time):
             "button": ev["button"],
             "at": round(max(0.0, ev["time"] - start_time), 4),
             "at_jitter": 0.0,
+            "at_random_sec": 0.0,
             "buff_group": "",
             "buff_cycle_sec": 0.0,
             "buff_jitter_sec": 0.0
@@ -402,6 +408,116 @@ def build_overlap_summary(timeline):
             "events": grp
         })
     return summary
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def estimate_adaptive_random_ratio(saved_dir=SAVE_DIR, prior=0.35, prior_weight=240):
+    samples = []
+    if not os.path.isdir(saved_dir):
+        return prior, 0
+
+    for fn in os.listdir(saved_dir):
+        if not fn.lower().endswith(".json"):
+            continue
+        path = os.path.join(saved_dir, fn)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            events = data.get("events", [])
+            if not isinstance(events, list):
+                continue
+            normalized = []
+            for ev in events:
+                at = max(0.0, _safe_float(ev.get("at", 0.0)))
+                jitter = abs(_safe_float(ev.get("at_jitter", 0.0)))
+                normalized.append((at, jitter))
+            normalized.sort(key=lambda x: x[0])
+            for i, (_at, jitter) in enumerate(normalized):
+                if jitter <= 0:
+                    continue
+                neighbor_gaps = []
+                if i > 0:
+                    gap = abs(normalized[i][0] - normalized[i - 1][0])
+                    if gap > 0:
+                        neighbor_gaps.append(gap)
+                if i + 1 < len(normalized):
+                    gap = abs(normalized[i + 1][0] - normalized[i][0])
+                    if gap > 0:
+                        neighbor_gaps.append(gap)
+                if not neighbor_gaps:
+                    continue
+                near_gap = min(neighbor_gaps)
+                ratio = jitter / near_gap
+                if ratio > 0:
+                    samples.append(min(ratio, 1.0))
+        except Exception:
+            continue
+
+    if not samples:
+        return prior, 0
+
+    samples.sort()
+    mid = len(samples) // 2
+    if len(samples) % 2 == 0:
+        empirical = (samples[mid - 1] + samples[mid]) / 2.0
+    else:
+        empirical = samples[mid]
+
+    n = len(samples)
+    w = n / float(n + prior_weight)
+    blended = (w * empirical) + ((1.0 - w) * prior)
+    return max(0.12, min(0.55, blended)), n
+
+
+def randomize_timeline_runtime_events(events, global_at_random_sec, adaptive_ratio, buff_reorder_prob=0.12):
+    if not events:
+        return [], {"adaptive_ratio": adaptive_ratio, "sample_count": 0}
+
+    working = [dict(ev) for ev in events]
+    sample_count = len(working)
+
+    # 只針對 buff group 做少量亂序（相鄰 swap）
+    for i in range(len(working) - 1):
+        left_group = str(working[i].get("buff_group", "")).strip()
+        right_group = str(working[i + 1].get("buff_group", "")).strip()
+        if not left_group or not right_group:
+            continue
+        if random.random() < buff_reorder_prob:
+            working[i], working[i + 1] = working[i + 1], working[i]
+
+    # 依目前順序重新分配基準 at（確保時間遞增）
+    base_times = sorted(max(0.0, _safe_float(ev.get("at", 0.0))) for ev in working)
+    for idx, ev in enumerate(working):
+        ev["at"] = base_times[idx]
+
+    # 針對每列做 at 隨機化：base_jitter + auto_jitter（來自全域 at_random 與自適應係數）
+    randomized = []
+    for i, ev in enumerate(working):
+        at = max(0.0, _safe_float(ev.get("at", 0.0)))
+        base_jitter = abs(_safe_float(ev.get("at_jitter", 0.0)))
+        neighbor_gaps = []
+        if i > 0:
+            g = abs(at - max(0.0, _safe_float(working[i - 1].get("at", 0.0))))
+            if g > 0:
+                neighbor_gaps.append(g)
+        if i + 1 < len(working):
+            g = abs(max(0.0, _safe_float(working[i + 1].get("at", 0.0))) - at)
+            if g > 0:
+                neighbor_gaps.append(g)
+        gap_limit = min(neighbor_gaps) if neighbor_gaps else global_at_random_sec
+        auto_jitter = min(global_at_random_sec, gap_limit * adaptive_ratio)
+        effective_jitter = max(base_jitter, auto_jitter)
+        ev["at"] = round(max(0.0, at + random.uniform(-effective_jitter, effective_jitter)), 4)
+        randomized.append(ev)
+
+    randomized.sort(key=lambda x: max(0.0, _safe_float(x.get("at", 0.0))))
+    return randomized, {"adaptive_ratio": adaptive_ratio, "sample_count": sample_count}
 
 
 class App:
@@ -438,6 +554,7 @@ class App:
         row.setdefault("button", "")
         row["at"] = round(max(0.0, float(row.get("at", 0.0))), 2)
         row["at_jitter"] = round(abs(float(row.get("at_jitter", 0.0))), 4)
+        row["at_random_sec"] = round(abs(float(row.get("at_random_sec", 0.0))), 4)
         row["buff_group"] = str(row.get("buff_group", "")).strip()
         row["buff_cycle_sec"] = round(max(0.0, float(row.get("buff_cycle_sec", 0.0))), 4)
         row["buff_jitter_sec"] = round(abs(float(row.get("buff_jitter_sec", 0.0))), 4)
@@ -458,6 +575,22 @@ class App:
         except ValueError:
             raise ValueError("自/手動偏移時間必須是數字")
         self.config["manual_offset_sec"] = val
+        save_config(self.config)
+        return val
+
+    def get_timeline_at_random_sec(self):
+        raw = ""
+        if hasattr(self, "timeline_at_random_entry"):
+            raw = self.timeline_at_random_entry.get().strip()
+        if not raw:
+            raw = str(self.config.get("timeline_at_random_sec", 0.0))
+        try:
+            val = float(raw)
+        except ValueError:
+            raise ValueError("at 隨機秒數必須是數字")
+        if val < 0:
+            raise ValueError("at 隨機秒數不可小於 0")
+        self.config["timeline_at_random_sec"] = val
         save_config(self.config)
         return val
 
@@ -781,6 +914,9 @@ class App:
         self.tree_row_color_tags = set()
         self.last_tree_copy_payload = ""
         self.timeline_histories = {}
+        self.front_loop_enabled = False
+        self.front_loop_after_id = None
+        self.front_loop_round = 0
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -940,7 +1076,14 @@ class App:
         tk.Label(
             jitter_frame,
             text="【註：buff_group 為負值時，請用「糾正複製體」重算；「套用偏移」僅手動平移時間。】"
-        ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 6), sticky="w")
+        ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 4), sticky="w")
+        tk.Label(jitter_frame, text="at 隨機：").grid(row=2, column=0, padx=(8, 5), pady=(0, 6), sticky="w")
+        self.timeline_at_random_entry = tk.Entry(jitter_frame, width=10)
+        self.timeline_at_random_entry.insert(0, "{:.4f}".format(float(self.config.get("timeline_at_random_sec", 0.0))))
+        self.timeline_at_random_entry.grid(row=2, column=1, padx=(0, 5), pady=(0, 6), sticky="w")
+        tk.Label(jitter_frame, text="秒（統一套用，執行時每輪重算）").grid(
+            row=2, column=2, columnspan=4, padx=(0, 8), pady=(0, 6), sticky="w"
+        )
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -1946,6 +2089,14 @@ class App:
 
     def stop_pi(self):
         try:
+            self.front_loop_enabled = False
+            after_id = getattr(self, "front_loop_after_id", None)
+            if after_id:
+                try:
+                    self.root.after_cancel(after_id)
+                except Exception:
+                    pass
+                self.front_loop_after_id = None
             self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
             save_config(self.config)
             self.update_current_labels()
@@ -1964,6 +2115,13 @@ class App:
         if not self.timeline:
             messagebox.showwarning("提醒", "請先錄製並分析，或載入已保存項目")
             return
+        self.front_loop_enabled = False
+        if self.front_loop_after_id:
+            try:
+                self.root.after_cancel(self.front_loop_after_id)
+            except Exception:
+                pass
+            self.front_loop_after_id = None
         self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
         self.has_pre_run_snapshot = True
         self.runtime_manual_restore_active = False
@@ -2023,6 +2181,9 @@ class App:
         if not self.timeline:
             messagebox.showwarning("提醒", "請先錄製並分析，或載入已保存項目")
             return
+        if self.front_loop_enabled:
+            messagebox.showwarning("提醒", "前端重複送出已在執行中")
+            return
         self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
         self.has_pre_run_snapshot = True
         self.runtime_manual_restore_active = False
@@ -2039,23 +2200,35 @@ class App:
         save_config(self.config)
         self.update_current_labels()
 
+        display_name = self.current_name if self.current_name else "未命名資料"
+        self.front_loop_enabled = True
+        self.front_loop_round = 0
+        self.set_status("已啟用前端重複送出：{}".format(display_name))
+        self._dispatch_front_loop_once(display_name)
+
+    def _dispatch_front_loop_once(self, display_name):
+        if not self.front_loop_enabled:
+            return
+
         prepared_events, resolve_note = self.prepare_events_for_send(action_reason="before_send_loop")
         if prepared_events is None:
+            self.front_loop_enabled = False
             return
 
         payload = {
-            "action": "run_timeline_loop",
+            "action": "run_timeline",
             "events": prepared_events,
             "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
         }
-
-        display_name = self.current_name if self.current_name else "未命名資料"
 
         try:
             self.set_frontend_error("")
             self.clear_runtime_highlight()
             self.refresh_tree()
-            delay = self.apply_send_delay_if_needed()
+            if self.front_loop_round == 0:
+                delay = self.apply_send_delay_if_needed()
+            else:
+                delay = 0.0
             res = self.request_pi(payload, write_response=False)
             self.write_text({
                 "sending_name": display_name,
@@ -2064,21 +2237,53 @@ class App:
                 "request": payload,
                 "response": res
             })
-
             if res.get("status") in ("error", "busy"):
-                self.set_status("重複送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
-            else:
-                suffix = ""
-                if resolve_note:
-                    suffix = "（{}）".format(resolve_note)
-                self.set_status("已開始重複執行：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
+                self.front_loop_after_id = self.root.after(
+                    300,
+                    lambda: self._dispatch_front_loop_once(display_name)
+                )
+                return
+
+            self.front_loop_round += 1
+            suffix = ""
+            if resolve_note:
+                suffix = "（{}）".format(resolve_note)
+            self.set_status(
+                "前端重複送出中：{} 第 {} 輪{}".format(display_name, self.front_loop_round, suffix)
+            )
+            self._poll_front_loop_round_done(display_name)
         except Exception as e:
+            self.front_loop_enabled = False
             self.set_frontend_error(str(e))
             messagebox.showerror("重複傳送失敗", str(e))
+
+    def _poll_front_loop_round_done(self, display_name):
+        if not self.front_loop_enabled:
+            return
+        try:
+            status_response = self.request_pi({"action": "status"}, write_response=False)
+            runtime = status_response.get("timeline_runtime", {})
+            state = str(runtime.get("state", "")).strip().lower()
+            if state == "running":
+                self.front_loop_after_id = self.root.after(
+                    250,
+                    lambda: self._poll_front_loop_round_done(display_name)
+                )
+                return
+            self.front_loop_after_id = self.root.after(
+                80,
+                lambda: self._dispatch_front_loop_once(display_name)
+            )
+        except Exception:
+            self.front_loop_after_id = self.root.after(
+                400,
+                lambda: self._poll_front_loop_round_done(display_name)
+            )
 
     def prepare_events_for_send(self, action_reason="before_send"):
         try:
             offset_sec = self.get_manual_offset_sec()
+            at_random_sec = self.get_timeline_at_random_sec()
             base_events = [self.normalize_event_schema(ev) for ev in self.timeline]
             self.validate_negative_group_monotonic_by_index(base_events)
             events = recalculate_runtime_events_by_index(base_events, offset_sec)
@@ -2151,9 +2356,23 @@ class App:
                     ev["buff_cycle_sec"] = chosen_cycle
                     ev["buff_jitter_sec"] = chosen_jitter
 
+        adaptive_ratio, sample_n = estimate_adaptive_random_ratio()
+        events, random_meta = randomize_timeline_runtime_events(
+            events,
+            global_at_random_sec=at_random_sec,
+            adaptive_ratio=adaptive_ratio
+        )
+        for ev in events:
+            ev["at_random_sec"] = round(at_random_sec, 4)
+
         resolve_note = ""
         if resolved_groups:
             resolve_note = "已解決衝突群組: {}".format("、".join(resolved_groups))
+        random_note = "at隨機係數 {:.3f}（樣本 {}）".format(
+            float(random_meta.get("adaptive_ratio", adaptive_ratio)),
+            int(sample_n)
+        )
+        resolve_note = "{}；{}".format(resolve_note, random_note) if resolve_note else random_note
         return events, resolve_note
 
     def on_buff_skip_mode_change(self, _event=None):

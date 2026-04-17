@@ -214,8 +214,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
     for i, ev in enumerate(events):
         ev_type = ev.get("type")
         button = ev.get("button")
-        at = float(ev.get("at", 0.0))
-        at_jitter = abs(float(ev.get("at_jitter", 0.0)))
+        at = max(0.0, float(ev.get("at", 0.0)))
         buff_group = str(ev.get("buff_group", "")).strip()
         buff_cycle_sec = max(0.0, float(ev.get("buff_cycle_sec", 0.0)))
         buff_jitter_sec = abs(float(ev.get("buff_jitter_sec", 0.0)))
@@ -225,7 +224,6 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
         if button not in BUTTONS:
             raise ValueError("第 {} 筆找不到按鍵: {}".format(i, button))
 
-        actual_at = max(0.0, at + random.uniform(-at_jitter, at_jitter))
         if buff_group and buff_cycle_sec > 0:
             cfg = group_config.get(buff_group)
             if cfg is None:
@@ -237,7 +235,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
             "original_index": i,
             "type": ev_type,
             "button": button,
-            "at": actual_at,
+            "at": at,
             "buff_group": buff_group
         })
 
