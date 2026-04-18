@@ -695,8 +695,9 @@ class App:
         original = self.timeline_meta.get("original_events", [])
         if not original:
             return False
+        before = self._begin_timeline_change()
         self.timeline = self.copy_events(original)
-        self._reset_timeline_history()
+        self._finalize_timeline_change(before)
         self.current_loaded_from_saved = False
         self.update_current_labels()
         self.refresh_tree()
@@ -707,8 +708,9 @@ class App:
         latest_saved = self.timeline_meta.get("latest_saved_events", [])
         if not latest_saved:
             return False
+        before = self._begin_timeline_change()
         self.timeline = self.copy_events(latest_saved)
-        self._reset_timeline_history()
+        self._finalize_timeline_change(before)
         self.current_loaded_from_saved = False
         self.update_current_labels()
         self.refresh_tree()
@@ -776,8 +778,95 @@ class App:
         self.set_frontend_error("")
         self.set_backend_error("")
 
+    def _get_virtual_desktop_bounds(self):
+        try:
+            vx = int(self.root.winfo_vrootx())
+            vy = int(self.root.winfo_vrooty())
+            vw = int(self.root.winfo_vrootwidth())
+            vh = int(self.root.winfo_vrootheight())
+            if vw > 0 and vh > 0:
+                return vx, vy, vx + vw, vy + vh
+        except Exception:
+            pass
+        sw = int(self.root.winfo_screenwidth())
+        sh = int(self.root.winfo_screenheight())
+        return 0, 0, sw, sh
+
+    def _get_table_anchor_rect(self):
+        try:
+            self.root.update_idletasks()
+            tree = self.tree
+            return (
+                int(tree.winfo_rootx()),
+                int(tree.winfo_rooty()),
+                max(1, int(tree.winfo_width())),
+                max(1, int(tree.winfo_height()))
+            )
+        except Exception:
+            return (
+                int(self.root.winfo_rootx()),
+                int(self.root.winfo_rooty()),
+                max(1, int(self.root.winfo_width())),
+                max(1, int(self.root.winfo_height()))
+            )
+
+    def _compute_app_dialog_position(self, dialog_w, dialog_h):
+        area_x, area_y, area_w, area_h = self._get_table_anchor_rect()
+        x = int(area_x + (area_w - dialog_w) / 2)
+        y = int(area_y + area_h * 0.62 - dialog_h / 2)
+        min_x, min_y, max_x, max_y = self._get_virtual_desktop_bounds()
+        x = max(min_x, min(x, max_x - dialog_w))
+        y = max(min_y, min(y, max_y - dialog_h))
+        return x, y
+
+    def _create_message_anchor_parent(self):
+        x, y = self._compute_app_dialog_position(2, 2)
+        anchor = tk.Toplevel(self.root)
+        anchor.overrideredirect(True)
+        anchor.transient(self.root)
+        anchor.geometry("2x2+{}+{}".format(x, y))
+        try:
+            anchor.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        anchor.lift()
+        anchor.focus_force()
+        return anchor
+
+    def _show_messagebox(self, fn, title, message, **kwargs):
+        parent = kwargs.pop("parent", None)
+        temp_parent = None
+        if parent is None:
+            temp_parent = self._create_message_anchor_parent()
+            parent = temp_parent
+        try:
+            return fn(title, message, parent=parent, **kwargs)
+        finally:
+            if temp_parent is not None and temp_parent.winfo_exists():
+                temp_parent.destroy()
+
+    def show_warning(self, title, message, **kwargs):
+        return self._show_messagebox(messagebox.showwarning, title, message, **kwargs)
+
+    def show_info(self, title, message, **kwargs):
+        return self._show_messagebox(messagebox.showinfo, title, message, **kwargs)
+
+    def show_error(self, title, message, **kwargs):
+        return self._show_messagebox(messagebox.showerror, title, message, **kwargs)
+
+    def confirm(self, title, message, **kwargs):
+        return self._show_messagebox(messagebox.askyesno, title, message, **kwargs)
+
+    def confirm_cancel(self, title, message, **kwargs):
+        return self._show_messagebox(messagebox.askyesnocancel, title, message, **kwargs)
+
     def set_status(self, message):
         self.status_var.set(message)
+
+    def _is_script_switch_for_load(self, target_name):
+        target = str(target_name or "").strip()
+        current = str(getattr(self, "current_name", "") or "").strip()
+        return bool(target) and target != current
 
     def get_unsupported_buttons(self, events):
         unknown = sorted({
@@ -1191,7 +1280,7 @@ class App:
     def save_ui_layout(self):
         sash_x = self.get_current_paned_sash_x()
         if sash_x is None:
-            messagebox.showwarning("提醒", "目前無法取得 UI 版面資訊，請稍後再試")
+            self.show_warning("提醒", "目前無法取得 UI 版面資訊，請稍後再試")
             return
 
         column_widths = {}
@@ -1282,10 +1371,10 @@ class App:
         color = self._normalize_row_color(color_code)
         selected = sorted(self.get_selected_indexes())
         if not selected:
-            messagebox.showwarning("提醒", "請先選取列")
+            self.show_warning("提醒", "請先選取列")
             return False
         if not color:
-            messagebox.showwarning("提醒", "請選擇有效顏色")
+            self.show_warning("提醒", "請選擇有效顏色")
             return False
         before = self._begin_timeline_change()
         for idx in selected:
@@ -1300,7 +1389,7 @@ class App:
     def open_row_color_dialog(self):
         selected = sorted(self.get_selected_indexes())
         if not selected:
-            messagebox.showwarning("提醒", "請先選取列")
+            self.show_warning("提醒", "請先選取列")
             return
         if not self._ensure_runtime_editable():
             return
@@ -1548,7 +1637,7 @@ class App:
             self.runtime_display_frozen = False
         if not self._is_runtime_readonly():
             return True
-        messagebox.showwarning("提醒", "執行中或停止後凍結中，請先「恢復執行前狀態」再編輯")
+        self.show_warning("提醒", "執行中或停止後凍結中，請先「恢復執行前狀態」再編輯")
         return False
 
     def _set_restore_pre_run_button_state(self):
@@ -1559,15 +1648,16 @@ class App:
 
     def restore_pre_run_state(self):
         if not self.has_pre_run_snapshot:
-            messagebox.showwarning("提醒", "沒有可恢復內容")
+            self.show_warning("提醒", "沒有可恢復內容")
             return
+        before = self._begin_timeline_change()
         self.timeline = self.copy_events(self.pre_run_timeline_snapshot)
-        self._reset_timeline_history()
+        self._finalize_timeline_change(before)
         self.runtime_manual_restore_active = True
         self.runtime_display_frozen = False
         self.clear_runtime_highlight()
-        self.refresh_tree()
-        self.refresh_preview()
+        self.mark_timeline_dirty()
+        self.set_status("已恢復執行前狀態，可使用 Ctrl+Z 復原")
 
     def refresh_saved_list(self):
         names = list_saved_timeline_names()
@@ -1610,13 +1700,13 @@ class App:
         ip = self.pi_ip_entry.get().strip()
         if not ip:
             self.set_frontend_error("Pi IP 不可空白")
-            messagebox.showwarning("提醒", "Pi IP 不可空白")
+            self.show_warning("提醒", "Pi IP 不可空白")
             return
         try:
             delay = self.parse_send_delay_sec()
         except ValueError as e:
             self.set_frontend_error(str(e))
-            messagebox.showwarning("提醒", str(e))
+            self.show_warning("提醒", str(e))
             return
 
         self.config["pi_host"] = ip
@@ -1694,7 +1784,7 @@ class App:
             has_original = bool(self.timeline_meta.get("original_events"))
             has_latest_saved = bool(self.timeline_meta.get("latest_saved_events"))
             if has_original and has_latest_saved:
-                selected = messagebox.askyesnocancel(
+                selected = self.confirm_cancel(
                     "重新分析",
                     "目前無新錄製資料。\n是否回到「初版 Timeline」？\n"
                     "按「是」= 初版；按「否」= 上次保存新版；按「取消」= 不變更。"
@@ -1710,20 +1800,21 @@ class App:
                         self.set_status("已還原上次保存新版 Timeline（重新分析）")
                 return
             if has_original:
-                messagebox.showinfo("重新分析", "目前無新錄製資料。\n目前僅有可回復的「初版 Timeline」。")
+                self.show_info("重新分析", "目前無新錄製資料。\n目前僅有可回復的「初版 Timeline」。")
                 self.restore_original_timeline()
                 self.set_status("已還原初版 Timeline（重新分析）")
                 return
             if has_latest_saved:
-                messagebox.showinfo("重新分析", "目前無新錄製資料。\n目前僅有可回復的「上次保存新版 Timeline」。")
+                self.show_info("重新分析", "目前無新錄製資料。\n目前僅有可回復的「上次保存新版 Timeline」。")
                 self.restore_latest_saved_timeline()
                 self.set_status("已還原上次保存新版 Timeline（重新分析）")
                 return
-            messagebox.showwarning("提醒", "目前沒有錄到資料，也沒有可還原的初版/新版 Timeline")
+            self.show_warning("提醒", "目前沒有錄到資料，也沒有可還原的初版/新版 Timeline")
             return
 
+        before = self._begin_timeline_change()
         self.timeline = build_timeline(events, recording_start)
-        self._reset_timeline_history()
+        self._finalize_timeline_change(before)
         self.timeline_meta = self.new_meta()
         self.mark_timeline_dirty()
 
@@ -1781,12 +1872,12 @@ class App:
 
     def save_current_timeline(self):
         if not self.timeline:
-            messagebox.showwarning("提醒", "目前沒有 timeline 可保存")
+            self.show_warning("提醒", "目前沒有 timeline 可保存")
             return
 
         name = self.name_entry.get().strip()
         if not name:
-            messagebox.showwarning("提醒", "請先輸入保存名稱")
+            self.show_warning("提醒", "請先輸入保存名稱")
             return
 
         name = sanitize_filename(name)
@@ -1810,7 +1901,7 @@ class App:
                 self.timeline_meta["original_events"] = self.copy_events(working_timeline)
             self.timeline_meta["latest_saved_events"] = self.copy_events(recalculated)
         except Exception as e:
-            messagebox.showerror("保存失敗", str(e))
+            self.show_error("保存失敗", str(e))
             return
 
         save_payload = self.copy_events(recalculated)
@@ -1842,21 +1933,33 @@ class App:
     def load_selected_timeline(self):
         name = self.get_selected_saved_name()
         if not name:
-            messagebox.showwarning("提醒", "請先從清單選一個已保存項目")
+            self.show_warning("提醒", "請先從清單選一個已保存項目")
             return
+
+        if self._is_script_switch_for_load(name):
+            confirmed = self.confirm(
+                "切換腳本確認",
+                "將清空目前 SESSION 上一步/下一步，是否繼續？"
+            )
+            if not confirmed:
+                self.set_status("已取消載入")
+                return
 
         try:
             data = load_named_timeline(name)
         except Exception as e:
-            messagebox.showerror("載入失敗", str(e))
+            self.show_error("載入失敗", str(e))
             return
+        target_name = data.get("name", name)
+        is_script_switch = self._is_script_switch_for_load(target_name)
 
         self.timeline = [self.normalize_event_schema(ev) for ev in data.get("events", [])]
         self.timeline_meta = self.normalize_meta(data.get("_meta", {}))
         if not self.timeline_meta.get("original_events") and self.timeline:
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
-        self.current_name = data.get("name", name)
-        self._reset_timeline_history()
+        self.current_name = target_name
+        if is_script_switch:
+            self._reset_timeline_history()
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = self.current_name
         save_config(self.config)
@@ -1872,17 +1975,17 @@ class App:
     def delete_selected_timeline(self):
         name = self.get_selected_saved_name()
         if not name:
-            messagebox.showwarning("提醒", "請先選取要刪除的項目")
+            self.show_warning("提醒", "請先選取要刪除的項目")
             return
 
-        yes = messagebox.askyesno("確認刪除", "確定要刪除 '{}' 嗎？".format(name))
+        yes = self.confirm("確認刪除", "確定要刪除 '{}' 嗎？".format(name))
         if not yes:
             return
 
         try:
             delete_named_timeline(name)
         except Exception as e:
-            messagebox.showerror("刪除失敗", str(e))
+            self.show_error("刪除失敗", str(e))
             return
 
         if self.current_name == name:
@@ -1901,12 +2004,12 @@ class App:
     def rename_selected_timeline(self):
         old_name = self.get_selected_saved_name()
         if not old_name:
-            messagebox.showwarning("提醒", "請先從清單選一個已保存項目")
+            self.show_warning("提醒", "請先從清單選一個已保存項目")
             return
 
         new_name = sanitize_filename(self.name_entry.get().strip())
         if not new_name:
-            messagebox.showwarning("提醒", "請先輸入新的腳本名稱")
+            self.show_warning("提醒", "請先輸入新的腳本名稱")
             return
 
         if new_name == old_name:
@@ -1915,14 +2018,14 @@ class App:
 
         overwrite = False
         if os.path.exists(timeline_file_path(new_name)):
-            overwrite = messagebox.askyesno("確認覆蓋", "名稱 '{}' 已存在，是否覆蓋？".format(new_name))
+            overwrite = self.confirm("確認覆蓋", "名稱 '{}' 已存在，是否覆蓋？".format(new_name))
             if not overwrite:
                 return
 
         try:
             rename_named_timeline(old_name, new_name, overwrite=overwrite)
         except Exception as e:
-            messagebox.showerror("重新命名失敗", str(e))
+            self.show_error("重新命名失敗", str(e))
             return
 
         if self.current_name == old_name:
@@ -1945,18 +2048,18 @@ class App:
 
     def apply_jitter_to_selected(self):
         if not self.timeline:
-            messagebox.showwarning("提醒", "目前沒有 timeline 資料")
+            self.show_warning("提醒", "目前沒有 timeline 資料")
             return
 
         selected = self.get_selected_indexes()
         if not selected:
-            messagebox.showwarning("提醒", "請先選取一列或多列")
+            self.show_warning("提醒", "請先選取一列或多列")
             return
 
         try:
             jitter = float(self.at_jitter_entry.get().strip())
         except ValueError:
-            messagebox.showerror("錯誤", "at jitter 必須是數字")
+            self.show_error("錯誤", "at jitter 必須是數字")
             return
 
         before = self._begin_timeline_change()
@@ -1971,13 +2074,13 @@ class App:
 
     def apply_jitter_to_all(self):
         if not self.timeline:
-            messagebox.showwarning("提醒", "目前沒有 timeline 資料")
+            self.show_warning("提醒", "目前沒有 timeline 資料")
             return
 
         try:
             jitter = float(self.at_jitter_entry.get().strip())
         except ValueError:
-            messagebox.showerror("錯誤", "at jitter 必須是數字")
+            self.show_error("錯誤", "at jitter 必須是數字")
             return
 
         before = self._begin_timeline_change()
@@ -1990,12 +2093,12 @@ class App:
 
     def clear_jitter_selected(self):
         if not self.timeline:
-            messagebox.showwarning("提醒", "目前沒有 timeline 資料")
+            self.show_warning("提醒", "目前沒有 timeline 資料")
             return
 
         selected = self.get_selected_indexes()
         if not selected:
-            messagebox.showwarning("提醒", "請先選取一列或多列")
+            self.show_warning("提醒", "請先選取一列或多列")
             return
 
         before = self._begin_timeline_change()
@@ -2010,7 +2113,7 @@ class App:
 
     def calculate_offsets_only(self):
         if not self.timeline:
-            messagebox.showwarning("提醒", "目前沒有 timeline 資料")
+            self.show_warning("提醒", "目前沒有 timeline 資料")
             return
 
         prepared_events, _ = self.prepare_events_for_send(action_reason="calculate_offset_only")
@@ -2033,21 +2136,21 @@ class App:
         if not self._ensure_runtime_editable():
             return
         if not self.timeline:
-            messagebox.showwarning("提醒", "目前沒有 timeline 資料")
+            self.show_warning("提醒", "目前沒有 timeline 資料")
             return
 
         selected = sorted(self.get_selected_indexes())
         if not selected:
-            messagebox.showwarning("提醒", "請先選取一列或多列")
+            self.show_warning("提醒", "請先選取一列或多列")
             return
         if any(self._is_negative_buff_group(self.timeline[idx].get("buff_group", "")) for idx in selected):
-            messagebox.showwarning("提醒", "選到複製體負群（buff_group < 0），請改用「糾正複製體」。")
+            self.show_warning("提醒", "選到複製體負群（buff_group < 0），請改用「糾正複製體」。")
             return
 
         try:
             offset_sec = self.get_manual_offset_sec()
         except Exception as e:
-            messagebox.showerror("錯誤", str(e))
+            self.show_error("錯誤", str(e))
             return
 
         before = self._begin_timeline_change()
@@ -2085,7 +2188,7 @@ class App:
             self.close_connection(silent=True)
             self.set_connected(False)
             if show_popup:
-                messagebox.showerror("Pi 連線失敗", str(e))
+                self.show_error("Pi 連線失敗", str(e))
 
     def stop_pi(self):
         try:
@@ -2109,11 +2212,11 @@ class App:
             self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
         except Exception as e:
             self.set_frontend_error(str(e))
-            messagebox.showerror("停止失敗", str(e))
+            self.show_error("停止失敗", str(e))
 
     def send_timeline(self):
         if not self.timeline:
-            messagebox.showwarning("提醒", "請先錄製並分析，或載入已保存項目")
+            self.show_warning("提醒", "請先錄製並分析，或載入已保存項目")
             return
         self.front_loop_enabled = False
         if self.front_loop_after_id:
@@ -2133,7 +2236,7 @@ class App:
             self.config["send_delay_sec"] = self.parse_send_delay_sec()
         except ValueError as e:
             self.set_frontend_error(str(e))
-            messagebox.showwarning("提醒", str(e))
+            self.show_warning("提醒", str(e))
             return
         save_config(self.config)
         self.update_current_labels()
@@ -2175,14 +2278,14 @@ class App:
                 self.set_status("已送出：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
         except Exception as e:
             self.set_frontend_error(str(e))
-            messagebox.showerror("傳送失敗", str(e))
+            self.show_error("傳送失敗", str(e))
 
     def send_timeline_loop(self):
         if not self.timeline:
-            messagebox.showwarning("提醒", "請先錄製並分析，或載入已保存項目")
+            self.show_warning("提醒", "請先錄製並分析，或載入已保存項目")
             return
         if self.front_loop_enabled:
-            messagebox.showwarning("提醒", "前端重複送出已在執行中")
+            self.show_warning("提醒", "前端重複送出已在執行中")
             return
         self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
         self.has_pre_run_snapshot = True
@@ -2195,7 +2298,7 @@ class App:
             self.config["send_delay_sec"] = self.parse_send_delay_sec()
         except ValueError as e:
             self.set_frontend_error(str(e))
-            messagebox.showwarning("提醒", str(e))
+            self.show_warning("提醒", str(e))
             return
         save_config(self.config)
         self.update_current_labels()
@@ -2255,7 +2358,7 @@ class App:
         except Exception as e:
             self.front_loop_enabled = False
             self.set_frontend_error(str(e))
-            messagebox.showerror("重複傳送失敗", str(e))
+            self.show_error("重複傳送失敗", str(e))
 
     def _poll_front_loop_round_done(self, display_name):
         if not self.front_loop_enabled:
@@ -2288,7 +2391,7 @@ class App:
             self.validate_negative_group_monotonic_by_index(base_events)
             events = recalculate_runtime_events_by_index(base_events, offset_sec)
         except Exception as e:
-            messagebox.showerror("時間重算失敗", str(e))
+            self.show_error("時間重算失敗", str(e))
             return None, ""
         unsupported = self.get_unsupported_buttons(events)
         if unsupported:
@@ -2297,7 +2400,7 @@ class App:
                 "已用紅底標記對應列。請先修改 button 欄位後再送出。".format(", ".join(unsupported))
             )
             self.set_frontend_error(msg)
-            messagebox.showwarning("送出前檢查", msg)
+            self.show_warning("送出前檢查", msg)
             self.refresh_tree()
             return None, ""
         group_configs = {}
@@ -2346,7 +2449,7 @@ class App:
                     return None, ""
                 ans = ans.strip()
                 if ans not in option_map:
-                    messagebox.showerror("輸入錯誤", "選項不存在：{}".format(ans))
+                    self.show_error("輸入錯誤", "選項不存在：{}".format(ans))
                     return None, ""
                 chosen_cycle, chosen_jitter = option_map[ans]
                 resolved_groups.append(str(group_name))
@@ -2403,7 +2506,7 @@ class App:
         if region == "heading":
             selected = sorted(self.get_selected_indexes())
             if not selected:
-                messagebox.showwarning("提醒", "請先選取一列或多列，再雙擊欄位標題")
+                self.show_warning("提醒", "請先選取一列或多列，再雙擊欄位標題")
                 return
             initial_value = str(self.timeline[selected[0]].get(field, ""))
             new_value = simpledialog.askstring(
@@ -2419,7 +2522,7 @@ class App:
                 for idx in selected:
                     self._apply_tree_field_value(idx, field, new_value)
             except Exception as e:
-                messagebox.showerror("修改失敗", str(e))
+                self.show_error("修改失敗", str(e))
                 return
 
             self._finalize_timeline_change(before)
@@ -2445,7 +2548,7 @@ class App:
         try:
             self._apply_tree_field_value(idx, field, new_value)
         except Exception as e:
-            messagebox.showerror("修改失敗", str(e))
+            self.show_error("修改失敗", str(e))
             return
 
         self._finalize_timeline_change(before)
@@ -2503,7 +2606,7 @@ class App:
         try:
             raw = self.root.clipboard_get()
         except tk.TclError:
-            messagebox.showwarning("提醒", "剪貼簿沒有可貼上的內容")
+            self.show_warning("提醒", "剪貼簿沒有可貼上的內容")
             return "break"
 
         lines = [line for line in raw.splitlines() if line.strip()]
@@ -2528,13 +2631,13 @@ class App:
             parsed_rows.append(values)
 
         if not parsed_rows:
-            messagebox.showwarning("提醒", "剪貼簿只有標題列，沒有可貼上的資料")
+            self.show_warning("提醒", "剪貼簿只有標題列，沒有可貼上的資料")
             return "break"
 
         try:
             parsed_rows = [self._normalize_paste_row(values) for values in parsed_rows]
         except Exception as e:
-            messagebox.showerror("貼上失敗", str(e))
+            self.show_error("貼上失敗", str(e))
             return "break"
 
         if copied_from_tree:
@@ -2559,7 +2662,7 @@ class App:
                     self.timeline.insert(idx, ev)
                     new_indexes.append(idx)
             except Exception as e:
-                messagebox.showerror("貼上失敗", str(e))
+                self.show_error("貼上失敗", str(e))
                 return "break"
 
             self._finalize_timeline_change(before)
@@ -2581,7 +2684,7 @@ class App:
             changed_indexes.append(row_idx)
 
         if not changed_indexes:
-            messagebox.showwarning("提醒", "貼上範圍超出目前列數，未更新任何資料")
+            self.show_warning("提醒", "貼上範圍超出目前列數，未更新任何資料")
             return "break"
 
         self._finalize_timeline_change(before)
@@ -2613,33 +2716,21 @@ class App:
             choice["value"] = value
             dialog.destroy()
 
-        tk.Button(btn_row, text="上方", width=10, command=lambda: choose("above")).pack(side="left")
+        btn_above = tk.Button(btn_row, text="上方", width=10, command=lambda: choose("above"))
+        btn_above.pack(side="left")
         tk.Button(btn_row, text="下方", width=10, command=lambda: choose("below")).pack(side="left", padx=(6, 0))
-        tk.Button(btn_row, text="取消", width=10, command=dialog.destroy).pack(side="right")
+        tk.Button(btn_row, text="取消", width=10, command=lambda: choose(None)).pack(side="right")
+        dialog.bind("<Up>", lambda _e: choose("above"))
+        dialog.bind("<Down>", lambda _e: choose("below"))
+        dialog.bind("<Escape>", lambda _e: choose(None))
 
         dialog.update_idletasks()
         dialog_w = dialog.winfo_width()
         dialog_h = dialog.winfo_height()
-
-        try:
-            tree = self.tree
-            tree_x = tree.winfo_rootx()
-            tree_y = tree.winfo_rooty()
-            tree_w = tree.winfo_width()
-            tree_h = tree.winfo_height()
-        except Exception:
-            tree_x = self.root.winfo_rootx()
-            tree_y = self.root.winfo_rooty()
-            tree_w = self.root.winfo_width()
-            tree_h = self.root.winfo_height()
-
-        x = int(tree_x + (tree_w - dialog_w) / 2)
-        y = int(tree_y + (tree_h - dialog_h) / 2 + 45)
-        screen_w = dialog.winfo_screenwidth()
-        screen_h = dialog.winfo_screenheight()
-        x = max(0, min(x, screen_w - dialog_w))
-        y = max(0, min(y, screen_h - dialog_h))
+        x, y = self._compute_app_dialog_position(dialog_w, dialog_h)
         dialog.geometry("{}x{}+{}+{}".format(dialog_w, dialog_h, x, y))
+        dialog.focus_force()
+        btn_above.focus_set()
 
         self.root.wait_window(dialog)
         return choice["value"]
@@ -2699,7 +2790,7 @@ class App:
             return
         selected = sorted(self.get_selected_indexes())
         if not selected:
-            messagebox.showwarning("提醒", "請先選取列")
+            self.show_warning("提醒", "請先選取列")
             return
         if selected[0] == 0:
             return
@@ -2715,7 +2806,7 @@ class App:
             return
         selected = sorted(self.get_selected_indexes(), reverse=True)
         if not selected:
-            messagebox.showwarning("提醒", "請先選取列")
+            self.show_warning("提醒", "請先選取列")
             return
         if selected[0] == len(self.timeline) - 1:
             return
@@ -2731,7 +2822,7 @@ class App:
             return
         selected = sorted(self.get_selected_indexes(), reverse=True)
         if not selected:
-            messagebox.showwarning("提醒", "請先選取列")
+            self.show_warning("提醒", "請先選取列")
             return
         before = self._begin_timeline_change()
         for idx in selected:
