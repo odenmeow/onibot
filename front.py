@@ -1170,6 +1170,12 @@ class App:
             jitter_frame,
             text="【註：buff_group 為負值時，請用「糾正複製體」重算；「套用偏移」僅手動平移時間。】"
         ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 4), sticky="w")
+        tk.Button(
+            jitter_frame,
+            text="產生 randat",
+            command=self.insert_randat_row,
+            width=14
+        ).grid(row=2, column=0, columnspan=6, padx=(8, 8), pady=(0, 6), sticky="w")
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
