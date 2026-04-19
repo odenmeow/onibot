@@ -4,6 +4,7 @@ import os
 import re
 import socket
 import errno
+import copy
 import time
 import threading 
 import random
@@ -2858,8 +2859,8 @@ class App:
         self.last_prepared_payload = {
             "action_reason": action_reason,
             "prepared_events": self.copy_events(events),
-            "block_assignments": self.copy_events(block_assignments),
-            "round_traces": self.copy_events(round_traces),
+            "block_assignments": copy.deepcopy(block_assignments),
+            "round_traces": copy.deepcopy(round_traces),
             "resolve_note": resolve_note
         }
         self.render_prepared_payload()
