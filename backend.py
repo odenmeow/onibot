@@ -59,6 +59,10 @@ timeline_cooldown_runtime = {
     "landed_index_by_group": {}
 }
 
+# 狀態輪詢防爆：避免 timeline_runtime.events / round_traces 無上限回傳造成卡頓
+STATUS_EVENTS_LIMIT = 120
+STATUS_ROUND_TRACES_LIMIT = 40
+
 
 def set_timeline_runtime(mode, state, events_total=0, loop_count=0):
     with runtime_lock:
@@ -106,6 +110,18 @@ def get_timeline_runtime_snapshot():
                 "remain_sec": round(remain, 3),
                 "landed_index": timeline_cooldown_runtime.get("landed_index_by_group", {}).get(group)
             })
+        events = timeline_runtime.get("events", [])
+        if len(events) > STATUS_EVENTS_LIMIT:
+            events = events[-STATUS_EVENTS_LIMIT:]
+        else:
+            events = list(events)
+
+        round_traces = timeline_runtime.get("round_traces", [])
+        if len(round_traces) > STATUS_ROUND_TRACES_LIMIT:
+            round_traces = round_traces[-STATUS_ROUND_TRACES_LIMIT:]
+        else:
+            round_traces = list(round_traces)
+
         return {
             "run_id": int(timeline_runtime.get("run_id", 0)),
             "state": timeline_runtime.get("state", "idle"),
@@ -113,9 +129,9 @@ def get_timeline_runtime_snapshot():
             "loop_count": int(timeline_runtime.get("loop_count", 0)),
             "events_total": int(timeline_runtime.get("events_total", 0)),
             "processed_count": int(timeline_runtime.get("processed_count", 0)),
-            "events": list(timeline_runtime.get("events", [])),
+            "events": events,
             "last_event": timeline_runtime.get("last_event"),
-            "round_traces": list(timeline_runtime.get("round_traces", [])),
+            "round_traces": round_traces,
             "cooldowns": cooldowns
         }
 
