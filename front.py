@@ -7,7 +7,7 @@ import time
 import threading 
 import random
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog, colorchooser
+from tkinter import ttk, simpledialog, colorchooser
 from pynput import keyboard
 
 DEFAULT_PI_HOST = "192.168.100.140"
@@ -819,20 +819,6 @@ class App:
         y = max(min_y, min(y, max_y - dialog_h))
         return x, y
 
-    def _create_message_anchor_parent(self):
-        x, y = self._compute_app_dialog_position(2, 2)
-        anchor = tk.Toplevel(self.root)
-        anchor.overrideredirect(True)
-        anchor.transient(self.root)
-        anchor.geometry("2x2+{}+{}".format(x, y))
-        try:
-            anchor.attributes("-alpha", 0.0)
-        except Exception:
-            pass
-        anchor.lift()
-        anchor.focus_force()
-        return anchor
-
     def _position_dialog_to_app_lower_center(self, dialog):
         try:
             dialog.update_idletasks()
@@ -843,32 +829,98 @@ class App:
         except Exception:
             pass
 
-    def _show_messagebox(self, fn, title, message, **kwargs):
-        parent = kwargs.pop("parent", None)
-        temp_parent = None
-        if parent is None:
-            temp_parent = self._create_message_anchor_parent()
-            parent = temp_parent
-        try:
-            return fn(title, message, parent=parent, **kwargs)
-        finally:
-            if temp_parent is not None and temp_parent.winfo_exists():
-                temp_parent.destroy()
+    def _show_app_dialog(self, title, message, dialog_type="info", buttons="ok"):
+        result = {"value": None}
+        dialog = tk.Toplevel(self.root)
+        dialog.title(str(title or "提示"))
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        container = tk.Frame(dialog, padx=16, pady=14)
+        container.pack(fill="both", expand=True)
+
+        symbol_map = {
+            "info": "ℹ",
+            "warning": "⚠",
+            "error": "⛔",
+            "question": "？"
+        }
+        symbol = symbol_map.get(dialog_type, "ℹ")
+        icon_label = tk.Label(container, text=symbol, anchor="n", font=("TkDefaultFont", 16, "bold"))
+        icon_label.grid(row=0, column=0, sticky="n", padx=(0, 12))
+
+        message_text = str(message or "")
+        tk.Label(
+            container,
+            text=message_text,
+            justify="left",
+            anchor="w",
+            wraplength=420
+        ).grid(row=0, column=1, sticky="w")
+
+        btn_row = tk.Frame(container)
+        btn_row.grid(row=1, column=0, columnspan=2, sticky="e", pady=(14, 0))
+
+        def choose(value):
+            result["value"] = value
+            dialog.destroy()
+
+        def on_close():
+            if buttons == "yesnocancel":
+                choose(None)
+            elif buttons == "yesno":
+                choose(False)
+            else:
+                choose("ok")
+
+        focus_btn = None
+        if buttons == "ok":
+            focus_btn = tk.Button(btn_row, text="確定", width=10, command=lambda: choose("ok"))
+            focus_btn.pack(side="right")
+            dialog.bind("<Return>", lambda _e: choose("ok"))
+            dialog.bind("<Escape>", lambda _e: choose("ok"))
+        elif buttons == "yesno":
+            btn_no = tk.Button(btn_row, text="否", width=10, command=lambda: choose(False))
+            btn_no.pack(side="right")
+            focus_btn = tk.Button(btn_row, text="是", width=10, command=lambda: choose(True))
+            focus_btn.pack(side="right", padx=(0, 6))
+            dialog.bind("<Return>", lambda _e: choose(True))
+            dialog.bind("<Escape>", lambda _e: choose(False))
+        elif buttons == "yesnocancel":
+            btn_cancel = tk.Button(btn_row, text="取消", width=10, command=lambda: choose(None))
+            btn_cancel.pack(side="right")
+            btn_no = tk.Button(btn_row, text="否", width=10, command=lambda: choose(False))
+            btn_no.pack(side="right", padx=(0, 6))
+            focus_btn = tk.Button(btn_row, text="是", width=10, command=lambda: choose(True))
+            focus_btn.pack(side="right", padx=(0, 6))
+            dialog.bind("<Return>", lambda _e: choose(True))
+            dialog.bind("<Escape>", lambda _e: choose(None))
+        else:
+            raise ValueError("不支援的對話窗按鈕模式：{}".format(buttons))
+
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
+        self._position_dialog_to_app_lower_center(dialog)
+        dialog.focus_force()
+        if focus_btn is not None:
+            focus_btn.focus_set()
+        self.root.wait_window(dialog)
+        return result["value"]
 
     def show_warning(self, title, message, **kwargs):
-        return self._show_messagebox(messagebox.showwarning, title, message, **kwargs)
+        return self._show_app_dialog(title, message, dialog_type="warning", buttons="ok")
 
     def show_info(self, title, message, **kwargs):
-        return self._show_messagebox(messagebox.showinfo, title, message, **kwargs)
+        return self._show_app_dialog(title, message, dialog_type="info", buttons="ok")
 
     def show_error(self, title, message, **kwargs):
-        return self._show_messagebox(messagebox.showerror, title, message, **kwargs)
+        return self._show_app_dialog(title, message, dialog_type="error", buttons="ok")
 
     def confirm(self, title, message, **kwargs):
-        return self._show_messagebox(messagebox.askyesno, title, message, **kwargs)
+        return self._show_app_dialog(title, message, dialog_type="question", buttons="yesno")
 
     def confirm_cancel(self, title, message, **kwargs):
-        return self._show_messagebox(messagebox.askyesnocancel, title, message, **kwargs)
+        return self._show_app_dialog(title, message, dialog_type="question", buttons="yesnocancel")
 
     def set_status(self, message):
         self.status_var.set(message)
