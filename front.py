@@ -1175,7 +1175,13 @@ class App:
             text="產生 randat",
             command=self.insert_randat_row,
             width=14
-        ).grid(row=2, column=0, columnspan=6, padx=(8, 8), pady=(0, 6), sticky="w")
+        ).grid(row=2, column=0, padx=(8, 5), pady=(0, 6), sticky="w")
+        tk.Button(
+            jitter_frame,
+            text="at 交換",
+            command=self.swap_selected_at,
+            width=9
+        ).grid(row=2, column=1, padx=(0, 8), pady=(0, 6), sticky="w")
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -1209,10 +1215,8 @@ class App:
         edit_row.pack(fill="x", pady=(0, 8))
         tk.Button(edit_row, text="undo", command=self.undo_timeline, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="redo", command=self.redo_timeline, width=9).pack(side="left", padx=2)
-        tk.Button(edit_row, text="產生 randat", command=self.insert_randat_row, width=11).pack(side="left", padx=2)
         tk.Button(edit_row, text="上移", command=self.move_selected_up, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
-        tk.Button(edit_row, text="at 交換", command=self.swap_selected_at, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
         tk.Label(edit_row, text="自/手動偏移 :").pack(side="left", padx=(14, 5))
         self.offset_sec_entry = tk.Entry(edit_row, width=10)
