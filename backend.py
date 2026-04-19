@@ -51,7 +51,8 @@ timeline_runtime = {
     "events_total": 0,
     "processed_count": 0,
     "events": [],
-    "last_event": None
+    "last_event": None,
+    "round_traces": []
 }
 timeline_cooldown_runtime = {
     "next_ready_at": {},
@@ -69,6 +70,7 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0):
         timeline_runtime["processed_count"] = 0
         timeline_runtime["events"] = []
         timeline_runtime["last_event"] = None
+        timeline_runtime["round_traces"] = []
         timeline_cooldown_runtime["next_ready_at"] = {}
         timeline_cooldown_runtime["landed_index_by_group"] = {}
 
@@ -84,6 +86,11 @@ def patch_timeline_runtime(**kwargs):
     with runtime_lock:
         for key, value in kwargs.items():
             timeline_runtime[key] = value
+
+
+def append_timeline_round_trace(trace_payload):
+    with runtime_lock:
+        timeline_runtime["round_traces"].append(trace_payload)
 
 
 def get_timeline_runtime_snapshot():
@@ -108,6 +115,7 @@ def get_timeline_runtime_snapshot():
             "processed_count": int(timeline_runtime.get("processed_count", 0)),
             "events": list(timeline_runtime.get("events", [])),
             "last_event": timeline_runtime.get("last_event"),
+            "round_traces": list(timeline_runtime.get("round_traces", [])),
             "cooldowns": cooldowns
         }
 
@@ -249,15 +257,20 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     "cycle_sec": buff_cycle_sec,
                     "jitter_sec": buff_jitter_sec
                 }
+        try:
+            source_index = int(ev.get("runtime_source_index", i))
+        except Exception:
+            source_index = i
         normalized.append({
-            "original_index": i,
+            "original_index": source_index,
             "type": ev_type,
             "button": button,
             "at": at,
             "buff_group": buff_group,
             "runtime_landed_index": ev.get("runtime_landed_index"),
             "runtime_anchor_index": ev.get("runtime_anchor_index"),
-            "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
+            "runtime_occupies_original": ev.get("runtime_occupies_original", 0),
+            "runtime_round_trace": ev.get("runtime_round_trace")
         })
 
     normalized.sort(key=lambda x: x["at"])
@@ -266,6 +279,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
     with run_lock:
         start = time.monotonic()
         timeline_shift = 0.0
+        emitted_round_trace_groups = set()
 
         for i, ev in enumerate(normalized):
             if stop_event.is_set():
@@ -278,6 +292,14 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
             skip_by_cooldown = False
 
             buff_group = ev.get("buff_group", "")
+            round_trace = ev.get("runtime_round_trace")
+            if (
+                buff_group
+                and buff_group not in emitted_round_trace_groups
+                and isinstance(round_trace, dict)
+            ):
+                append_timeline_round_trace(round_trace)
+                emitted_round_trace_groups.add(buff_group)
             if buff_runtime is not None and buff_group in group_config:
                 now_abs = time.monotonic()
                 next_ready = buff_runtime["next_ready_at"].get(buff_group)
