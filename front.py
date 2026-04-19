@@ -1742,6 +1742,10 @@ class App:
         cooldown_by_row = self._runtime_cooldown_by_row()
         runtime_landing = self._runtime_landing_map()
         runtime_state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+        runtime_ok_rank = {
+            idx: rank + 1
+            for rank, idx in enumerate(self.runtime_recent_ok_indices[:3])
+        }
         for i, ev in enumerate(self.timeline):
             self._sync_replicated_row(ev)
             key = (ev["type"], ev["button"], ev["at"])
@@ -1778,6 +1782,9 @@ class App:
                 is_running=is_running,
                 is_focus=is_focus
             ))
+            ok_rank = runtime_ok_rank.get(i)
+            if ok_rank and "bg_applied" not in tags and "bg_candidate" not in tags:
+                tags.append("runtime_ok_{}".format(min(3, int(ok_rank))))
             row_color_tag = self._ensure_tree_color_tag(ev.get("row_color", ""))
             if row_color_tag and "bg_applied" not in tags and "bg_candidate" not in tags:
                 tags.append(row_color_tag)

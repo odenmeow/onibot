@@ -220,6 +220,27 @@ class RuntimeDisplayTests(unittest.TestCase):
         values = app.tree.item("0", "values")
         self.assertEqual(values[5], "A（冷卻中）")
 
+    def test_recent_ok_green_tag_is_restored_for_non_buff_row(self):
+        app = self._new_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 0.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.runtime_recent_ok_indices = [0]
+        app.refresh_tree()
+        tags = app.tree.item("0", "tags")
+        self.assertIn("runtime_ok_1", tags)
+
+    def test_recent_ok_green_tag_does_not_override_buff_background(self):
+        app = self._new_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 0.0, "at_jitter": 0.0, "buff_group": "A", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.runtime_recent_ok_indices = [0]
+        app.refresh_tree()
+        tags = app.tree.item("0", "tags")
+        self.assertIn("bg_candidate", tags)
+        self.assertNotIn("runtime_ok_1", tags)
+
     def test_poll_stopped_freezes_and_repeated_poll_does_not_refresh_table(self):
         app = self._new_app()
         app.timeline = [
