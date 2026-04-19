@@ -3,6 +3,8 @@ import json
 import os
 import re
 import socket
+import errno
+import copy
 import time
 import threading 
 import random
@@ -16,6 +18,8 @@ BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 RUNTIME_POLL_INTERVAL_MS = 300
+CONTROL_REQUEST_TIMEOUT_SEC = 1.2
+STATUS_REQUEST_TIMEOUT_SEC = 0.45
 ROUND_TRACE_REASON_LABELS = {
     "randat_disabled": "未啟用 randat（無可用 randat 列）",
     "fallback_no_free_slot": "無可用 idx（候選位置皆被占用）",
@@ -91,6 +95,7 @@ def load_config():
             "ui_recent_colors": [],
             "ui_layout": {
                 "paned_sash_x": None,
+                "right_paned_sash_y": None,
                 "window_size": None,
                 "tree_column_widths": {}
             }
@@ -125,6 +130,8 @@ def load_config():
             "ui_layout": {
                 "paned_sash_x": ui_layout.get("paned_sash_x"),
                 "paned_ratio": ui_layout.get("paned_ratio"),
+                "right_paned_sash_y": ui_layout.get("right_paned_sash_y"),
+                "right_paned_ratio": ui_layout.get("right_paned_ratio"),
                 "window_size": ui_layout.get("window_size"),
                 "tree_column_widths": tree_column_widths
             }
@@ -140,6 +147,7 @@ def load_config():
             "ui_recent_colors": [],
             "ui_layout": {
                 "paned_sash_x": None,
+                "right_paned_sash_y": None,
                 "window_size": None,
                 "tree_column_widths": {}
             }
@@ -750,14 +758,56 @@ class App:
         widget.config(state="disabled")
 
     def set_frontend_error(self, message):
-        self.update_error_text(self.frontend_error_text, message)
+        self.frontend_error_main = str(message or "").strip()
+        self._render_frontend_error()
 
     def set_backend_error(self, message):
         self.update_error_text(self.backend_error_text, message)
 
     def clear_errors(self):
+        self.frontend_error_main = ""
+        self.last_control_error = ""
+        self.last_status_error = ""
         self.set_frontend_error("")
         self.set_backend_error("")
+
+    def _render_frontend_error(self):
+        lines = []
+        if self.frontend_error_main:
+            lines.append(self.frontend_error_main)
+        if self.last_control_error:
+            lines.append("最後 control 錯誤：{}".format(self.last_control_error))
+        if self.last_status_error:
+            lines.append("最後 status 錯誤：{}".format(self.last_status_error))
+        self.update_error_text(self.frontend_error_text, "\n".join(lines))
+
+    def _set_channel_error(self, channel, message):
+        text = str(message or "").strip()
+        if channel == "status":
+            self.last_status_error = text
+        else:
+            self.last_control_error = text
+        self._render_frontend_error()
+
+    def _clear_channel_error(self, channel):
+        if channel == "status":
+            self.last_status_error = ""
+        else:
+            self.last_control_error = ""
+        self._render_frontend_error()
+
+    def _classify_request_error(self, exc):
+        if isinstance(exc, socket.timeout):
+            return "timeout"
+        if isinstance(exc, json.JSONDecodeError):
+            return "json_parse_failed"
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+            return "connection_reset"
+        if isinstance(exc, OSError):
+            if getattr(exc, "errno", None) in (errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED):
+                return "connection_reset"
+            return "connection_error"
+        return "request_error"
 
     def _get_virtual_desktop_bounds(self):
         try:
@@ -963,36 +1013,46 @@ class App:
         self.refresh_tree()
         self.refresh_preview()
 
-    def request_pi(self, payload, success_status=None, write_response=True):
+    def request_pi(self, payload, success_status=None, write_response=True, channel="control", timeout=None):
         if self.offline_mode and payload.get("action") != "ping":
             raise ConnectionError("目前為離線模式，請先按「測試連線」")
 
         last_err = None
-        with self.request_lock:
+        req_timeout = float(timeout if timeout is not None else (
+            STATUS_REQUEST_TIMEOUT_SEC if channel == "status" else CONTROL_REQUEST_TIMEOUT_SEC
+        ))
+        lock = self.status_request_lock if channel == "status" else self.control_request_lock
+        with lock:
             for retry in range(2):
                 try:
-                    self.ensure_connection()
+                    self.ensure_connection(channel=channel, timeout=req_timeout)
+                    conn = self.status_conn if channel == "status" else self.control_conn
+                    conn_file = self.status_conn_file if channel == "status" else self.control_conn_file
                     wire = json.dumps(payload, ensure_ascii=False) + "\n"
-                    self.conn.sendall(wire.encode("utf-8"))
-                    line = self.conn_file.readline()
+                    conn.sendall(wire.encode("utf-8"))
+                    line = conn_file.readline()
                     if not line:
                         raise ConnectionError("連線已中斷，未收到回應")
                     res = json.loads(line)
                     break
                 except Exception as e:
                     last_err = e
-                    self.close_connection()
+                    self.close_connection(channel=channel, silent=True)
                     if retry == 0:
-                        time.sleep(0.15)
+                        time.sleep(0.06 if channel == "status" else 0.15)
                         continue
-                    err = str(last_err)
-                    self.set_frontend_error(err)
-                    self.set_connected(False)
+                    kind = self._classify_request_error(last_err)
+                    err = "[{}:{}] {}".format(channel, kind, str(last_err))
+                    self._set_channel_error(channel, err)
+                    if channel == "control":
+                        self.set_connected(False)
                     if success_status:
                         self.set_status(success_status + "（前端連線失敗）")
                     raise
 
-        self.set_connected(True)
+        self._clear_channel_error(channel)
+        if channel == "control":
+            self.set_connected(True)
         status = res.get("status")
         if status in ("error", "busy"):
             self.set_backend_error(res.get("message", "Pi 回傳錯誤"))
@@ -1003,39 +1063,54 @@ class App:
             self.write_text({
                 "current_name": self.current_name,
                 "pi_host": self.config["pi_host"],
+                "channel": channel,
                 "request": payload,
                 "response": res
             })
         return res
 
-    def ensure_connection(self):
-        if self.conn is not None and self.conn_file is not None and self.connected:
+    def ensure_connection(self, channel="control", timeout=None):
+        conn = self.status_conn if channel == "status" else self.control_conn
+        conn_file = self.status_conn_file if channel == "status" else self.control_conn_file
+        if conn is not None and conn_file is not None and (self.connected or channel == "status"):
             return
-        self.open_connection()
+        self.open_connection(channel=channel, timeout=timeout if timeout is not None else 3.0)
 
-    def open_connection(self, timeout=3.0):
-        self.close_connection(silent=True)
+    def open_connection(self, timeout=3.0, channel="control"):
+        self.close_connection(channel=channel, silent=True)
         host = self.config["pi_host"]
         sock = socket.create_connection((host, PI_PORT), timeout=timeout)
         sock.settimeout(timeout)
-        self.conn = sock
-        self.conn_file = sock.makefile("r", encoding="utf-8")
-        self.set_connected(True)
+        if channel == "status":
+            self.status_conn = sock
+            self.status_conn_file = sock.makefile("r", encoding="utf-8")
+        else:
+            self.control_conn = sock
+            self.control_conn_file = sock.makefile("r", encoding="utf-8")
+            self.set_connected(True)
 
-    def close_connection(self, silent=False):
-        if self.conn_file is not None:
-            try:
-                self.conn_file.close()
-            except Exception:
-                pass
-        if self.conn is not None:
-            try:
-                self.conn.close()
-            except Exception:
-                pass
-        self.conn_file = None
-        self.conn = None
-        if not silent:
+    def close_connection(self, channel=None, silent=False):
+        channels = ["control", "status"] if channel is None else [channel]
+        for ch in channels:
+            conn_file = self.status_conn_file if ch == "status" else self.control_conn_file
+            conn = self.status_conn if ch == "status" else self.control_conn
+            if conn_file is not None:
+                try:
+                    conn_file.close()
+                except Exception:
+                    pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            if ch == "status":
+                self.status_conn_file = None
+                self.status_conn = None
+            else:
+                self.control_conn_file = None
+                self.control_conn = None
+        if channel in (None, "control") and not silent:
             self.set_connected(False)
 
     def __init__(self, root):
@@ -1050,9 +1125,15 @@ class App:
         self.current_loaded_from_saved = False
         self.connected = False
         self.offline_mode = False
-        self.request_lock = threading.Lock()
-        self.conn = None
-        self.conn_file = None
+        self.control_request_lock = threading.Lock()
+        self.status_request_lock = threading.Lock()
+        self.control_conn = None
+        self.control_conn_file = None
+        self.status_conn = None
+        self.status_conn_file = None
+        self.frontend_error_main = ""
+        self.last_control_error = ""
+        self.last_status_error = ""
         self.timeline_runtime_info = {"events": []}
         self.timeline_runtime_by_index = {}
         self.runtime_round_traces = []
@@ -1071,6 +1152,8 @@ class App:
         self.front_loop_enabled = False
         self.front_loop_after_id = None
         self.front_loop_round = 0
+        self.last_prepared_payload = {}
+        self.json_view_mode_var = tk.StringVar(value="preview")
 
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
@@ -1244,9 +1327,18 @@ class App:
             width=9
         ).grid(row=2, column=1, padx=(0, 8), pady=(0, 6), sticky="w")
 
+        right_content_paned = tk.PanedWindow(right_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED)
+        right_content_paned.pack(fill="both", expand=True)
+        self.right_content_paned = right_content_paned
+
+        table_panel = tk.Frame(right_content_paned)
+        json_panel = tk.Frame(right_content_paned)
+        right_content_paned.add(table_panel, minsize=220)
+        right_content_paned.add(json_panel, minsize=160)
+
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
-        self.tree = ttk.Treeview(right_panel, columns=columns, show="headings", height=8, selectmode="extended")
+        self.tree = ttk.Treeview(table_panel, columns=columns, show="headings", height=8, selectmode="extended")
         for col in columns:
             self.tree.heading(col, text=col)
             width = 92
@@ -1274,7 +1366,7 @@ class App:
         self.tree.bind("<Control-y>", self.redo_timeline, add="+")
         self.tree.bind("<Control-Y>", self.redo_timeline, add="+")
 
-        edit_row = tk.Frame(right_panel)
+        edit_row = tk.Frame(table_panel)
         edit_row.pack(fill="x", pady=(0, 8))
         tk.Button(edit_row, text="undo", command=self.undo_timeline, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="redo", command=self.redo_timeline, width=9).pack(side="left", padx=2)
@@ -1288,15 +1380,23 @@ class App:
         tk.Label(edit_row, text="秒").pack(side="left", padx=(0, 5))
         tk.Button(edit_row, text="套用偏移", command=self.apply_offset_from_selected).pack(side="left", padx=2)
 
-        bottom = tk.Frame(right_panel)
-        bottom.pack(fill="both", expand=True)
-
-        tk.Label(bottom, text="JSON 預覽 / 分析結果").pack(anchor="w")
-        self.text = tk.Text(bottom, height=12)
+        mode_row = tk.Frame(json_panel)
+        mode_row.pack(fill="x", pady=(0, 4))
+        tk.Label(mode_row, text="JSON 顯示：").pack(side="left")
+        for mode, label in (("preview", "Preview"), ("prepared", "Prepared"), ("runtime", "Runtime")):
+            tk.Radiobutton(
+                mode_row,
+                text=label,
+                value=mode,
+                variable=self.json_view_mode_var,
+                command=self.on_json_mode_change
+            ).pack(side="left", padx=(0, 6))
+        self.text = tk.Text(json_panel, height=12)
         self.text.pack(fill="both", expand=True)
 
         self.refresh_saved_list()
         self.restore_last_selected()
+        self.on_json_mode_change()
         self.root.after(50, self.apply_saved_ui_layout)
         self.root.after(150, self.auto_connect)
         self.root.after(200, self.poll_runtime_status)
@@ -1308,6 +1408,14 @@ class App:
             return None
         sash_x, _ = self.body.sash_coord(0)
         return max(0, int(sash_x))
+
+    def get_current_right_paned_sash_y(self):
+        self.root.update_idletasks()
+        panes = self.right_content_paned.panes()
+        if len(panes) < 2:
+            return None
+        _, sash_y = self.right_content_paned.sash_coord(0)
+        return max(0, int(sash_y))
 
     def apply_saved_ui_layout(self):
         ui_layout = self.config.get("ui_layout", {})
@@ -1350,10 +1458,27 @@ class App:
         min_x = 120
         max_x = max(min_x, total_width - 120)
         self.body.sash_place(0, min(max_x, max(min_x, target_x)), 0)
+        self.root.update_idletasks()
+        right_total = self.right_content_paned.winfo_height()
+        if right_total <= 0:
+            return
+        right_sash_y = ui_layout.get("right_paned_sash_y")
+        if isinstance(right_sash_y, (int, float)):
+            target_y = int(right_sash_y)
+        else:
+            right_ratio = ui_layout.get("right_paned_ratio")
+            if isinstance(right_ratio, (int, float)):
+                target_y = int(right_total * right_ratio)
+            else:
+                return
+        min_y = 120
+        max_y = max(min_y, right_total - 120)
+        self.right_content_paned.sash_place(0, 0, min(max_y, max(min_y, target_y)))
 
     def save_ui_layout(self):
         sash_x = self.get_current_paned_sash_x()
-        if sash_x is None:
+        right_sash_y = self.get_current_right_paned_sash_y()
+        if sash_x is None or right_sash_y is None:
             self.show_warning("提醒", "目前無法取得 UI 版面資訊，請稍後再試")
             return
 
@@ -1365,9 +1490,14 @@ class App:
             except Exception:
                 pass
 
+        body_width = max(1, int(self.body.winfo_width()))
+        right_height = max(1, int(self.right_content_paned.winfo_height()))
         self.config["ui_layout"] = {
             "window_size": [self.root.winfo_width(), self.root.winfo_height()],
             "paned_sash_x": int(sash_x),
+            "paned_ratio": round(float(sash_x) / float(body_width), 4),
+            "right_paned_sash_y": int(right_sash_y),
+            "right_paned_ratio": round(float(right_sash_y) / float(right_height), 4),
             "tree_column_widths": column_widths
         }
         self.config["ui_recent_colors"] = self._get_recent_colors()
@@ -1517,19 +1647,48 @@ class App:
         self.text.delete("1.0", tk.END)
         self.text.insert(tk.END, json.dumps(obj, ensure_ascii=False, indent=2))
 
-    def refresh_preview(self):
-        self.write_text({
+    def on_json_mode_change(self):
+        mode_var = getattr(self, "json_view_mode_var", None)
+        mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
+        if mode == "runtime":
+            self.render_runtime_analysis(force=True)
+        elif mode == "prepared":
+            self.render_prepared_payload(force=True)
+        else:
+            self.refresh_preview(force=True)
+
+    def render_prepared_payload(self, force=False):
+        mode_var = getattr(self, "json_view_mode_var", None)
+        mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
+        if not force and mode != "prepared":
+            return
+        payload = self.last_prepared_payload if isinstance(self.last_prepared_payload, dict) else {}
+        self.write_text(payload or {"prepared": "尚無資料"})
+
+    def _build_preview_payload(self):
+        return {
             "current_name": self.current_name,
             "pi_host": self.config["pi_host"],
             "action": "run_timeline",
             "events": self.timeline,
             "simultaneous_groups": build_overlap_summary(self.timeline)
-        })
+        }
+
+    def refresh_preview(self, force=False):
+        mode_var = getattr(self, "json_view_mode_var", None)
+        mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
+        if not force and mode != "preview":
+            return
+        self.write_text(self._build_preview_payload())
 
     def _round_trace_reason_label(self, reason):
         return ROUND_TRACE_REASON_LABELS.get(str(reason or "").strip(), "未知原因")
 
-    def render_runtime_analysis(self):
+    def render_runtime_analysis(self, force=False):
+        mode_var = getattr(self, "json_view_mode_var", None)
+        mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
+        if not force and mode != "runtime":
+            return
         runtime = self.timeline_runtime_info if isinstance(self.timeline_runtime_info, dict) else {}
         traces = self.runtime_round_traces if isinstance(self.runtime_round_traces, list) else []
         payload = {
@@ -1655,25 +1814,26 @@ class App:
 
     def poll_runtime_status(self):
         try:
-            if not self.offline_mode and self.conn is not None and self.connected:
-                res = self.request_pi({"action": "status"}, write_response=False)
+            if not self.offline_mode and self.connected:
+                res = self.request_pi({"action": "status"}, write_response=False, channel="status")
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
-                    if changed:
-                        self.render_runtime_analysis()
-                        state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
-                        if state == "running":
-                            self.runtime_manual_restore_active = False
-                            self.runtime_display_frozen = False
-                            self.refresh_tree()
-                            self.focus_latest_runtime_row()
-                        elif state in ("stopped", "idle"):
-                            if self.has_pre_run_snapshot and not self.runtime_manual_restore_active:
-                                self.runtime_display_frozen = True
-                            else:
-                                self.runtime_display_frozen = False
+                    state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+                    if state == "running":
+                        self.runtime_manual_restore_active = False
+                        self.runtime_display_frozen = False
+                    elif state in ("stopped", "idle"):
+                        if self.has_pre_run_snapshot and not self.runtime_manual_restore_active:
+                            self.runtime_display_frozen = True
                         else:
                             self.runtime_display_frozen = False
+                    else:
+                        self.runtime_display_frozen = False
+                    if changed:
+                        self.render_runtime_analysis()
+                        if state == "running":
+                            self.refresh_tree()
+                            self.focus_latest_runtime_row()
         except Exception:
             pass
         finally:
@@ -2575,7 +2735,7 @@ class App:
         if not self.front_loop_enabled:
             return
         try:
-            status_response = self.request_pi({"action": "status"}, write_response=False)
+            status_response = self.request_pi({"action": "status"}, write_response=False, channel="status")
             runtime = status_response.get("timeline_runtime", {})
             state = str(runtime.get("state", "")).strip().lower()
             if state == "running":
@@ -2696,6 +2856,14 @@ class App:
             resolve_note = "已解決衝突群組: {}".format("、".join(resolved_groups))
         random_note = "jitter 已前端重算（+0~j，僅延後）"
         resolve_note = "{}；{}".format(resolve_note, random_note) if resolve_note else random_note
+        self.last_prepared_payload = {
+            "action_reason": action_reason,
+            "prepared_events": self.copy_events(events),
+            "block_assignments": copy.deepcopy(block_assignments),
+            "round_traces": copy.deepcopy(round_traces),
+            "resolve_note": resolve_note
+        }
+        self.render_prepared_payload()
         return events, resolve_note
 
     def on_buff_skip_mode_change(self, _event=None):
