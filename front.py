@@ -787,16 +787,6 @@ class App:
         container = tk.Frame(dialog, padx=16, pady=14)
         container.pack(fill="both", expand=True)
 
-        symbol_map = {
-            "info": "ℹ",
-            "warning": "⚠",
-            "error": "⛔",
-            "question": "？"
-        }
-        symbol = symbol_map.get(dialog_type, "ℹ")
-        icon_label = tk.Label(container, text=symbol, anchor="n", font=("TkDefaultFont", 16, "bold"))
-        icon_label.grid(row=0, column=0, sticky="n", padx=(0, 12))
-
         message_text = str(message or "")
         tk.Label(
             container,
@@ -804,10 +794,10 @@ class App:
             justify="left",
             anchor="w",
             wraplength=420
-        ).grid(row=0, column=1, sticky="w")
+        ).grid(row=0, column=0, sticky="w")
 
         btn_row = tk.Frame(container)
-        btn_row.grid(row=1, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        btn_row.grid(row=1, column=0, sticky="e", pady=(14, 0))
 
         def choose(value):
             result["value"] = value
@@ -855,13 +845,18 @@ class App:
         return result["value"]
 
     def show_warning(self, title, message, **kwargs):
-        return self._show_app_dialog(title, message, dialog_type="warning", buttons="ok")
+        self.set_status(str(message or title or "提醒"))
+        return "ok"
 
     def show_info(self, title, message, **kwargs):
-        return self._show_app_dialog(title, message, dialog_type="info", buttons="ok")
+        self.set_status(str(message or title or "提示"))
+        return "ok"
 
     def show_error(self, title, message, **kwargs):
-        return self._show_app_dialog(title, message, dialog_type="error", buttons="ok")
+        text = str(message or title or "錯誤")
+        self.set_status(text)
+        self.set_frontend_error(text)
+        return "ok"
 
     def confirm(self, title, message, **kwargs):
         return self._show_app_dialog(title, message, dialog_type="question", buttons="yesno")
@@ -1208,6 +1203,7 @@ class App:
         edit_row.pack(fill="x", pady=(0, 8))
         tk.Button(edit_row, text="undo", command=self.undo_timeline, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="redo", command=self.redo_timeline, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="產生 randat", command=self.insert_randat_row, width=11).pack(side="left", padx=2)
         tk.Button(edit_row, text="上移", command=self.move_selected_up, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="at 交換", command=self.swap_selected_at, width=9).pack(side="left", padx=2)
@@ -1674,7 +1670,7 @@ class App:
             row_color_tag = self._ensure_tree_color_tag(ev.get("row_color", ""))
             if row_color_tag and "runtime_buff_blue" not in tags and "runtime_buff_yellow" not in tags:
                 tags.append(row_color_tag)
-            if str(ev.get("button", "")).strip().lower() not in SUPPORTED_BUTTONS:
+            if row_type != "randat" and str(ev.get("button", "")).strip().lower() not in SUPPORTED_BUTTONS:
                 tags.append("unsupported_button")
             self.tree.insert("", "end", iid=str(i), values=(
                 i,
@@ -1844,32 +1840,19 @@ class App:
             has_original = bool(self.timeline_meta.get("original_events"))
             has_latest_saved = bool(self.timeline_meta.get("latest_saved_events"))
             if has_original and has_latest_saved:
-                selected = self.confirm_cancel(
-                    "重新分析",
-                    "目前無新錄製資料。\n是否回到「初版 Timeline」？\n"
-                    "按「是」= 初版；按「否」= 上次保存新版；按「取消」= 不變更。"
-                )
-                if selected is None:
-                    self.set_status("已取消重新分析")
-                    return
-                restored = self.restore_original_timeline() if selected else self.restore_latest_saved_timeline()
+                restored = self.restore_latest_saved_timeline()
                 if restored:
-                    if selected:
-                        self.set_status("已還原初版 Timeline（重新分析）")
-                    else:
-                        self.set_status("已還原上次保存新版 Timeline（重新分析）")
+                    self.set_status("目前無新錄製資料，已還原上次保存新版 Timeline（重新分析）")
                 return
             if has_original:
-                self.show_info("重新分析", "目前無新錄製資料。\n目前僅有可回復的「初版 Timeline」。")
                 self.restore_original_timeline()
-                self.set_status("已還原初版 Timeline（重新分析）")
+                self.set_status("目前無新錄製資料，已還原初版 Timeline（重新分析）")
                 return
             if has_latest_saved:
-                self.show_info("重新分析", "目前無新錄製資料。\n目前僅有可回復的「上次保存新版 Timeline」。")
                 self.restore_latest_saved_timeline()
-                self.set_status("已還原上次保存新版 Timeline（重新分析）")
+                self.set_status("目前無新錄製資料，已還原上次保存新版 Timeline（重新分析）")
                 return
-            self.show_warning("提醒", "目前沒有錄到資料，也沒有可還原的初版/新版 Timeline")
+            self.set_status("目前沒有錄到資料，也沒有可還原的初版/新版 Timeline")
             return
 
         before = self._begin_timeline_change()
@@ -2678,7 +2661,7 @@ class App:
         try:
             raw = self.root.clipboard_get()
         except tk.TclError:
-            self.show_warning("提醒", "剪貼簿沒有可貼上的內容")
+            self.set_status("剪貼簿沒有可貼上的內容")
             return "break"
 
         lines = [line for line in raw.splitlines() if line.strip()]
@@ -2813,7 +2796,7 @@ class App:
         if len(values) < 7:
             raise ValueError("每列至少需要 7 欄（type 到 buff_jitter_sec）")
         # 優先支援 7 欄格式；若是完整表格 9 欄（idx + 7 欄 + group），則忽略 idx/group。
-        if len(values) >= 9 and values[1].strip().lower() in ("press", "release"):
+        if len(values) >= 9 and values[1].strip().lower() in ("press", "release", "randat"):
             normalized = values[1:8]
         else:
             normalized = values[:7]
@@ -2849,13 +2832,53 @@ class App:
             return
 
         value = raw_value.strip().lower()
-        if field == "type" and value not in ("press", "release"):
-            raise ValueError("type 只能是 press / release")
-        if field == "button" and not value:
+        row_type = str(event.get("type", "")).strip().lower()
+        if field == "type" and value not in ("press", "release", "randat"):
+            raise ValueError("type 只能是 press / release / randat")
+        if field == "button" and row_type != "randat" and not value:
             raise ValueError("button 不可空白")
         if field == "buff_group":
             value = raw_value.strip()
         event[field] = value
+
+    def insert_randat_row(self):
+        if not self._ensure_runtime_editable():
+            return
+        selected = sorted(self.get_selected_indexes())
+        insert_at = 0
+        anchor_idx = None
+        if selected:
+            anchor_idx = selected[0]
+            position = self.ask_paste_position(anchor_idx, 1)
+            if position is None:
+                self.set_status("已取消插入 randat")
+                return
+            insert_at = anchor_idx if position == "above" else anchor_idx + 1
+
+        at_value = 0.0
+        if anchor_idx is not None and 0 <= anchor_idx < len(self.timeline):
+            try:
+                at_value = round(max(0.0, float(self.timeline[anchor_idx].get("at", 0.0))), 2)
+            except Exception:
+                at_value = 0.0
+
+        event = {
+            "type": "randat",
+            "button": "",
+            "at": at_value,
+            "at_jitter": 0.0,
+            "buff_group": "",
+            "buff_cycle_sec": 0.0,
+            "buff_jitter_sec": 0.0,
+            "row_color": "#d8ecff",
+            "replicatedRow": 0
+        }
+        before = self._begin_timeline_change()
+        self.timeline.insert(insert_at, event)
+        self._finalize_timeline_change(before)
+        self.mark_timeline_dirty()
+        self.tree.selection_set([str(insert_at)])
+        self.set_status("已插入 randat 列於 idx {}".format(insert_at))
 
     def move_selected_up(self):
         if not self._ensure_runtime_editable():
