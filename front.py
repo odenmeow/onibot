@@ -15,6 +15,13 @@ PI_PORT = 5000
 BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
+ROUND_TRACE_REASON_LABELS = {
+    "randat_false": "未執行 randat（無可用 randat 列）",
+    "no_valid_idx": "無可用 idx（候選位置皆被占用）",
+    "group_skipped": "此群組略過",
+    "already_applied": "已在原位（維持候選）",
+    "rule_blocked": "規則阻擋",
+}
 
 SAVE_DIR = "saved_timelines"
 CONFIG_FILE = "front_config.json"
@@ -436,17 +443,39 @@ def allocate_randat_blocks(events):
 
     occupied_slots = set()
     block_assignments = {}
-    for group, rows in blocks.items():
+    round_traces = []
+    for round_idx, (group, rows) in enumerate(blocks.items(), start=1):
         anchor_idx = rows[0]
+        randat_executed = bool(randat_slots)
         candidates = [anchor_idx] + [slot for slot in randat_slots if slot != anchor_idx]
+        has_free_candidate = any(c not in occupied_slots for c in candidates)
         landed_idx = next((c for c in candidates if c not in occupied_slots), anchor_idx)
         occupied_slots.add(landed_idx)
+        result = "kept" if landed_idx == anchor_idx else "applied"
+        reason = None
+        if result == "kept":
+            if not randat_executed:
+                reason = "randat_false"
+            elif has_free_candidate:
+                reason = "already_applied"
+            else:
+                reason = "no_valid_idx"
+        round_trace = {
+            "round": round_idx,
+            "buffGroup": group,
+            "pickedIdx": landed_idx,
+            "randatExecuted": randat_executed,
+            "result": result,
+            "reason": reason
+        }
         block_assignments[group] = {
             "group": group,
             "anchor_index": anchor_idx,
             "landed_index": landed_idx,
-            "occupies_original": landed_idx == anchor_idx
+            "occupies_original": landed_idx == anchor_idx,
+            "round_trace": round_trace
         }
+        round_traces.append(round_trace)
 
     for ev in working:
         group = str(ev.get("buff_group", "")).strip()
@@ -460,7 +489,20 @@ def allocate_randat_blocks(events):
         ev["runtime_landed_index"] = assign["landed_index"]
         ev["runtime_anchor_index"] = assign["anchor_index"]
         ev["runtime_occupies_original"] = 1 if assign["occupies_original"] else 0
-    return working, block_assignments
+    return working, block_assignments, round_traces
+
+
+def get_buff_cell_visual_state(is_candidate, is_applied, is_running, is_focus):
+    tags = []
+    if bool(is_applied):
+        tags.append("bg_applied")
+    elif bool(is_candidate):
+        tags.append("bg_candidate")
+    if bool(is_running):
+        tags.append("ring_running")
+    if bool(is_focus):
+        tags.append("focus_hint")
+    return tags
 
 
 class App:
@@ -846,16 +888,22 @@ class App:
 
     def show_warning(self, title, message, **kwargs):
         self.set_status(str(message or title or "提醒"))
+        if not hasattr(self.root, "tk"):
+            return self._show_app_dialog(title, message, dialog_type="warning", buttons="ok")
         return "ok"
 
     def show_info(self, title, message, **kwargs):
         self.set_status(str(message or title or "提示"))
+        if not hasattr(self.root, "tk"):
+            return self._show_app_dialog(title, message, dialog_type="info", buttons="ok")
         return "ok"
 
     def show_error(self, title, message, **kwargs):
         text = str(message or title or "錯誤")
         self.set_status(text)
         self.set_frontend_error(text)
+        if not hasattr(self.root, "tk"):
+            return self._show_app_dialog(title, text, dialog_type="error", buttons="ok")
         return "ok"
 
     def confirm(self, title, message, **kwargs):
@@ -995,6 +1043,7 @@ class App:
         self.conn_file = None
         self.timeline_runtime_info = {"events": []}
         self.timeline_runtime_by_index = {}
+        self.runtime_round_traces = []
         self.runtime_recent_ok_indices = []
         self.runtime_recent_skipped_indices = []
         self.runtime_latest_index = None
@@ -1193,8 +1242,10 @@ class App:
                 width = 100
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
-        self.tree.tag_configure("runtime_buff_blue", background="#d8ecff")
-        self.tree.tag_configure("runtime_buff_yellow", background="#fff4b3")
+        self.tree.tag_configure("bg_applied", background="#d8ecff")
+        self.tree.tag_configure("bg_candidate", background="#fff4b3")
+        self.tree.tag_configure("ring_running", foreground="#0b4f8a")
+        self.tree.tag_configure("focus_hint", foreground="#7b3f00")
         self.tree.tag_configure("runtime_ok_1", background="#bfe8bf")
         self.tree.tag_configure("runtime_ok_2", background="#d9f2d9")
         self.tree.tag_configure("runtime_ok_3", background="#edf9ed")
@@ -1463,6 +1514,42 @@ class App:
             "simultaneous_groups": build_overlap_summary(self.timeline)
         })
 
+    def _round_trace_reason_label(self, reason):
+        return ROUND_TRACE_REASON_LABELS.get(str(reason or "").strip(), "未知原因")
+
+    def render_runtime_analysis(self):
+        runtime = self.timeline_runtime_info if isinstance(self.timeline_runtime_info, dict) else {}
+        traces = self.runtime_round_traces if isinstance(self.runtime_round_traces, list) else []
+        payload = {
+            "run_id": runtime.get("run_id"),
+            "state": runtime.get("state"),
+            "processed_count": runtime.get("processed_count"),
+            "events_total": runtime.get("events_total"),
+            "round_traces": traces
+        }
+        lines = []
+        for trace in traces:
+            if not isinstance(trace, dict):
+                continue
+            round_no = trace.get("round")
+            group = trace.get("buffGroup", "")
+            idx = trace.get("pickedIdx")
+            result = str(trace.get("result", "")).strip().lower()
+            reason = trace.get("reason")
+            if result == "applied":
+                lines.append("idx {} = 藍色".format(idx))
+                lines.append("本輪 group {} 套用 idx {}（藍色）".format(group, idx))
+            else:
+                if reason is None:
+                    print("[RoundTrace warning] round {} kept 缺少 reason".format(round_no))
+                lines.append("本輪維持淺黃（原因：{}）".format(self._round_trace_reason_label(reason)))
+
+        self.text.delete("1.0", tk.END)
+        self.text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))
+        if lines:
+            self.text.insert(tk.END, "\n\n---\n")
+            self.text.insert(tk.END, "\n".join(lines))
+
     def update_runtime_from_status(self, status_response):
         runtime = status_response.get("timeline_runtime", {})
         if not isinstance(runtime, dict):
@@ -1470,6 +1557,9 @@ class App:
         events = runtime.get("events", [])
         if not isinstance(events, list):
             events = []
+        round_traces = runtime.get("round_traces", [])
+        if not isinstance(round_traces, list):
+            round_traces = []
 
         runtime_by_index = {}
         recent_ok = []
@@ -1518,6 +1608,8 @@ class App:
                 "state": runtime.get("state"),
                 "processed_count": runtime.get("processed_count"),
                 "last_event": runtime.get("last_event"),
+                "round_trace_count": len(round_traces),
+                "round_trace_last": round_traces[-1] if round_traces else None,
                 "recent_ok": recent_ok,
                 "recent_skipped": recent_skipped
             },
@@ -1530,6 +1622,7 @@ class App:
         )
         self.timeline_runtime_info = runtime
         self.timeline_runtime_by_index = runtime_by_index
+        self.runtime_round_traces = round_traces
         self.runtime_recent_ok_indices = recent_ok
         self.runtime_recent_skipped_indices = recent_skipped
         self.runtime_latest_index = latest_idx
@@ -1543,6 +1636,7 @@ class App:
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
                     if changed:
+                        self.render_runtime_analysis()
                         state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
                         if state == "running":
                             self.runtime_manual_restore_active = False
@@ -1564,6 +1658,7 @@ class App:
     def clear_runtime_highlight(self):
         self.timeline_runtime_info = {"events": []}
         self.timeline_runtime_by_index = {}
+        self.runtime_round_traces = []
         self.runtime_recent_ok_indices = []
         self.runtime_recent_skipped_indices = []
         self.runtime_latest_index = None
@@ -1665,20 +1760,26 @@ class App:
             at_value = "{:.2f}".format(float(ev["at"]))
             tags = []
             row_type = str(ev.get("type", "")).strip().lower()
+            is_candidate = False
+            is_applied = False
             if runtime_state != "running":
-                if row_type == "randat":
-                    tags.append("runtime_buff_blue")
-                elif original_buff_group:
-                    tags.append("runtime_buff_yellow")
+                is_applied = (row_type == "randat")
+                is_candidate = bool(original_buff_group) and not is_applied
             else:
                 if original_buff_group:
                     landing = runtime_landing.get(original_buff_group, {})
-                    if landing.get("occupies_original"):
-                        tags.append("runtime_buff_yellow")
-                    elif landing:
-                        tags.append("runtime_buff_blue")
+                    is_candidate = bool(landing.get("occupies_original"))
+                    is_applied = bool(landing) and not is_candidate
+            is_running = runtime_state == "running" and i == self.runtime_latest_index
+            is_focus = i == self.runtime_latest_index
+            tags.extend(get_buff_cell_visual_state(
+                is_candidate=is_candidate,
+                is_applied=is_applied,
+                is_running=is_running,
+                is_focus=is_focus
+            ))
             row_color_tag = self._ensure_tree_color_tag(ev.get("row_color", ""))
-            if row_color_tag and "runtime_buff_blue" not in tags and "runtime_buff_yellow" not in tags:
+            if row_color_tag and "bg_applied" not in tags and "bg_candidate" not in tags:
                 tags.append(row_color_tag)
             if row_type != "randat" and str(ev.get("button", "")).strip().lower() not in SUPPORTED_BUTTONS:
                 tags.append("unsupported_button")
@@ -1850,9 +1951,20 @@ class App:
             has_original = bool(self.timeline_meta.get("original_events"))
             has_latest_saved = bool(self.timeline_meta.get("latest_saved_events"))
             if has_original and has_latest_saved:
-                restored = self.restore_latest_saved_timeline()
-                if restored:
-                    self.set_status("目前無新錄製資料，已還原上次保存新版 Timeline（重新分析）")
+                ans = self.confirm_cancel(
+                    "重新分析來源",
+                    "目前無新錄製資料。\n是=還原初版 Timeline；否=還原上次保存新版 Timeline；取消=不變更。"
+                )
+                if ans is None:
+                    self.set_status("已取消重新分析")
+                    return
+                if ans:
+                    self.restore_original_timeline()
+                    self.set_status("目前無新錄製資料，已還原初版 Timeline（重新分析）")
+                else:
+                    restored = self.restore_latest_saved_timeline()
+                    if restored:
+                        self.set_status("目前無新錄製資料，已還原上次保存新版 Timeline（重新分析）")
                 return
             if has_original:
                 self.restore_original_timeline()
@@ -1860,6 +1972,7 @@ class App:
                 return
             if has_latest_saved:
                 self.restore_latest_saved_timeline()
+                self.show_info("重新分析", "目前無新錄製資料，已還原上次保存新版 Timeline")
                 self.set_status("目前無新錄製資料，已還原上次保存新版 Timeline（重新分析）")
                 return
             self.set_status("目前沒有錄到資料，也沒有可還原的初版/新版 Timeline")
@@ -2524,7 +2637,12 @@ class App:
                     ev["buff_cycle_sec"] = chosen_cycle
                     ev["buff_jitter_sec"] = chosen_jitter
 
-        events, block_assignments = allocate_randat_blocks(events)
+        events, block_assignments, round_traces = allocate_randat_blocks(events)
+        trace_by_group = {
+            str(item.get("buffGroup", "")).strip(): dict(item)
+            for item in round_traces
+            if isinstance(item, dict) and str(item.get("buffGroup", "")).strip()
+        }
         for ev in events:
             ev["at"] = apply_positive_jitter(ev.get("at", 0.0), ev.get("at_jitter", 0.0))
             cycle = max(0.0, _safe_float(ev.get("buff_cycle_sec", 0.0)))
@@ -2535,6 +2653,9 @@ class App:
         events = [ev for ev in events if str(ev.get("type", "")).strip().lower() in ("press", "release")]
         for ev in events:
             ev["runtime_block_assignments"] = block_assignments
+            group = str(ev.get("buff_group", "")).strip()
+            if group in trace_by_group:
+                ev["runtime_round_trace"] = dict(trace_by_group[group])
 
         resolve_note = ""
         if resolved_groups:
