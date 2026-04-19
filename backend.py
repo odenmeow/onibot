@@ -53,6 +53,10 @@ timeline_runtime = {
     "events": [],
     "last_event": None
 }
+timeline_cooldown_runtime = {
+    "next_ready_at": {},
+    "landed_index_by_group": {}
+}
 
 
 def set_timeline_runtime(mode, state, events_total=0, loop_count=0):
@@ -65,6 +69,8 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0):
         timeline_runtime["processed_count"] = 0
         timeline_runtime["events"] = []
         timeline_runtime["last_event"] = None
+        timeline_cooldown_runtime["next_ready_at"] = {}
+        timeline_cooldown_runtime["landed_index_by_group"] = {}
 
 
 def append_timeline_runtime_event(event_payload):
@@ -82,6 +88,17 @@ def patch_timeline_runtime(**kwargs):
 
 def get_timeline_runtime_snapshot():
     with runtime_lock:
+        now_abs = time.monotonic()
+        cooldowns = []
+        for group, ready_at in timeline_cooldown_runtime.get("next_ready_at", {}).items():
+            remain = max(0.0, float(ready_at) - now_abs)
+            if remain <= 0:
+                continue
+            cooldowns.append({
+                "buff_group": str(group),
+                "remain_sec": round(remain, 3),
+                "landed_index": timeline_cooldown_runtime.get("landed_index_by_group", {}).get(group)
+            })
         return {
             "run_id": int(timeline_runtime.get("run_id", 0)),
             "state": timeline_runtime.get("state", "idle"),
@@ -90,7 +107,8 @@ def get_timeline_runtime_snapshot():
             "events_total": int(timeline_runtime.get("events_total", 0)),
             "processed_count": int(timeline_runtime.get("processed_count", 0)),
             "events": list(timeline_runtime.get("events", [])),
-            "last_event": timeline_runtime.get("last_event")
+            "last_event": timeline_runtime.get("last_event"),
+            "cooldowns": cooldowns
         }
 
 
@@ -165,7 +183,7 @@ def apply_jitter(base_value, jitter):
     if jitter is None:
         jitter = 0.0
     jitter = abs(float(jitter))
-    value = float(base_value) + random.uniform(-jitter, jitter)
+    value = float(base_value) + random.uniform(0.0, jitter)
     return max(0.0, value)
 
 
@@ -236,7 +254,10 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
             "type": ev_type,
             "button": button,
             "at": at,
-            "buff_group": buff_group
+            "buff_group": buff_group,
+            "runtime_landed_index": ev.get("runtime_landed_index"),
+            "runtime_anchor_index": ev.get("runtime_anchor_index"),
+            "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
         })
 
     normalized.sort(key=lambda x: x["at"])
@@ -264,8 +285,12 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     skip_by_cooldown = True
                 else:
                     cfg = group_config[buff_group]
-                    cd = max(0.0, cfg["cycle_sec"] + random.uniform(-cfg["jitter_sec"], cfg["jitter_sec"]))
+                    cd = max(0.0, cfg["cycle_sec"])
                     buff_runtime["next_ready_at"][buff_group] = now_abs + cd
+                    landed_index = ev.get("runtime_landed_index")
+                    with runtime_lock:
+                        timeline_cooldown_runtime["next_ready_at"][buff_group] = now_abs + cd
+                        timeline_cooldown_runtime["landed_index_by_group"][buff_group] = landed_index
 
             if skip_by_cooldown:
                 compressed_sec = 0.0
@@ -293,7 +318,11 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     "source_target_at": round(source_target, 4),
                     "target_at": round(target, 4),
                     "actual_at": round(time.monotonic() - start, 4),
-                    "buff_skip_mode": buff_skip_mode
+                    "buff_skip_mode": buff_skip_mode,
+                    "buff_group": buff_group,
+                    "runtime_landed_index": ev.get("runtime_landed_index"),
+                    "runtime_anchor_index": ev.get("runtime_anchor_index"),
+                    "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
                 })
                 continue
 
@@ -324,7 +353,11 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                 "status": "ok",
                 "source_target_at": round(source_target, 4),
                 "target_at": round(target, 4),
-                "actual_at": round(actual_now, 4)
+                "actual_at": round(actual_now, 4),
+                "buff_group": buff_group,
+                "runtime_landed_index": ev.get("runtime_landed_index"),
+                "runtime_anchor_index": ev.get("runtime_anchor_index"),
+                "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
             })
 
     return results

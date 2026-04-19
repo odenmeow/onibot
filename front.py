@@ -7,7 +7,7 @@ import time
 import threading 
 import random
 import tkinter as tk
-from tkinter import ttk, simpledialog, colorchooser
+from tkinter import ttk, simpledialog, colorchooser, messagebox
 from pynput import keyboard
 
 DEFAULT_PI_HOST = "192.168.100.140"
@@ -51,7 +51,12 @@ DEFAULT_HINT_NOTE_TEXT = (
     "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
     "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n"
     "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at；『at 交換』可快速對調兩列 at 時間。\n"
-    "at_random_sec：前端會在送出前每次重算，讓每輪送到後端的 at 都不同。"
+    "randat：type=randat 的列是候選落點；每個 buff_group 會整包換位，組內順序不拆。\n"
+    "at_jitter：前端每輪重算為 base + random(0~j)，僅延後。\n"
+    "最後一欄 group：用於顯示系統重疊群組；若無系統綁定可視為使用者自訂分組語意。\n"
+    "淺藍和淺黃都是 buff。\n"
+    "【運行中的淺黃】: 代表自己搶到自己原位執行。\n"
+    "【運行中的淺藍】: 代表搶到空格或者別人位置。"
 )
 
 events = []
@@ -74,7 +79,6 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
-            "timeline_at_random_sec": 0.0,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -108,7 +112,6 @@ def load_config():
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
-            "timeline_at_random_sec": max(0.0, float(data.get("timeline_at_random_sec", 0.0))),
             "hint_note_text": str(data.get("hint_note_text", DEFAULT_HINT_NOTE_TEXT)),
             "ui_recent_colors": normalized_recent,
             "ui_layout": {
@@ -125,7 +128,6 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
             "manual_offset_sec": 0.2,
-            "timeline_at_random_sec": 0.0,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -417,107 +419,48 @@ def _safe_float(value, default=0.0):
         return float(default)
 
 
-def estimate_adaptive_random_ratio(saved_dir=SAVE_DIR, prior=0.35, prior_weight=240):
-    samples = []
-    if not os.path.isdir(saved_dir):
-        return prior, 0
-
-    for fn in os.listdir(saved_dir):
-        if not fn.lower().endswith(".json"):
-            continue
-        path = os.path.join(saved_dir, fn)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            events = data.get("events", [])
-            if not isinstance(events, list):
-                continue
-            normalized = []
-            for ev in events:
-                at = max(0.0, _safe_float(ev.get("at", 0.0)))
-                jitter = abs(_safe_float(ev.get("at_jitter", 0.0)))
-                normalized.append((at, jitter))
-            normalized.sort(key=lambda x: x[0])
-            for i, (_at, jitter) in enumerate(normalized):
-                if jitter <= 0:
-                    continue
-                neighbor_gaps = []
-                if i > 0:
-                    gap = abs(normalized[i][0] - normalized[i - 1][0])
-                    if gap > 0:
-                        neighbor_gaps.append(gap)
-                if i + 1 < len(normalized):
-                    gap = abs(normalized[i + 1][0] - normalized[i][0])
-                    if gap > 0:
-                        neighbor_gaps.append(gap)
-                if not neighbor_gaps:
-                    continue
-                near_gap = min(neighbor_gaps)
-                ratio = jitter / near_gap
-                if ratio > 0:
-                    samples.append(min(ratio, 1.0))
-        except Exception:
-            continue
-
-    if not samples:
-        return prior, 0
-
-    samples.sort()
-    mid = len(samples) // 2
-    if len(samples) % 2 == 0:
-        empirical = (samples[mid - 1] + samples[mid]) / 2.0
-    else:
-        empirical = samples[mid]
-
-    n = len(samples)
-    w = n / float(n + prior_weight)
-    blended = (w * empirical) + ((1.0 - w) * prior)
-    return max(0.12, min(0.55, blended)), n
+def apply_positive_jitter(base_value, jitter):
+    base = max(0.0, _safe_float(base_value, 0.0))
+    j = max(0.0, _safe_float(jitter, 0.0))
+    return round(base + random.uniform(0.0, j), 4)
 
 
-def randomize_timeline_runtime_events(events, global_at_random_sec, adaptive_ratio, buff_reorder_prob=0.12):
-    if not events:
-        return [], {"adaptive_ratio": adaptive_ratio, "sample_count": 0}
-
+def allocate_randat_blocks(events):
     working = [dict(ev) for ev in events]
-    sample_count = len(working)
-
-    # 只針對 buff group 做少量亂序（相鄰 swap）
-    for i in range(len(working) - 1):
-        left_group = str(working[i].get("buff_group", "")).strip()
-        right_group = str(working[i + 1].get("buff_group", "")).strip()
-        if not left_group or not right_group:
-            continue
-        if random.random() < buff_reorder_prob:
-            working[i], working[i + 1] = working[i + 1], working[i]
-
-    # 依目前順序重新分配基準 at（確保時間遞增）
-    base_times = sorted(max(0.0, _safe_float(ev.get("at", 0.0))) for ev in working)
+    randat_slots = [idx for idx, ev in enumerate(working) if str(ev.get("type", "")).strip().lower() == "randat"]
+    blocks = {}
     for idx, ev in enumerate(working):
-        ev["at"] = base_times[idx]
+        group = str(ev.get("buff_group", "")).strip()
+        if group:
+            blocks.setdefault(group, []).append(idx)
 
-    # 針對每列做 at 隨機化：base_jitter + auto_jitter（來自全域 at_random 與自適應係數）
-    randomized = []
-    for i, ev in enumerate(working):
-        at = max(0.0, _safe_float(ev.get("at", 0.0)))
-        base_jitter = abs(_safe_float(ev.get("at_jitter", 0.0)))
-        neighbor_gaps = []
-        if i > 0:
-            g = abs(at - max(0.0, _safe_float(working[i - 1].get("at", 0.0))))
-            if g > 0:
-                neighbor_gaps.append(g)
-        if i + 1 < len(working):
-            g = abs(max(0.0, _safe_float(working[i + 1].get("at", 0.0))) - at)
-            if g > 0:
-                neighbor_gaps.append(g)
-        gap_limit = min(neighbor_gaps) if neighbor_gaps else global_at_random_sec
-        auto_jitter = min(global_at_random_sec, gap_limit * adaptive_ratio)
-        effective_jitter = max(base_jitter, auto_jitter)
-        ev["at"] = round(max(0.0, at + random.uniform(-effective_jitter, effective_jitter)), 4)
-        randomized.append(ev)
+    occupied_slots = set()
+    block_assignments = {}
+    for group, rows in blocks.items():
+        anchor_idx = rows[0]
+        candidates = [anchor_idx] + [slot for slot in randat_slots if slot != anchor_idx]
+        landed_idx = next((c for c in candidates if c not in occupied_slots), anchor_idx)
+        occupied_slots.add(landed_idx)
+        block_assignments[group] = {
+            "group": group,
+            "anchor_index": anchor_idx,
+            "landed_index": landed_idx,
+            "occupies_original": landed_idx == anchor_idx
+        }
 
-    randomized.sort(key=lambda x: max(0.0, _safe_float(x.get("at", 0.0))))
-    return randomized, {"adaptive_ratio": adaptive_ratio, "sample_count": sample_count}
+    for ev in working:
+        group = str(ev.get("buff_group", "")).strip()
+        if group not in block_assignments:
+            continue
+        assign = block_assignments[group]
+        anchor_at = max(0.0, _safe_float(working[assign["anchor_index"]].get("at", 0.0)))
+        landed_at = max(0.0, _safe_float(working[assign["landed_index"]].get("at", 0.0)))
+        delta = landed_at - anchor_at
+        ev["at"] = round(max(0.0, _safe_float(ev.get("at", 0.0)) + delta), 4)
+        ev["runtime_landed_index"] = assign["landed_index"]
+        ev["runtime_anchor_index"] = assign["anchor_index"]
+        ev["runtime_occupies_original"] = 1 if assign["occupies_original"] else 0
+    return working, block_assignments
 
 
 class App:
@@ -575,22 +518,6 @@ class App:
         except ValueError:
             raise ValueError("自/手動偏移時間必須是數字")
         self.config["manual_offset_sec"] = val
-        save_config(self.config)
-        return val
-
-    def get_timeline_at_random_sec(self):
-        raw = ""
-        if hasattr(self, "timeline_at_random_entry"):
-            raw = self.timeline_at_random_entry.get().strip()
-        if not raw:
-            raw = str(self.config.get("timeline_at_random_sec", 0.0))
-        try:
-            val = float(raw)
-        except ValueError:
-            raise ValueError("at 隨機秒數必須是數字")
-        if val < 0:
-            raise ValueError("at 隨機秒數不可小於 0")
-        self.config["timeline_at_random_sec"] = val
         save_config(self.config)
         return val
 
@@ -830,6 +757,26 @@ class App:
             pass
 
     def _show_app_dialog(self, title, message, dialog_type="info", buttons="ok"):
+        if not hasattr(self.root, "tk"):
+            if buttons == "ok":
+                if dialog_type == "warning":
+                    messagebox.showwarning(title, message)
+                elif dialog_type == "error":
+                    messagebox.showerror(title, message)
+                else:
+                    messagebox.showinfo(title, message)
+                return "ok"
+            if buttons == "yesno":
+                try:
+                    return messagebox.askyesno(title, message)
+                except Exception:
+                    return True
+            if buttons == "yesnocancel":
+                try:
+                    return messagebox.askyesnocancel(title, message)
+                except Exception:
+                    return None
+
         result = {"value": None}
         dialog = tk.Toplevel(self.root)
         dialog.title(str(title or "提示"))
@@ -1228,13 +1175,6 @@ class App:
             jitter_frame,
             text="【註：buff_group 為負值時，請用「糾正複製體」重算；「套用偏移」僅手動平移時間。】"
         ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 4), sticky="w")
-        tk.Label(jitter_frame, text="at 隨機：").grid(row=2, column=0, padx=(8, 5), pady=(0, 6), sticky="w")
-        self.timeline_at_random_entry = tk.Entry(jitter_frame, width=10)
-        self.timeline_at_random_entry.insert(0, "{:.4f}".format(float(self.config.get("timeline_at_random_sec", 0.0))))
-        self.timeline_at_random_entry.grid(row=2, column=1, padx=(0, 5), pady=(0, 6), sticky="w")
-        tk.Label(jitter_frame, text="秒（統一套用，執行時每輪重算）").grid(
-            row=2, column=2, columnspan=4, padx=(0, 8), pady=(0, 6), sticky="w"
-        )
 
         columns = ("idx", "type", "button", "at", "at_jitter", "buff_group", "buff_cycle_sec", "buff_jitter_sec", "group")
         self.tree_columns = columns
@@ -1246,6 +1186,8 @@ class App:
                 width = 100
             self.tree.column(col, width=width, minwidth=40, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
+        self.tree.tag_configure("runtime_buff_blue", background="#d8ecff")
+        self.tree.tag_configure("runtime_buff_yellow", background="#fff4b3")
         self.tree.tag_configure("runtime_ok_1", background="#bfe8bf")
         self.tree.tag_configure("runtime_ok_2", background="#d9f2d9")
         self.tree.tag_configure("runtime_ok_3", background="#edf9ed")
@@ -1639,6 +1581,50 @@ class App:
             self.tree_row_color_tags.add(tag)
         return tag
 
+    def _runtime_landing_map(self):
+        runtime_events = self.timeline_runtime_info.get("events", [])
+        if not isinstance(runtime_events, list):
+            runtime_events = []
+        landing = {}
+        for ev in reversed(runtime_events):
+            if not isinstance(ev, dict):
+                continue
+            group = str(ev.get("buff_group", "")).strip()
+            if not group or group in landing:
+                continue
+            landed_idx = ev.get("runtime_landed_index")
+            anchor_idx = ev.get("runtime_anchor_index")
+            if landed_idx is None or anchor_idx is None:
+                continue
+            landing[group] = {
+                "landed_index": int(landed_idx),
+                "anchor_index": int(anchor_idx),
+                "occupies_original": bool(int(ev.get("runtime_occupies_original", 0)))
+            }
+        return landing
+
+    def _runtime_cooldown_by_row(self):
+        runtime = self.timeline_runtime_info if isinstance(self.timeline_runtime_info, dict) else {}
+        cooldowns = runtime.get("cooldowns", [])
+        if not isinstance(cooldowns, list):
+            cooldowns = []
+        by_row = {}
+        for item in cooldowns:
+            if not isinstance(item, dict):
+                continue
+            landed_index = item.get("landed_index")
+            if landed_index is None:
+                continue
+            try:
+                row_idx = int(landed_index)
+            except Exception:
+                continue
+            by_row[row_idx] = {
+                "buff_group": str(item.get("buff_group", "")).strip(),
+                "remain_sec": max(0.0, _safe_float(item.get("remain_sec", 0.0)))
+            }
+        return by_row
+
     def refresh_tree(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -1652,6 +1638,9 @@ class App:
                 key = (ev["type"], ev["button"], ev["at"])
                 event_to_group[key] = group_id
 
+        cooldown_by_row = self._runtime_cooldown_by_row()
+        runtime_landing = self._runtime_landing_map()
+        runtime_state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
         for i, ev in enumerate(self.timeline):
             self._sync_replicated_row(ev)
             key = (ev["type"], ev["button"], ev["at"])
@@ -1660,23 +1649,31 @@ class App:
             buff_group = original_buff_group
             runtime_event = self.timeline_runtime_by_index.get(i, {})
             runtime_status = str(runtime_event.get("status", "")).strip().lower()
-            if runtime_status == "skipped_by_cooldown":
+            cooldown_info = cooldown_by_row.get(i)
+            if cooldown_info:
+                remain = cooldown_info["remain_sec"]
+                group_text = cooldown_info["buff_group"] or original_buff_group
+                buff_group = "{} 冷卻中({:.1f}秒)".format(group_text, remain)
+            elif runtime_status == "skipped_by_cooldown":
                 buff_group = "{}（冷卻中）".format(original_buff_group) if original_buff_group else "冷卻中"
             at_value = "{:.2f}".format(float(ev["at"]))
             tags = []
-            is_recent_ok = i in self.runtime_recent_ok_indices
-            if is_recent_ok:
-                recent_rank = self.runtime_recent_ok_indices.index(i)
-                if recent_rank == 0:
-                    tags.append("runtime_ok_1")
-                elif recent_rank == 1:
-                    tags.append("runtime_ok_2")
-                else:
-                    tags.append("runtime_ok_3")
+            row_type = str(ev.get("type", "")).strip().lower()
+            if runtime_state != "running":
+                if row_type == "randat":
+                    tags.append("runtime_buff_blue")
+                elif original_buff_group:
+                    tags.append("runtime_buff_yellow")
             else:
-                row_color_tag = self._ensure_tree_color_tag(ev.get("row_color", ""))
-                if row_color_tag:
-                    tags.append(row_color_tag)
+                if original_buff_group:
+                    landing = runtime_landing.get(original_buff_group, {})
+                    if landing.get("occupies_original"):
+                        tags.append("runtime_buff_yellow")
+                    elif landing:
+                        tags.append("runtime_buff_blue")
+            row_color_tag = self._ensure_tree_color_tag(ev.get("row_color", ""))
+            if row_color_tag and "runtime_buff_blue" not in tags and "runtime_buff_yellow" not in tags:
+                tags.append(row_color_tag)
             if str(ev.get("button", "")).strip().lower() not in SUPPORTED_BUTTONS:
                 tags.append("unsupported_button")
             self.tree.insert("", "end", iid=str(i), values=(
@@ -1898,6 +1895,15 @@ class App:
         self.set_status("Timeline 分析完成，共 {} 筆 event".format(len(self.timeline)))
 
     def ask_save_existing_timeline_mode(self, name):
+        if not hasattr(self.root, "tk"):
+            ans = messagebox.askyesnocancel(
+                "保存同名 Timeline",
+                "名稱 '{}' 已存在。\n是=完全取代，否=存為新版，取消=放棄。".format(name)
+            )
+            if ans is None:
+                return None
+            return "full_replace" if ans else "new_version"
+
         dialog = tk.Toplevel(self.root)
         dialog.title("保存同名 Timeline")
         dialog.transient(self.root)
@@ -2453,7 +2459,6 @@ class App:
     def prepare_events_for_send(self, action_reason="before_send"):
         try:
             offset_sec = self.get_manual_offset_sec()
-            at_random_sec = self.get_timeline_at_random_sec()
             base_events = [self.normalize_event_schema(ev) for ev in self.timeline]
             self.validate_negative_group_monotonic_by_index(base_events)
             events = recalculate_runtime_events_by_index(base_events, offset_sec)
@@ -2526,22 +2531,22 @@ class App:
                     ev["buff_cycle_sec"] = chosen_cycle
                     ev["buff_jitter_sec"] = chosen_jitter
 
-        adaptive_ratio, sample_n = estimate_adaptive_random_ratio()
-        events, random_meta = randomize_timeline_runtime_events(
-            events,
-            global_at_random_sec=at_random_sec,
-            adaptive_ratio=adaptive_ratio
-        )
+        events, block_assignments = allocate_randat_blocks(events)
         for ev in events:
-            ev["at_random_sec"] = round(at_random_sec, 4)
+            ev["at"] = apply_positive_jitter(ev.get("at", 0.0), ev.get("at_jitter", 0.0))
+            cycle = max(0.0, _safe_float(ev.get("buff_cycle_sec", 0.0)))
+            jitter = max(0.0, _safe_float(ev.get("buff_jitter_sec", 0.0)))
+            ev["buff_cycle_sec"] = round(cycle + random.uniform(0.0, jitter), 4)
+            ev["buff_jitter_sec"] = round(jitter, 4)
+            ev["at_random_sec"] = 0.0
+        events = [ev for ev in events if str(ev.get("type", "")).strip().lower() in ("press", "release")]
+        for ev in events:
+            ev["runtime_block_assignments"] = block_assignments
 
         resolve_note = ""
         if resolved_groups:
             resolve_note = "已解決衝突群組: {}".format("、".join(resolved_groups))
-        random_note = "at隨機係數 {:.3f}（樣本 {}）".format(
-            float(random_meta.get("adaptive_ratio", adaptive_ratio)),
-            int(sample_n)
-        )
+        random_note = "jitter 已前端重算（+0~j，僅延後）"
         resolve_note = "{}；{}".format(resolve_note, random_note) if resolve_note else random_note
         return events, resolve_note
 
