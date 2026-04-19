@@ -8,7 +8,7 @@ if "pynput" not in sys.modules:
     pynput_stub.keyboard = types.SimpleNamespace(Listener=object)
     sys.modules["pynput"] = pynput_stub
 
-from front import App, recalculate_runtime_events_by_index
+from front import App, recalculate_runtime_events_by_index, allocate_randat_blocks, get_buff_cell_visual_state
 
 
 def _event(at, buff_group=""):
@@ -140,6 +140,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.runtime_recent_skipped_indices = []
         app.timeline_runtime_by_index = {}
         app.timeline_runtime_info = {"events": []}
+        app.runtime_round_traces = []
         app.runtime_latest_index = None
         app.last_runtime_signature = ""
         app.runtime_display_frozen = False
@@ -150,6 +151,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         app._normalize_replicated_row_flag = App._normalize_replicated_row_flag.__get__(app, App)
         app._sync_replicated_row = App._sync_replicated_row.__get__(app, App)
         app.update_runtime_from_status = App.update_runtime_from_status.__get__(app, App)
+        app.render_runtime_analysis = App.render_runtime_analysis.__get__(app, App)
         app.refresh_tree = App.refresh_tree.__get__(app, App)
         app.poll_runtime_status = App.poll_runtime_status.__get__(app, App)
         app.restore_pre_run_state = App.restore_pre_run_state.__get__(app, App)
@@ -168,7 +170,44 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.set_status = lambda *_args, **_kwargs: None
         app.config = {"pi_host": "127.0.0.1"}
         app.pi_ip_entry = types.SimpleNamespace(get=lambda: "127.0.0.1")
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: None,
+            insert=lambda *_args, **_kwargs: None
+        )
         return app
+
+    def test_visual_state_priority_keeps_background_semantics(self):
+        candidate_tags = get_buff_cell_visual_state(
+            is_candidate=True,
+            is_applied=False,
+            is_running=True,
+            is_focus=True
+        )
+        applied_tags = get_buff_cell_visual_state(
+            is_candidate=False,
+            is_applied=True,
+            is_running=True,
+            is_focus=True
+        )
+        self.assertIn("bg_candidate", candidate_tags)
+        self.assertNotIn("bg_applied", candidate_tags)
+        self.assertIn("ring_running", candidate_tags)
+        self.assertIn("focus_hint", candidate_tags)
+        self.assertIn("bg_applied", applied_tags)
+        self.assertNotIn("bg_candidate", applied_tags)
+
+    def test_allocate_randat_blocks_generates_round_trace_reason(self):
+        events = [
+            {"type": "press", "button": "space", "at": 0.0, "buff_group": "G1"},
+            {"type": "randat", "button": "", "at": 1.0, "buff_group": ""},
+            {"type": "press", "button": "x", "at": 2.0, "buff_group": "G2"},
+        ]
+        _working, _assignments, traces = allocate_randat_blocks(events)
+        self.assertEqual(len(traces), 2)
+        self.assertEqual(traces[0]["result"], "kept")
+        self.assertEqual(traces[0]["reason"], "already_applied")
+        self.assertEqual(traces[1]["result"], "kept")
+        self.assertEqual(traces[1]["reason"], "already_applied")
 
     def test_running_shows_cooldown_text_in_buff_group_column(self):
         app = self._new_app()
