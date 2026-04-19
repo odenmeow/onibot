@@ -668,13 +668,13 @@ class App:
             return "break"
         bucket = self._history_bucket()
         if not bucket["undo"]:
-            self.set_status("沒有可復原的上一步")
+            self.set_status("沒有可 undo 的操作")
             return "break"
         before = bucket["undo"].pop()
         bucket["redo"].append(self.copy_events(self.timeline))
         self.timeline = self.copy_events(before)
         self.mark_timeline_dirty()
-        self.set_status("已復原上一步")
+        self.set_status("已 undo")
         return "break"
 
     def redo_timeline(self, _event=None):
@@ -682,13 +682,13 @@ class App:
             return "break"
         bucket = self._history_bucket()
         if not bucket["redo"]:
-            self.set_status("沒有可重做的下一步")
+            self.set_status("沒有可 redo 的操作")
             return "break"
         after = bucket["redo"].pop()
         bucket["undo"].append(self.copy_events(self.timeline))
         self.timeline = self.copy_events(after)
         self.mark_timeline_dirty()
-        self.set_status("已重做下一步")
+        self.set_status("已 redo")
         return "break"
 
     def restore_original_timeline(self):
@@ -810,14 +810,36 @@ class App:
                 max(1, int(self.root.winfo_height()))
             )
 
-    def _compute_app_dialog_position(self, dialog_w, dialog_h):
-        area_x, area_y, area_w, area_h = self._get_table_anchor_rect()
+    def _get_app_anchor_rect(self):
+        self.root.update_idletasks()
+        return (
+            int(self.root.winfo_rootx()),
+            int(self.root.winfo_rooty()),
+            max(1, int(self.root.winfo_width())),
+            max(1, int(self.root.winfo_height()))
+        )
+
+    def _compute_dialog_position(self, dialog_w, dialog_h, anchor_rect):
+        area_x, area_y, area_w, area_h = anchor_rect
         x = int(area_x + (area_w - dialog_w) / 2)
         y = int(area_y + area_h * 0.62 - dialog_h / 2)
         min_x, min_y, max_x, max_y = self._get_virtual_desktop_bounds()
         x = max(min_x, min(x, max_x - dialog_w))
         y = max(min_y, min(y, max_y - dialog_h))
         return x, y
+
+    def _compute_app_dialog_position(self, dialog_w, dialog_h):
+        return self._compute_dialog_position(dialog_w, dialog_h, self._get_app_anchor_rect())
+
+    def _compute_table_dialog_position(self, dialog_w, dialog_h):
+        return self._compute_dialog_position(dialog_w, dialog_h, self._get_table_anchor_rect())
+
+    def _position_dialog_app_lower_center(self, dialog):
+        dialog.update_idletasks()
+        dialog_w = dialog.winfo_width()
+        dialog_h = dialog.winfo_height()
+        x, y = self._compute_app_dialog_position(dialog_w, dialog_h)
+        dialog.geometry("{}x{}+{}+{}".format(dialog_w, dialog_h, x, y))
 
     def _create_message_anchor_parent(self):
         x, y = self._compute_app_dialog_position(2, 2)
@@ -859,6 +881,18 @@ class App:
 
     def confirm_cancel(self, title, message, **kwargs):
         return self._show_messagebox(messagebox.askyesnocancel, title, message, **kwargs)
+
+    def ask_string(self, title, prompt, **kwargs):
+        parent = kwargs.pop("parent", None)
+        temp_parent = None
+        if parent is None:
+            temp_parent = self._create_message_anchor_parent()
+            parent = temp_parent
+        try:
+            return simpledialog.askstring(title, prompt, parent=parent, **kwargs)
+        finally:
+            if temp_parent is not None and temp_parent.winfo_exists():
+                temp_parent.destroy()
 
     def set_status(self, message):
         self.status_var.set(message)
@@ -1202,10 +1236,11 @@ class App:
 
         edit_row = tk.Frame(right_panel)
         edit_row.pack(fill="x", pady=(0, 8))
-        tk.Button(edit_row, text="上一步", command=self.undo_timeline, width=9).pack(side="left", padx=2)
-        tk.Button(edit_row, text="下一步", command=self.redo_timeline, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="undo", command=self.undo_timeline, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="redo", command=self.redo_timeline, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="上移", command=self.move_selected_up, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="at 交換", command=self.swap_selected_at, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
         tk.Label(edit_row, text="自/手動偏移 :").pack(side="left", padx=(14, 5))
         self.offset_sec_entry = tk.Entry(edit_row, width=10)
@@ -1213,6 +1248,10 @@ class App:
         self.offset_sec_entry.pack(side="left", padx=(0, 5))
         tk.Label(edit_row, text="秒").pack(side="left", padx=(0, 5))
         tk.Button(edit_row, text="套用偏移", command=self.apply_offset_from_selected).pack(side="left", padx=2)
+        tk.Label(
+            right_panel,
+            text="提示：at 交換可在一次選取兩列時快速對調 at 時間。"
+        ).pack(anchor="w", pady=(0, 6))
 
         bottom = tk.Frame(right_panel)
         bottom.pack(fill="both", expand=True)
@@ -1867,6 +1906,7 @@ class App:
         btn_new.focus_set()
         dialog.bind("<Return>", lambda _e: choose("new_version"))
         dialog.bind("<Escape>", lambda _e: choose(None))
+        self._position_dialog_app_lower_center(dialog)
         self.root.wait_window(dialog)
         return result["mode"]
 
@@ -1939,7 +1979,7 @@ class App:
         if self._is_script_switch_for_load(name):
             confirmed = self.confirm(
                 "切換腳本確認",
-                "將清空目前 SESSION 上一步/下一步，是否繼續？"
+                "將清空目前 SESSION undo/redo，是否繼續？"
             )
             if not confirmed:
                 self.set_status("已取消載入")
@@ -1952,7 +1992,9 @@ class App:
             return
         target_name = data.get("name", name)
         is_script_switch = self._is_script_switch_for_load(target_name)
-
+        before = None
+        if not is_script_switch:
+            before = self._begin_timeline_change()
         self.timeline = [self.normalize_event_schema(ev) for ev in data.get("events", [])]
         self.timeline_meta = self.normalize_meta(data.get("_meta", {}))
         if not self.timeline_meta.get("original_events") and self.timeline:
@@ -1960,6 +2002,8 @@ class App:
         self.current_name = target_name
         if is_script_switch:
             self._reset_timeline_history()
+        elif before is not None:
+            self._finalize_timeline_change(before)
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = self.current_name
         save_config(self.config)
@@ -2437,7 +2481,7 @@ class App:
                     options.append("{}. idx{} => cycle={}, jitter={}".format(cfg_idx, sample_idx, cycle, jitter))
                     option_map[str(cfg_idx)] = (cycle, jitter)
 
-                ans = simpledialog.askstring(
+                ans = self.ask_string(
                     "buff 參數衝突",
                     "buff_group {} 有多組秒數設定：\n{}\n請輸入要採用的選項編號：".format(
                         group_name,
@@ -2509,7 +2553,7 @@ class App:
                 self.show_warning("提醒", "請先選取一列或多列，再雙擊欄位標題")
                 return
             initial_value = str(self.timeline[selected[0]].get(field, ""))
-            new_value = simpledialog.askstring(
+            new_value = self.ask_string(
                 "批量修改欄位",
                 "請輸入 {}（將套用到 {} 筆選取列）:".format(field, len(selected)),
                 initialvalue=initial_value
@@ -2540,7 +2584,7 @@ class App:
 
         idx = int(row_id)
         current_value = str(self.timeline[idx].get(field, ""))
-        new_value = simpledialog.askstring("修改欄位", "請輸入 {}:".format(field), initialvalue=current_value)
+        new_value = self.ask_string("修改欄位", "請輸入 {}:".format(field), initialvalue=current_value)
         if new_value is None:
             return
 
@@ -2727,7 +2771,7 @@ class App:
         dialog.update_idletasks()
         dialog_w = dialog.winfo_width()
         dialog_h = dialog.winfo_height()
-        x, y = self._compute_app_dialog_position(dialog_w, dialog_h)
+        x, y = self._compute_table_dialog_position(dialog_w, dialog_h)
         dialog.geometry("{}x{}+{}+{}".format(dialog_w, dialog_h, x, y))
         dialog.focus_force()
         btn_above.focus_set()
@@ -2816,6 +2860,26 @@ class App:
         self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.tree.selection_set([str(i + 1) for i in sorted(selected)])
+
+    def swap_selected_at(self):
+        if not self._ensure_runtime_editable():
+            return
+        selected = sorted(self.get_selected_indexes())
+        if len(selected) != 2:
+            self.show_warning("提醒", "at 交換需要剛好選取 2 列")
+            return
+
+        first_idx, second_idx = selected
+        before = self._begin_timeline_change()
+        first_at = float(self.timeline[first_idx].get("at", 0.0))
+        second_at = float(self.timeline[second_idx].get("at", 0.0))
+        self.timeline[first_idx]["at"] = round(max(0.0, second_at), 2)
+        self.timeline[second_idx]["at"] = round(max(0.0, first_at), 2)
+
+        self._finalize_timeline_change(before)
+        self.mark_timeline_dirty()
+        self.tree.selection_set([str(first_idx), str(second_idx)])
+        self.set_status("已交換 idx {} 與 idx {} 的 at".format(first_idx, second_idx))
 
     def delete_selected_rows(self):
         if not self._ensure_runtime_editable():
