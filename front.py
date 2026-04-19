@@ -1244,8 +1244,8 @@ class App:
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.tag_configure("bg_applied", background="#d8ecff")
         self.tree.tag_configure("bg_candidate", background="#fff4b3")
-        self.tree.tag_configure("ring_running", foreground="#0b4f8a")
-        self.tree.tag_configure("focus_hint", foreground="#7b3f00")
+        self.tree.tag_configure("ring_running")
+        self.tree.tag_configure("focus_hint")
         self.tree.tag_configure("runtime_ok_1", background="#bfe8bf")
         self.tree.tag_configure("runtime_ok_2", background="#d9f2d9")
         self.tree.tag_configure("runtime_ok_3", background="#edf9ed")
@@ -1764,11 +1764,12 @@ class App:
             at_value = "{:.2f}".format(float(ev["at"]))
             tags = []
             row_type = str(ev.get("type", "")).strip().lower()
+            if row_type == "randat":
+                at_value = "-"
             is_candidate = False
             is_applied = False
             if runtime_state != "running":
-                is_applied = (row_type == "randat")
-                is_candidate = bool(original_buff_group) and not is_applied
+                is_candidate = bool(original_buff_group)
             else:
                 if original_buff_group:
                     landing = runtime_landing.get(original_buff_group, {})
@@ -2657,6 +2658,8 @@ class App:
             ev["buff_cycle_sec"] = round(cycle + random.uniform(0.0, jitter), 4)
             ev["buff_jitter_sec"] = round(jitter, 4)
             ev["at_random_sec"] = 0.0
+        for idx, ev in enumerate(events):
+            ev["runtime_source_index"] = idx
         events = [ev for ev in events if str(ev.get("type", "")).strip().lower() in ("press", "release")]
         for ev in events:
             ev["runtime_block_assignments"] = block_assignments

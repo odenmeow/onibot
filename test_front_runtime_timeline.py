@@ -230,6 +230,22 @@ class RuntimeDisplayTests(unittest.TestCase):
         tags = app.tree.item("0", "tags")
         self.assertIn("runtime_ok_1", tags)
 
+    def test_runtime_index_mapping_uses_source_index_when_randat_exists(self):
+        app = self._new_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 0.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+            {"type": "randat", "button": "", "at": 0.1, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+            {"type": "release", "button": "space", "at": 0.2, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+        ]
+        changed = app.update_runtime_from_status({
+            "timeline_runtime": {
+                "state": "running",
+                "events": [{"original_index": 2, "status": "ok"}]
+            }
+        })
+        self.assertTrue(changed)
+        self.assertEqual(app.runtime_latest_index, 2)
+
     def test_recent_ok_green_tag_does_not_override_buff_background(self):
         app = self._new_app()
         app.timeline = [
@@ -240,6 +256,18 @@ class RuntimeDisplayTests(unittest.TestCase):
         tags = app.tree.item("0", "tags")
         self.assertIn("bg_candidate", tags)
         self.assertNotIn("runtime_ok_1", tags)
+
+    def test_randat_row_does_not_auto_show_applied_blue_when_idle(self):
+        app = self._new_app()
+        app.timeline = [
+            {"type": "randat", "button": "", "at": 1.23, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.timeline_runtime_info = {"state": "idle", "events": []}
+        app.refresh_tree()
+        tags = app.tree.item("0", "tags")
+        values = app.tree.item("0", "values")
+        self.assertNotIn("bg_applied", tags)
+        self.assertEqual(values[3], "-")
 
     def test_poll_stopped_freezes_and_repeated_poll_does_not_refresh_table(self):
         app = self._new_app()

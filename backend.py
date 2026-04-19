@@ -257,8 +257,12 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     "cycle_sec": buff_cycle_sec,
                     "jitter_sec": buff_jitter_sec
                 }
+        try:
+            source_index = int(ev.get("runtime_source_index", i))
+        except Exception:
+            source_index = i
         normalized.append({
-            "original_index": i,
+            "original_index": source_index,
             "type": ev_type,
             "button": button,
             "at": at,
