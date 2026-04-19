@@ -16,10 +16,10 @@ BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 ROUND_TRACE_REASON_LABELS = {
-    "randat_false": "未執行 randat（無可用 randat 列）",
-    "no_valid_idx": "無可用 idx（候選位置皆被占用）",
+    "randat_disabled": "未啟用 randat（無可用 randat 列）",
+    "fallback_no_free_slot": "無可用 idx（候選位置皆被占用）",
     "group_skipped": "此群組略過",
-    "already_applied": "已在原位（維持候選）",
+    "random_pick": "從可用候選池公平抽籤",
     "rule_blocked": "規則阻擋",
 }
 
@@ -448,24 +448,35 @@ def allocate_randat_blocks(events):
         anchor_idx = rows[0]
         randat_executed = bool(randat_slots)
         candidates = [anchor_idx] + [slot for slot in randat_slots if slot != anchor_idx]
-        has_free_candidate = any(c not in occupied_slots for c in candidates)
-        landed_idx = next((c for c in candidates if c not in occupied_slots), anchor_idx)
+        free_candidates = [c for c in candidates if c not in occupied_slots]
+        dice_value = None
+        picked_candidate_pos = None
+        if free_candidates:
+            picked_candidate_pos = random.randrange(len(free_candidates))
+            landed_idx = free_candidates[picked_candidate_pos]
+            reason = "random_pick"
+        else:
+            landed_idx = anchor_idx
+            reason = "fallback_no_free_slot"
+        if not randat_executed:
+            landed_idx = anchor_idx
+            reason = "randat_disabled"
         occupied_slots.add(landed_idx)
         result = "kept" if landed_idx == anchor_idx else "applied"
-        reason = None
-        if result == "kept":
-            if not randat_executed:
-                reason = "randat_false"
-            elif has_free_candidate:
-                reason = "already_applied"
-            else:
-                reason = "no_valid_idx"
+        if free_candidates:
+            dice_value = round((picked_candidate_pos + 1) / float(len(free_candidates)), 4)
         round_trace = {
             "round": round_idx,
             "buffGroup": group,
+            "anchorIdx": anchor_idx,
+            "candidateIdxList": candidates,
+            "freeCandidateIdxList": free_candidates,
+            "pickedCandidatePos": picked_candidate_pos,
+            "diceValue": dice_value,
             "pickedIdx": landed_idx,
             "randatExecuted": randat_executed,
             "result": result,
+            "pickedReason": reason,
             "reason": reason
         }
         block_assignments[group] = {
@@ -1534,15 +1545,27 @@ class App:
             round_no = trace.get("round")
             group = trace.get("buffGroup", "")
             idx = trace.get("pickedIdx")
+            anchor_idx = trace.get("anchorIdx")
+            candidate_list = trace.get("candidateIdxList", [])
+            free_candidate_list = trace.get("freeCandidateIdxList", [])
+            picked_pos = trace.get("pickedCandidatePos")
+            dice_value = trace.get("diceValue")
             result = str(trace.get("result", "")).strip().lower()
-            reason = trace.get("reason")
+            reason = trace.get("pickedReason", trace.get("reason"))
+            lines.append("group {} 候選池: {} / 可用池: {}".format(group, candidate_list, free_candidate_list))
+            lines.append("骰點: pos={} dice={}".format(picked_pos, dice_value))
             if result == "applied":
-                lines.append("idx {} = 藍色".format(idx))
-                lines.append("本輪 group {} 套用 idx {}（藍色）".format(group, idx))
+                lines.append("idx {} = 淺藍".format(idx))
+                lines.append("本輪 group {} 套用 idx {}（淺藍，原因：{}）".format(group, idx, self._round_trace_reason_label(reason)))
             else:
                 if reason is None:
                     print("[RoundTrace warning] round {} kept 缺少 reason".format(round_no))
-                lines.append("本輪維持淺黃（原因：{}）".format(self._round_trace_reason_label(reason)))
+                lines.append("本輪 group {} 維持原位 idx {}（anchor {}，淺黃，原因：{}）".format(
+                    group,
+                    idx,
+                    anchor_idx,
+                    self._round_trace_reason_label(reason)
+                ))
 
         self.text.delete("1.0", tk.END)
         self.text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))

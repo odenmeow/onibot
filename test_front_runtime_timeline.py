@@ -1,6 +1,7 @@
 import unittest
 import sys
 import types
+import random
 from unittest import mock
 
 if "pynput" not in sys.modules:
@@ -197,17 +198,35 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertNotIn("bg_candidate", applied_tags)
 
     def test_allocate_randat_blocks_generates_round_trace_reason(self):
+        random.seed(7)
         events = [
             {"type": "press", "button": "space", "at": 0.0, "buff_group": "G1"},
             {"type": "randat", "button": "", "at": 1.0, "buff_group": ""},
             {"type": "press", "button": "x", "at": 2.0, "buff_group": "G2"},
         ]
-        _working, _assignments, traces = allocate_randat_blocks(events)
+        _working, assignments, traces = allocate_randat_blocks(events)
         self.assertEqual(len(traces), 2)
-        self.assertEqual(traces[0]["result"], "kept")
-        self.assertEqual(traces[0]["reason"], "already_applied")
-        self.assertEqual(traces[1]["result"], "kept")
-        self.assertEqual(traces[1]["reason"], "already_applied")
+        used_slots = set()
+        for trace in traces:
+            self.assertIn("anchorIdx", trace)
+            self.assertIn("candidateIdxList", trace)
+            self.assertIn("freeCandidateIdxList", trace)
+            self.assertIn("pickedIdx", trace)
+            self.assertIn("pickedReason", trace)
+            self.assertIn("diceValue", trace)
+            self.assertIn("pickedCandidatePos", trace)
+            free_candidates = trace["freeCandidateIdxList"]
+            picked_idx = trace["pickedIdx"]
+            if free_candidates:
+                self.assertIn(picked_idx, free_candidates)
+                self.assertEqual(trace["pickedReason"], "random_pick")
+            else:
+                self.assertEqual(trace["pickedReason"], "fallback_no_free_slot")
+            self.assertNotIn(picked_idx, used_slots)
+            used_slots.add(picked_idx)
+            self.assertEqual(trace["reason"], trace["pickedReason"])
+            group = trace["buffGroup"]
+            self.assertEqual(assignments[group]["landed_index"], picked_idx)
 
     def test_running_shows_cooldown_text_in_buff_group_column(self):
         app = self._new_app()
