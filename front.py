@@ -50,7 +50,7 @@ DEFAULT_HINT_NOTE_TEXT = (
     "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n"
     "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
     "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n"
-    "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at。\n"
+    "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at；『at 交換』可快速對調兩列 at 時間。\n"
     "at_random_sec：前端會在送出前每次重算，讓每輪送到後端的 at 都不同。"
 )
 
@@ -668,13 +668,13 @@ class App:
             return "break"
         bucket = self._history_bucket()
         if not bucket["undo"]:
-            self.set_status("沒有可復原的上一步")
+            self.set_status("沒有可執行的 undo")
             return "break"
         before = bucket["undo"].pop()
         bucket["redo"].append(self.copy_events(self.timeline))
         self.timeline = self.copy_events(before)
         self.mark_timeline_dirty()
-        self.set_status("已復原上一步")
+        self.set_status("已執行 undo")
         return "break"
 
     def redo_timeline(self, _event=None):
@@ -682,13 +682,13 @@ class App:
             return "break"
         bucket = self._history_bucket()
         if not bucket["redo"]:
-            self.set_status("沒有可重做的下一步")
+            self.set_status("沒有可執行的 redo")
             return "break"
         after = bucket["redo"].pop()
         bucket["undo"].append(self.copy_events(self.timeline))
         self.timeline = self.copy_events(after)
         self.mark_timeline_dirty()
-        self.set_status("已重做下一步")
+        self.set_status("已執行 redo")
         return "break"
 
     def restore_original_timeline(self):
@@ -832,6 +832,16 @@ class App:
         anchor.lift()
         anchor.focus_force()
         return anchor
+
+    def _position_dialog_to_app_lower_center(self, dialog):
+        try:
+            dialog.update_idletasks()
+            dialog_w = max(1, int(dialog.winfo_width()))
+            dialog_h = max(1, int(dialog.winfo_height()))
+            x, y = self._compute_app_dialog_position(dialog_w, dialog_h)
+            dialog.geometry("{}x{}+{}+{}".format(dialog_w, dialog_h, x, y))
+        except Exception:
+            pass
 
     def _show_messagebox(self, fn, title, message, **kwargs):
         parent = kwargs.pop("parent", None)
@@ -1202,10 +1212,11 @@ class App:
 
         edit_row = tk.Frame(right_panel)
         edit_row.pack(fill="x", pady=(0, 8))
-        tk.Button(edit_row, text="上一步", command=self.undo_timeline, width=9).pack(side="left", padx=2)
-        tk.Button(edit_row, text="下一步", command=self.redo_timeline, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="undo", command=self.undo_timeline, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="redo", command=self.redo_timeline, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="上移", command=self.move_selected_up, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
+        tk.Button(edit_row, text="at 交換", command=self.swap_selected_at, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
         tk.Label(edit_row, text="自/手動偏移 :").pack(side="left", padx=(14, 5))
         self.offset_sec_entry = tk.Entry(edit_row, width=10)
@@ -1657,7 +1668,7 @@ class App:
         self.runtime_display_frozen = False
         self.clear_runtime_highlight()
         self.mark_timeline_dirty()
-        self.set_status("已恢復執行前狀態，可使用 Ctrl+Z 復原")
+        self.set_status("已恢復執行前狀態，可使用 Ctrl+Z undo")
 
     def refresh_saved_list(self):
         names = list_saved_timeline_names()
@@ -1867,6 +1878,7 @@ class App:
         btn_new.focus_set()
         dialog.bind("<Return>", lambda _e: choose("new_version"))
         dialog.bind("<Escape>", lambda _e: choose(None))
+        self._position_dialog_to_app_lower_center(dialog)
         self.root.wait_window(dialog)
         return result["mode"]
 
@@ -1939,7 +1951,7 @@ class App:
         if self._is_script_switch_for_load(name):
             confirmed = self.confirm(
                 "切換腳本確認",
-                "將清空目前 SESSION 上一步/下一步，是否繼續？"
+                "將清空目前 SESSION undo/redo，是否繼續？"
             )
             if not confirmed:
                 self.set_status("已取消載入")
@@ -1952,6 +1964,7 @@ class App:
             return
         target_name = data.get("name", name)
         is_script_switch = self._is_script_switch_for_load(target_name)
+        before = self._begin_timeline_change()
 
         self.timeline = [self.normalize_event_schema(ev) for ev in data.get("events", [])]
         self.timeline_meta = self.normalize_meta(data.get("_meta", {}))
@@ -1960,6 +1973,8 @@ class App:
         self.current_name = target_name
         if is_script_switch:
             self._reset_timeline_history()
+        else:
+            self._finalize_timeline_change(before)
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = self.current_name
         save_config(self.config)
@@ -2816,6 +2831,24 @@ class App:
         self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.tree.selection_set([str(i + 1) for i in sorted(selected)])
+
+    def swap_selected_at(self):
+        if not self._ensure_runtime_editable():
+            return
+        selected = sorted(self.get_selected_indexes())
+        if len(selected) != 2:
+            self.show_warning("提醒", "at 交換只支援恰好選取 2 列")
+            return
+        idx_a, idx_b = selected
+        before = self._begin_timeline_change()
+        at_a = float(self.timeline[idx_a].get("at", 0.0))
+        at_b = float(self.timeline[idx_b].get("at", 0.0))
+        self.timeline[idx_a]["at"] = round(at_b, 2)
+        self.timeline[idx_b]["at"] = round(at_a, 2)
+        self._finalize_timeline_change(before)
+        self.mark_timeline_dirty()
+        self.tree.selection_set([str(idx_a), str(idx_b)])
+        self.set_status("已交換 idx {} 與 idx {} 的 at".format(idx_a, idx_b))
 
     def delete_selected_rows(self):
         if not self._ensure_runtime_editable():
