@@ -15,6 +15,7 @@ PI_PORT = 5000
 BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
+RUNTIME_POLL_INTERVAL_MS = 300
 ROUND_TRACE_REASON_LABELS = {
     "randat_disabled": "未啟用 randat（無可用 randat 列）",
     "fallback_no_free_slot": "無可用 idx（候選位置皆被占用）",
@@ -1676,7 +1677,7 @@ class App:
         except Exception:
             pass
         finally:
-            self.root.after(200, self.poll_runtime_status)
+            self.root.after(RUNTIME_POLL_INTERVAL_MS, self.poll_runtime_status)
 
     def clear_runtime_highlight(self):
         self.timeline_runtime_info = {"events": []}
