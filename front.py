@@ -2096,7 +2096,13 @@ class App:
                 "picked_slot": picked_slot,
                 "self_picked": bool(self_picked),
                 "color": color,
-                "picked_reason": reason
+                "picked_reason": reason,
+                "dice_plan": {
+                    "candidate_idx_list": candidate_list,
+                    "free_candidate_idx_list": free_candidate_list,
+                    "picked_candidate_pos": picked_pos,
+                    "dice_value": dice_value
+                }
             }
             payload["round_traces"].append(trace_with_group_meta)
             lines.append(
