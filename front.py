@@ -505,9 +505,13 @@ def build_pr_segment_summary(pairs, segments=None):
 
 def analyze_pr_gap_events(events, top_n=100):
     ordered, pairs = build_pr_gap_pairs(events)
+    if top_n is None:
+        selected_pairs = list(pairs)
+    else:
+        selected_pairs = pairs[:max(0, int(top_n))]
     return {
         "min_all_pairs": round(min((_safe_float(p.get("gap", 0.0)) for p in pairs), default=0.0), 4),
-        "pr_pairs": pairs[:max(0, int(top_n))],
+        "pr_pairs": selected_pairs,
         "segments": build_pr_segment_summary(pairs),
         "pair_count": len(pairs),
         "events_sorted": ordered,
@@ -1797,6 +1801,45 @@ class App:
     def write_text(self, obj):
         self.text.delete("1.0", tk.END)
         self.text.insert(tk.END, json.dumps(obj, ensure_ascii=False, indent=2))
+
+    def _open_pr_tables_dialog(self, title, sections):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("1080x620")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+        for section in sections:
+            tab = ttk.Frame(notebook)
+            notebook.add(tab, text=section["title"])
+            columns = section.get("columns", [])
+            rows = section.get("rows", [])
+
+            tree = ttk.Treeview(tab, columns=columns, show="headings")
+            for col in columns:
+                tree.heading(col, text=col)
+                tree.column(col, width=110, minwidth=60, stretch=True, anchor="w")
+
+            y_scroll = ttk.Scrollbar(tab, orient="vertical", command=tree.yview)
+            x_scroll = ttk.Scrollbar(tab, orient="horizontal", command=tree.xview)
+            tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+
+            tree.grid(row=0, column=0, sticky="nsew")
+            y_scroll.grid(row=0, column=1, sticky="ns")
+            x_scroll.grid(row=1, column=0, sticky="ew")
+            tab.grid_rowconfigure(0, weight=1)
+            tab.grid_columnconfigure(0, weight=1)
+
+            for ridx, row in enumerate(rows):
+                values = [str(row.get(col, "")) for col in columns]
+                tree.insert("", "end", iid=str(ridx), values=values)
+
+        btn_row = tk.Frame(dialog)
+        btn_row.pack(fill="x", padx=8, pady=(0, 8))
+        tk.Button(btn_row, text="關閉", command=dialog.destroy, width=10).pack(side="right")
 
     def on_json_mode_change(self):
         mode_var = getattr(self, "json_view_mode_var", None)
@@ -3588,16 +3631,38 @@ class App:
         if len(events) < 2:
             self.show_warning("提醒", "至少需要 2 筆 press/release 才能做 PR 分析")
             return
-        analysis = analyze_pr_gap_events(events, top_n=100)
+        analysis = analyze_pr_gap_events(events, top_n=None)
         payload = {
             "task": "pr_gap_analysis",
             "total_events": len(events),
             "min_all_pairs": analysis["min_all_pairs"],
-            "pr_pairs": analysis["pr_pairs"],
+            "pr_pairs": analysis["pr_pairs"][:100],
             "segments": analysis["segments"]
         }
         self.write_text(payload)
-        self.set_status("PR 分析完成：輸出 {} 組 pair".format(len(analysis["pr_pairs"])))
+        self._open_pr_tables_dialog(
+            "PR 分析結果",
+            sections=[
+                {
+                    "title": "PR Pairs",
+                    "columns": ["pr_rank", "idx_a", "idx_b", "button_a", "button_b", "type_a", "type_b", "at_a", "at_b", "gap"],
+                    "rows": analysis["pr_pairs"]
+                },
+                {
+                    "title": "Segments",
+                    "columns": ["range", "avg_gap", "pair_count"],
+                    "rows": [
+                        {
+                            "range": item.get("range", ""),
+                            "avg_gap": item.get("avg_gap", 0.0),
+                            "pair_count": len(item.get("pairs", []))
+                        }
+                        for item in analysis.get("segments", [])
+                    ]
+                }
+            ]
+        )
+        self.set_status("PR 分析完成：共 {} 組相鄰 pair（表格已開啟）".format(len(analysis["pr_pairs"])))
 
     def apply_minimum_gap_for_pairs(self):
         if not self._ensure_runtime_editable():
@@ -3612,13 +3677,13 @@ class App:
             self.show_error("錯誤", "minimum gap 必須是數字")
             return
 
-        before_analysis = analyze_pr_gap_events(events, top_n=100)
+        before_analysis = analyze_pr_gap_events(events, top_n=None)
         adjusted, adjust_logs = apply_minimum_gap_by_pairs(
             events=events,
             pairs_snapshot=before_analysis.get("pr_pairs", []),
             minimum_gap=min_gap
         )
-        after_analysis = analyze_pr_gap_events(adjusted, top_n=100)
+        after_analysis = analyze_pr_gap_events(adjusted, top_n=None)
 
         idx_to_at = {int(ev["idx"]): round(_safe_float(ev.get("at", 0.0)), 4) for ev in adjusted}
         before = self._begin_timeline_change()
@@ -3634,17 +3699,48 @@ class App:
             "minimum_gap": round(min_gap, 4),
             "analysis_before": {
                 "min_all_pairs": before_analysis["min_all_pairs"],
-                "pr_pairs": before_analysis["pr_pairs"],
+                "pr_pairs": before_analysis["pr_pairs"][:100],
                 "segments": before_analysis["segments"],
             },
             "manual_adjustment_log": adjust_logs,
             "analysis_after": {
                 "min_all_pairs": after_analysis["min_all_pairs"],
-                "pr_pairs": after_analysis["pr_pairs"],
+                "pr_pairs": after_analysis["pr_pairs"][:100],
                 "segments": after_analysis["segments"],
             }
         })
-        self.set_status("minimum gap 套用完成：{} 筆 pair 已逐筆處理".format(len(adjust_logs)))
+        self._open_pr_tables_dialog(
+            "minimum gap 套用結果",
+            sections=[
+                {
+                    "title": "Before PR",
+                    "columns": ["pr_rank", "idx_a", "idx_b", "button_a", "button_b", "type_a", "type_b", "at_a", "at_b", "gap"],
+                    "rows": before_analysis["pr_pairs"]
+                },
+                {
+                    "title": "After PR",
+                    "columns": ["pr_rank", "idx_a", "idx_b", "button_a", "button_b", "type_a", "type_b", "at_a", "at_b", "gap"],
+                    "rows": after_analysis["pr_pairs"]
+                },
+                {
+                    "title": "Adjustment Log",
+                    "columns": ["pr_rank", "idx_a", "idx_b", "current_gap", "minimum_gap", "delta", "affected_count"],
+                    "rows": [
+                        {
+                            "pr_rank": row.get("pr_rank", ""),
+                            "idx_a": row.get("idx_a", ""),
+                            "idx_b": row.get("idx_b", ""),
+                            "current_gap": row.get("current_gap", ""),
+                            "minimum_gap": row.get("minimum_gap", ""),
+                            "delta": row.get("delta", ""),
+                            "affected_count": row.get("affected_idx_range", {}).get("count", 0),
+                        }
+                        for row in adjust_logs
+                    ]
+                }
+            ]
+        )
+        self.set_status("minimum gap 套用完成：共處理 {} 組相鄰 pair（表格已開啟）".format(len(adjust_logs)))
 
     def delete_selected_rows(self):
         if not self._ensure_runtime_editable():

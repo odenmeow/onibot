@@ -30,6 +30,16 @@ class FrontPrGapTaskTests(unittest.TestCase):
             "pr0~pr25", "pr26~pr50", "pr51~pr70", "pr71~pr95", "pr95~pr99"
         ])
 
+    def test_analyze_pr_gap_events_with_top_none_returns_all_adjacent_pairs(self):
+        events = []
+        t = 0.0
+        for i in range(12):
+            t += 0.1
+            events.append({"idx": i, "at": t, "type": "press", "button_id": "x"})
+        analyzed = analyze_pr_gap_events(events, top_n=None)
+        self.assertEqual(len(analyzed["pr_pairs"]), 11)
+        self.assertEqual(analyzed["pair_count"], 11)
+
     def test_apply_minimum_gap_by_pairs_shifts_idx_b_and_following(self):
         events = [
             {"idx": 0, "at": 1.00, "type": "press", "button_id": "a"},
