@@ -1477,48 +1477,52 @@ class App:
         jitter_frame = tk.LabelFrame(right_panel, text="timeline 設定")
         jitter_frame.pack(fill="x", pady=(0, 8))
 
-        tk.Label(jitter_frame, text="tip : 多重選取項目後雙擊title可批量設定").grid(
-            row=0, column=0, padx=(8, 5), pady=5, sticky="w"
+        top_row = tk.Frame(jitter_frame)
+        top_row.grid(row=0, column=0, padx=(8, 8), pady=5, sticky="w")
+        tk.Label(top_row, text="tip : 多重選取項目後雙擊title可批量設定").pack(
+            side="left", padx=(0, 12)
         )
         tk.Button(
-            jitter_frame,
+            top_row,
             text="UI 保存",
             command=self.save_ui_layout,
             bg="#fff4b3",
             activebackground="#ffe08a"
-        ).grid(row=0, column=1, padx=5, pady=5)
+        ).pack(side="left", padx=(0, 4))
         tk.Button(
-            jitter_frame,
+            top_row,
             text="提示",
             command=self.open_hint_note_dialog,
             bg="#fff4b3",
             activebackground="#ffe08a"
-        ).grid(row=0, column=2, padx=(0, 5), pady=5)
-        tk.Button(jitter_frame, text="糾正複製體", command=self.calculate_offsets_only).grid(
-            row=0, column=3, padx=(5, 8), pady=5
+        ).pack(side="left", padx=(0, 4))
+        tk.Button(top_row, text="糾正複製體", command=self.calculate_offsets_only).pack(
+            side="left", padx=(0, 4)
         )
-        tk.Button(jitter_frame, text="改顏色", command=self.open_row_color_dialog).grid(
-            row=0, column=4, padx=(0, 8), pady=5
+        tk.Button(top_row, text="改顏色", command=self.open_row_color_dialog).pack(
+            side="left", padx=(0, 4)
         )
         self.restore_pre_run_btn = tk.Button(
-            jitter_frame,
+            top_row,
             text="恢復執行前狀態",
             command=self.restore_pre_run_state,
             state="disabled"
         )
-        self.restore_pre_run_btn.grid(row=0, column=5, padx=(0, 8), pady=5)
+        self.restore_pre_run_btn.pack(side="left")
         tk.Label(
             jitter_frame,
             text="【註：buff_group 為負值時，請用「糾正複製體」重算；「套用偏移」僅手動平移時間。】"
-        ).grid(row=1, column=0, columnspan=6, padx=(8, 8), pady=(0, 4), sticky="w")
+        ).grid(row=1, column=0, padx=(8, 8), pady=(0, 4), sticky="w")
+        action_container = tk.Frame(jitter_frame)
+        action_container.grid(row=2, column=0, padx=(8, 8), pady=(0, 6), sticky="w")
         tk.Button(
-            jitter_frame,
+            action_container,
             text="產生 randat",
             command=self.insert_randat_row,
             width=14
-        ).grid(row=2, column=0, padx=(8, 5), pady=(0, 6), sticky="w")
-        action_row = tk.Frame(jitter_frame)
-        action_row.grid(row=2, column=1, columnspan=5, padx=(0, 8), pady=(0, 6), sticky="w")
+        ).pack(side="left", padx=(0, 6))
+        action_row = tk.Frame(action_container)
+        action_row.pack(side="left")
         tk.Button(
             action_row,
             text="at 交換",
