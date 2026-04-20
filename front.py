@@ -1017,13 +1017,17 @@ class App:
         if self.offline_mode and payload.get("action") != "ping":
             raise ConnectionError("目前為離線模式，請先按「測試連線」")
 
+        action = str(payload.get("action", "")).strip().lower()
+        retryable_actions = {"ping", "status", "list_buttons"}
+        allow_retry = action in retryable_actions
         last_err = None
         req_timeout = float(timeout if timeout is not None else (
             STATUS_REQUEST_TIMEOUT_SEC if channel == "status" else CONTROL_REQUEST_TIMEOUT_SEC
         ))
         lock = self.status_request_lock if channel == "status" else self.control_request_lock
         with lock:
-            for retry in range(2):
+            max_attempts = 2 if allow_retry else 1
+            for retry in range(max_attempts):
                 try:
                     self.ensure_connection(channel=channel, timeout=req_timeout)
                     conn = self.status_conn if channel == "status" else self.control_conn
@@ -1038,16 +1042,24 @@ class App:
                 except Exception as e:
                     last_err = e
                     self.close_connection(channel=channel, silent=True)
-                    if retry == 0:
+                    if retry < max_attempts - 1:
                         time.sleep(0.06 if channel == "status" else 0.15)
                         continue
                     kind = self._classify_request_error(last_err)
-                    err = "[{}:{}] {}".format(channel, kind, str(last_err))
+                    err_msg = str(last_err)
+                    if kind == "timeout":
+                        if action in {"run_timeline", "run_timeline_loop", "run_macro", "stop"}:
+                            err_msg = "{}（可能已送達但未收到回應，請先確認後端實際狀態）".format(err_msg)
+                        else:
+                            err_msg = "{}（未收到回應）".format(err_msg)
+                    err = "[{}:{}] {}".format(channel, kind, err_msg)
                     self._set_channel_error(channel, err)
                     if channel == "control":
                         self.set_connected(False)
                     if success_status:
                         self.set_status(success_status + "（前端連線失敗）")
+                    if kind == "timeout":
+                        raise TimeoutError(err) from last_err
                     raise
 
         self._clear_channel_error(channel)
@@ -1728,10 +1740,13 @@ class App:
                 ))
 
         self.text.delete("1.0", tk.END)
-        self.text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))
         if lines:
-            self.text.insert(tk.END, "\n\n---\n")
-            self.text.insert(tk.END, "\n".join(lines))
+            summary_text = "\n".join(lines)
+        else:
+            summary_text = "暫無 runtime 回合資料"
+        self.text.insert(tk.END, summary_text)
+        self.text.insert(tk.END, "\n\n---\n詳細 JSON\n")
+        self.text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))
 
     def update_runtime_from_status(self, status_response):
         runtime = status_response.get("timeline_runtime", {})
@@ -1814,7 +1829,7 @@ class App:
 
     def poll_runtime_status(self):
         try:
-            if not self.offline_mode and self.connected:
+            if not self.offline_mode:
                 res = self.request_pi({"action": "status"}, write_response=False, channel="status")
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
@@ -1834,8 +1849,9 @@ class App:
                         if state == "running":
                             self.refresh_tree()
                             self.focus_latest_runtime_row()
-        except Exception:
-            pass
+        except Exception as e:
+            kind = self._classify_request_error(e)
+            self._set_channel_error("status", "[status:{}] {}".format(kind, str(e)))
         finally:
             self.root.after(RUNTIME_POLL_INTERVAL_MS, self.poll_runtime_status)
 
