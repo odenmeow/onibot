@@ -18,7 +18,7 @@ BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 RUNTIME_POLL_INTERVAL_MS = 300
-CONTROL_REQUEST_TIMEOUT_SEC = 5.0
+CONTROL_REQUEST_TIMEOUT_SEC = 8.0
 STATUS_REQUEST_TIMEOUT_SEC = 0.45
 FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
 ROUND_TRACE_REASON_LABELS = {
@@ -606,72 +606,167 @@ def apply_positive_jitter(base_value, jitter):
 
 def allocate_randat_blocks(events):
     working = [dict(ev) for ev in events]
-    randat_slots = [idx for idx, ev in enumerate(working) if str(ev.get("type", "")).strip().lower() == "randat"]
+    randat_slots = [
+        idx for idx, ev in enumerate(working)
+        if str(ev.get("type", "")).strip().lower() == "randat"
+    ]
+
     blocks = {}
+    group_order = []
+    for idx, ev in enumerate(working):
+        group = str(ev.get("buff_group", "")).strip()
+        if not group:
+            continue
+        if group not in blocks:
+            blocks[group] = {"first": idx, "last": idx, "indices": [idx]}
+            group_order.append(group)
+        else:
+            blocks[group]["last"] = idx
+            blocks[group]["indices"].append(idx)
+
+    for group in group_order:
+        first = blocks[group]["first"]
+        last = blocks[group]["last"]
+        blocks[group]["rows_len"] = len(blocks[group]["indices"])
+        blocks[group]["span_len"] = (last - first) + 1
+        blocks[group]["at_anchor"] = max(0.0, _safe_float(working[first].get("at", 0.0)))
+        blocks[group]["at_offsets"] = [
+            round(max(0.0, _safe_float(working[i].get("at", 0.0)) - blocks[group]["at_anchor"]), 4)
+            for i in range(first, last + 1)
+        ]
+
     for idx, ev in enumerate(working):
         group = str(ev.get("buff_group", "")).strip()
         if group:
-            blocks.setdefault(group, []).append(idx)
+            ev["__runtime_gid"] = group
+            continue
+        ev["__runtime_gid"] = "__row_{}".format(idx)
 
-    occupied_slots = set()
+    free_slots = set(randat_slots)
+
     block_assignments = {}
     round_traces = []
-    for round_idx, (group, rows) in enumerate(blocks.items(), start=1):
-        anchor_idx = rows[0]
-        randat_executed = bool(randat_slots)
-        candidates = [anchor_idx] + [slot for slot in randat_slots if slot != anchor_idx]
-        free_candidates = [c for c in candidates if c not in occupied_slots]
+    randat_executed = bool(randat_slots)
+
+    def _find_group_range(group_id):
+        start = None
+        end = None
+        for pos, row in enumerate(working):
+            if row.get("__runtime_gid") != group_id:
+                continue
+            if start is None:
+                start = pos
+            end = pos
+        if start is None or end is None:
+            return None, None
+        return int(start), int(end)
+
+    for round_idx, group in enumerate(group_order, start=1):
+        src_start, src_end = _find_group_range(group)
+        if src_start is None:
+            continue
+        span_len = (src_end - src_start) + 1
+        candidates = [src_start] + [idx for idx in sorted(free_slots) if idx != src_start]
+        free_candidates = [
+            idx for idx in candidates
+            if 0 <= idx <= max(0, len(working) - span_len)
+        ]
         dice_value = None
         picked_candidate_pos = None
-        if free_candidates:
+        if free_candidates and randat_executed:
             picked_candidate_pos = random.randrange(len(free_candidates))
-            landed_idx = free_candidates[picked_candidate_pos]
+            picked_slot = free_candidates[picked_candidate_pos]
             reason = "random_pick"
-        else:
-            landed_idx = anchor_idx
-            reason = "fallback_no_free_slot"
-        if not randat_executed:
-            landed_idx = anchor_idx
+        elif not randat_executed:
+            picked_slot = src_start
             reason = "randat_disabled"
-        occupied_slots.add(landed_idx)
-        result = "kept" if landed_idx == anchor_idx else "applied"
+        else:
+            picked_slot = src_start
+            reason = "fallback_no_free_slot"
         if free_candidates:
-            dice_value = round((picked_candidate_pos + 1) / float(len(free_candidates)), 4)
+            dice_value = round((picked_candidate_pos + 1) / float(len(free_candidates)), 4) if picked_candidate_pos is not None else None
+
+        src_range = [src_start, src_end]
+        dst_start = int(picked_slot)
+        if dst_start > len(working):
+            dst_start = len(working)
+        moving_segment = working[src_start:src_end + 1]
+        dst_anchor_at = max(0.0, _safe_float(working[dst_start].get("at", 0.0))) if dst_start < len(working) else (
+            max(0.0, _safe_float(working[-1].get("at", 0.0))) if working else 0.0
+        )
+
+        if dst_start < src_start or dst_start > src_end + 1:
+            del working[src_start:src_end + 1]
+            if dst_start > len(working):
+                dst_start = len(working)
+            for offset, row in enumerate(moving_segment):
+                working.insert(dst_start + offset, row)
+            dst_range = [dst_start, dst_start + span_len - 1]
+        else:
+            dst_range = [src_start, src_end]
+
+        offsets = blocks[group]["at_offsets"]
+        dst_first = dst_range[0]
+        for offset, at_offset in enumerate(offsets):
+            idx = dst_first + offset
+            if 0 <= idx < len(working):
+                working[idx]["at"] = round(max(0.0, dst_anchor_at + at_offset), 4)
+
+        if picked_slot != src_range[0]:
+            free_slots.discard(picked_slot)
+            free_slots.add(src_range[0])
+
+        self_picked = (picked_slot == blocks[group]["first"] and dst_range[0] == blocks[group]["first"])
+        color = "light_yellow" if self_picked else "light_blue"
+        result = "kept" if src_range == dst_range else "applied"
         round_trace = {
             "round": round_idx,
             "buffGroup": group,
-            "anchorIdx": anchor_idx,
+            "group_id": group,
+            "anchorIdx": blocks[group]["first"],
             "candidateIdxList": candidates,
             "freeCandidateIdxList": free_candidates,
             "pickedCandidatePos": picked_candidate_pos,
             "diceValue": dice_value,
-            "pickedIdx": landed_idx,
+            "pickedIdx": picked_slot,
+            "picked_slot": picked_slot,
+            "src_range": src_range,
+            "dst_range": dst_range,
             "randatExecuted": randat_executed,
             "result": result,
             "pickedReason": reason,
-            "reason": reason
+            "reason": reason,
+            "self_picked": bool(self_picked),
+            "color": color
         }
         block_assignments[group] = {
             "group": group,
-            "anchor_index": anchor_idx,
-            "landed_index": landed_idx,
-            "occupies_original": landed_idx == anchor_idx,
+            "anchor_index": blocks[group]["first"],
+            "landed_index": dst_range[0],
+            "occupies_original": bool(self_picked),
+            "src_range": src_range,
+            "dst_range": dst_range,
+            "picked_slot": picked_slot,
+            "self_picked": bool(self_picked),
+            "color": color,
             "round_trace": round_trace
         }
         round_traces.append(round_trace)
 
     for ev in working:
         group = str(ev.get("buff_group", "")).strip()
-        if group not in block_assignments:
-            continue
-        assign = block_assignments[group]
-        anchor_at = max(0.0, _safe_float(working[assign["anchor_index"]].get("at", 0.0)))
-        landed_at = max(0.0, _safe_float(working[assign["landed_index"]].get("at", 0.0)))
-        delta = landed_at - anchor_at
-        ev["at"] = round(max(0.0, _safe_float(ev.get("at", 0.0)) + delta), 4)
-        ev["runtime_landed_index"] = assign["landed_index"]
-        ev["runtime_anchor_index"] = assign["anchor_index"]
-        ev["runtime_occupies_original"] = 1 if assign["occupies_original"] else 0
+        if group in block_assignments:
+            assign = block_assignments[group]
+            ev["runtime_landed_index"] = assign["landed_index"]
+            ev["runtime_anchor_index"] = assign["anchor_index"]
+            ev["runtime_occupies_original"] = 1 if assign["occupies_original"] else 0
+            ev["runtime_self_picked"] = 1 if assign["self_picked"] else 0
+            ev["runtime_group_color"] = assign["color"]
+            ev["runtime_group_src_range"] = list(assign["src_range"])
+            ev["runtime_group_dst_range"] = list(assign["dst_range"])
+            ev["runtime_picked_slot"] = assign["picked_slot"]
+        if "__runtime_gid" in ev:
+            del ev["__runtime_gid"]
     return working, block_assignments, round_traces
 
 
@@ -1939,23 +2034,14 @@ class App:
 
     def _runtime_trace_group_meta(self, trace):
         group = str(trace.get("buffGroup", "")).strip()
-        candidate_idx_list = trace.get("candidateIdxList", [])
-        if not isinstance(candidate_idx_list, list):
-            candidate_idx_list = []
-        idx_pool = []
-        for raw_idx in candidate_idx_list + [trace.get("anchorIdx"), trace.get("pickedIdx")]:
-            try:
-                idx = int(raw_idx)
-            except Exception:
-                continue
-            if idx < 0 or idx >= len(self.timeline):
-                continue
-            if idx not in idx_pool:
-                idx_pool.append(idx)
+        source_rows = self.runtime_working_timeline if self.runtime_working_timeline else self.timeline
         buttons = []
-        for idx in idx_pool:
-            ev = self.timeline[idx] if idx < len(self.timeline) else {}
-            btn = str(ev.get("button", "")).strip()
+        for ev in source_rows:
+            if not isinstance(ev, dict):
+                continue
+            if str(ev.get("buff_group", "")).strip() != group:
+                continue
+            btn = str(ev.get("button", "")).strip().lower()
             if btn and btn not in buttons:
                 buttons.append(btn)
         return {
@@ -1979,6 +2065,8 @@ class App:
             "round_traces": []
         }
         lines = []
+        lines.append("round | group_id | src_range -> dst_range | picked_slot | self_picked | color")
+        lines.append("-" * 84)
         for trace in traces:
             if not isinstance(trace, dict):
                 continue
@@ -1994,24 +2082,35 @@ class App:
             dice_value = trace.get("diceValue")
             result = str(trace.get("result", "")).strip().lower()
             reason = trace.get("pickedReason", trace.get("reason"))
-            trace_with_group_meta = dict(trace)
-            trace_with_group_meta["group_label"] = group_label
-            trace_with_group_meta["group_buttons"] = list(group_meta["group_buttons"])
+            src_range = trace.get("src_range", [])
+            dst_range = trace.get("dst_range", [])
+            picked_slot = trace.get("picked_slot", trace.get("pickedIdx"))
+            self_picked = bool(trace.get("self_picked", False))
+            color = str(trace.get("color", "")).strip().lower()
+            trace_with_group_meta = {
+                "round": round_no,
+                "group_id": group,
+                "group_label": group_label,
+                "src_range": src_range,
+                "dst_range": dst_range,
+                "picked_slot": picked_slot,
+                "self_picked": bool(self_picked),
+                "color": color,
+                "picked_reason": reason
+            }
             payload["round_traces"].append(trace_with_group_meta)
-            lines.append("{} 候選池: {} / 可用池: {}".format(group_label, candidate_list, free_candidate_list))
-            lines.append("骰點: pos={} dice={}".format(picked_pos, dice_value))
-            if result == "applied":
-                lines.append("idx {} = 淺藍".format(idx))
-                lines.append("本輪 {} 套用 idx {}（淺藍，原因：{}）".format(group_label, idx, self._round_trace_reason_label(reason)))
-            else:
-                if reason is None:
-                    print("[RoundTrace warning] round {} kept 缺少 reason".format(round_no))
-                lines.append("本輪 {} 維持原位 idx {}（anchor {}，淺黃，原因：{}）".format(
-                    group_label,
-                    idx,
-                    anchor_idx,
-                    self._round_trace_reason_label(reason)
-                ))
+            lines.append(
+                "{:>5} | {:>8} | {} -> {} | {:>11} | {:>11} | {}".format(
+                    str(round_no),
+                    group,
+                    src_range,
+                    dst_range,
+                    str(picked_slot),
+                    str(self_picked).lower(),
+                    color
+                )
+            )
+            lines.append("      {}，原因：{}".format(group_label, self._round_trace_reason_label(reason)))
 
         self.text.delete("1.0", tk.END)
         if lines:
@@ -2112,11 +2211,12 @@ class App:
                     if state == "running":
                         self.runtime_manual_restore_active = False
                         self.runtime_display_frozen = False
+                        if self.runtime_working_timeline:
+                            self._show_runtime_view_timeline()
                     elif state in ("stopped", "idle"):
                         if self.has_pre_run_snapshot and not self.runtime_manual_restore_active:
-                            self.runtime_display_frozen = True
-                        else:
-                            self.runtime_display_frozen = False
+                            self._restore_pre_run_snapshot_after_runtime()
+                        self.runtime_display_frozen = False
                     else:
                         self.runtime_display_frozen = False
                     if changed:
@@ -2166,6 +2266,22 @@ class App:
             "first_event_at": float(first_event_at),
             "first_event_jitter": float(first_event_jitter)
         }
+
+    def _sanitize_events_for_backend(self, events):
+        sanitized = []
+        for ev in events or []:
+            if not isinstance(ev, dict):
+                continue
+            row = {}
+            for key, value in ev.items():
+                text = str(key or "")
+                if text.startswith("runtime_") or text.startswith("__"):
+                    continue
+                if text in {"row_color", "replicatedRow"}:
+                    continue
+                row[text] = value
+            sanitized.append(row)
+        return sanitized
 
     def _arm_first_event_progress_watch(self, sent_at_monotonic, send_delay_sec, first_event_timing):
         if not first_event_timing:
@@ -2255,7 +2371,9 @@ class App:
             landing[group] = {
                 "landed_index": int(landed_idx),
                 "anchor_index": int(anchor_idx),
-                "occupies_original": bool(int(ev.get("runtime_occupies_original", 0)))
+                "occupies_original": bool(int(ev.get("runtime_occupies_original", 0))),
+                "self_picked": bool(int(ev.get("runtime_self_picked", ev.get("runtime_occupies_original", 0)))),
+                "color": str(ev.get("runtime_group_color", "")).strip().lower()
             }
         return landing
 
@@ -2327,6 +2445,15 @@ class App:
             elif runtime_status == "skipped_by_cooldown":
                 buff_group = "{}（冷卻中）".format(original_buff_group) if original_buff_group else "冷卻中"
             at_value = "{:.2f}".format(float(ev["at"]))
+            buff_cycle_value = ev.get("buff_cycle_sec", 0.0)
+            buff_cycle_display = buff_cycle_value
+            if runtime_state == "running":
+                base_cycle = _safe_float(ev.get("runtime_buff_cycle_base", buff_cycle_value))
+                applied_cycle = _safe_float(ev.get("runtime_buff_cycle_applied", buff_cycle_value))
+                if base_cycle > 0.0 and abs(applied_cycle - base_cycle) > 1e-9:
+                    buff_cycle_display = "{:.4f} ({:.4f})".format(base_cycle, applied_cycle)
+                else:
+                    buff_cycle_display = "{:.4f}".format(applied_cycle)
             tags = []
             row_type = str(ev.get("type", "")).strip().lower()
             if row_type == "randat":
@@ -2338,8 +2465,17 @@ class App:
             else:
                 if original_buff_group:
                     landing = runtime_landing.get(original_buff_group, {})
-                    is_candidate = bool(landing.get("occupies_original"))
-                    is_applied = bool(landing) and not is_candidate
+                    self_picked = bool(landing.get("self_picked"))
+                    color = str(landing.get("color", "")).strip().lower()
+                    if color == "light_yellow":
+                        is_candidate = True
+                        is_applied = False
+                    elif color == "light_blue":
+                        is_candidate = False
+                        is_applied = True
+                    else:
+                        is_candidate = self_picked
+                        is_applied = bool(landing) and not self_picked
             is_running = runtime_state == "running" and i == self.runtime_latest_index
             is_focus = i == self.runtime_latest_index
             tags.extend(get_buff_cell_visual_state(
@@ -2363,7 +2499,7 @@ class App:
                 at_value,
                 ev["at_jitter"],
                 buff_group,
-                ev.get("buff_cycle_sec", 0.0),
+                buff_cycle_display,
                 ev.get("buff_jitter_sec", 0.0),
                 grp_display
             ), tags=tuple(tags))
@@ -2398,6 +2534,26 @@ class App:
         self.clear_runtime_highlight()
         self.mark_timeline_dirty()
         self.set_status("已恢復執行前狀態，可使用 Ctrl+Z undo")
+
+    def _show_runtime_view_timeline(self):
+        if not self.runtime_working_timeline:
+            return
+        self.timeline = self.copy_events(self.runtime_working_timeline)
+        self.refresh_tree()
+        self.refresh_preview()
+
+    def _restore_pre_run_snapshot_after_runtime(self):
+        if not self.has_pre_run_snapshot:
+            return
+        self.timeline = self.copy_events(self.pre_run_timeline_snapshot)
+        self.runtime_display_frozen = False
+        self.runtime_manual_restore_active = False
+        self.has_pre_run_snapshot = False
+        self.pre_run_timeline_snapshot = []
+        self.runtime_working_timeline = []
+        self._set_restore_pre_run_button_state()
+        self.refresh_tree()
+        self.refresh_preview()
 
     def refresh_saved_list(self):
         names = list_saved_timeline_names()
@@ -2961,9 +3117,7 @@ class App:
             self.set_frontend_error("")
             self._reset_first_event_progress_watch()
             self.request_pi({"action": "stop"})
-            self.runtime_manual_restore_active = False
-            self.runtime_display_frozen = bool(self.has_pre_run_snapshot)
-            self._set_restore_pre_run_button_state()
+            self._restore_pre_run_snapshot_after_runtime()
             self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
         except Exception as e:
             self.set_frontend_error(str(e))
@@ -2999,10 +3153,13 @@ class App:
         prepared_events, resolve_note = self.prepare_events_for_send(action_reason="before_send")
         if prepared_events is None:
             return
+        self.runtime_working_timeline = self.copy_events(prepared_events)
+        self._show_runtime_view_timeline()
 
+        backend_events = self._sanitize_events_for_backend(prepared_events)
         payload = {
             "action": "run_timeline",
-            "events": prepared_events,
+            "events": backend_events,
             "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
         }
 
@@ -3015,7 +3172,7 @@ class App:
             delay = self.apply_send_delay_if_needed()
             res = self.request_pi(payload, write_response=False)
             sent_at_monotonic = time.monotonic()
-            first_event_timing = self._extract_first_event_timing(prepared_events)
+            first_event_timing = self._extract_first_event_timing(backend_events)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
@@ -3028,9 +3185,11 @@ class App:
 
             if res.get("status") == "stopped":
                 self._reset_first_event_progress_watch()
+                self._restore_pre_run_snapshot_after_runtime()
                 self.set_status("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
             elif res.get("status") in ("error", "busy"):
                 self._reset_first_event_progress_watch()
+                self._restore_pre_run_snapshot_after_runtime()
                 self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
             else:
                 self._arm_first_event_progress_watch(sent_at_monotonic, delay, first_event_timing)
@@ -3040,6 +3199,7 @@ class App:
                 self.set_status("已送出：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
         except Exception as e:
             self.set_frontend_error(str(e))
+            self._restore_pre_run_snapshot_after_runtime()
             self.show_error("傳送失敗", str(e))
 
     def send_timeline_loop(self):
@@ -3079,10 +3239,13 @@ class App:
         if prepared_events is None:
             self.front_loop_enabled = False
             return
+        self.runtime_working_timeline = self.copy_events(prepared_events)
+        self._show_runtime_view_timeline()
 
+        backend_events = self._sanitize_events_for_backend(prepared_events)
         payload = {
             "action": "run_timeline",
-            "events": prepared_events,
+            "events": backend_events,
             "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
         }
 
@@ -3096,7 +3259,7 @@ class App:
                 delay = 0.0
             res = self.request_pi(payload, write_response=False)
             sent_at_monotonic = time.monotonic()
-            first_event_timing = self._extract_first_event_timing(prepared_events)
+            first_event_timing = self._extract_first_event_timing(backend_events)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
@@ -3108,6 +3271,7 @@ class App:
             })
             if res.get("status") in ("error", "busy"):
                 self._reset_first_event_progress_watch()
+                self._restore_pre_run_snapshot_after_runtime()
                 self.front_loop_after_id = self.root.after(
                     300,
                     lambda: self._dispatch_front_loop_once(display_name)
@@ -3126,6 +3290,7 @@ class App:
         except Exception as e:
             self.front_loop_enabled = False
             self.set_frontend_error(str(e))
+            self._restore_pre_run_snapshot_after_runtime()
             self.show_error("重複傳送失敗", str(e))
 
     def _poll_front_loop_round_done(self, display_name):
@@ -3232,21 +3397,35 @@ class App:
             for item in round_traces
             if isinstance(item, dict) and str(item.get("buffGroup", "")).strip()
         }
+        group_cycle_roll = {}
         for ev in events:
             ev["at"] = apply_positive_jitter(ev.get("at", 0.0), ev.get("at_jitter", 0.0))
             cycle = max(0.0, _safe_float(ev.get("buff_cycle_sec", 0.0)))
             jitter = max(0.0, _safe_float(ev.get("buff_jitter_sec", 0.0)))
-            ev["buff_cycle_sec"] = round(cycle + random.uniform(0.0, jitter), 4)
+            group = str(ev.get("buff_group", "")).strip()
+            cycle_key = group if group else "__nogroup_{}".format(id(ev))
+            if cycle > 0.0:
+                if cycle_key not in group_cycle_roll:
+                    group_cycle_roll[cycle_key] = round(cycle + random.uniform(0.0, jitter), 4)
+                rolled_cycle = group_cycle_roll[cycle_key]
+            else:
+                rolled_cycle = round(cycle, 4)
+            ev["runtime_buff_cycle_base"] = round(cycle, 4)
+            ev["runtime_buff_cycle_applied"] = round(rolled_cycle, 4)
+            ev["buff_cycle_sec"] = round(rolled_cycle, 4)
             ev["buff_jitter_sec"] = round(jitter, 4)
             ev["at_random_sec"] = 0.0
         for idx, ev in enumerate(events):
             ev["runtime_source_index"] = idx
         events = [ev for ev in events if str(ev.get("type", "")).strip().lower() in ("press", "release")]
         for ev in events:
-            ev["runtime_block_assignments"] = block_assignments
             group = str(ev.get("buff_group", "")).strip()
             if group in trace_by_group:
-                ev["runtime_round_trace"] = dict(trace_by_group[group])
+                trace = trace_by_group[group]
+                ev["runtime_round"] = int(trace.get("round", 0) or 0)
+                ev["runtime_picked_slot"] = int(trace.get("picked_slot", trace.get("pickedIdx", ev.get("runtime_landed_index", 0))) or 0)
+                ev["runtime_self_picked"] = 1 if bool(trace.get("self_picked", False)) else 0
+                ev["runtime_group_color"] = str(trace.get("color", ev.get("runtime_group_color", ""))).strip().lower()
 
         resolve_note = ""
         if resolved_groups:
