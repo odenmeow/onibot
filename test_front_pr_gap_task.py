@@ -7,7 +7,12 @@ if "pynput" not in sys.modules:
     pynput_stub.keyboard = types.SimpleNamespace(Listener=object)
     sys.modules["pynput"] = pynput_stub
 
-from front import analyze_pr_gap_events, apply_minimum_gap_by_pairs, detect_jitter_order_risk_pairs
+from front import (
+    analyze_pr_gap_events,
+    apply_minimum_gap_by_pairs,
+    detect_jitter_order_risk_pairs,
+    parse_pr_range_text,
+)
 
 
 class FrontPrGapTaskTests(unittest.TestCase):
@@ -26,9 +31,11 @@ class FrontPrGapTaskTests(unittest.TestCase):
         self.assertEqual(len(analyzed["pr_pairs"]), 100)
         self.assertEqual(analyzed["pr_pairs"][0]["pr_rank"], 0)
         self.assertEqual(analyzed["pr_pairs"][99]["pr_rank"], 99)
-        self.assertEqual([s["range"] for s in analyzed["segments"]], [
-            "pr0~pr25", "pr26~pr50", "pr51~pr70", "pr71~pr95", "pr95~pr99"
-        ])
+        ranges = [s["range"] for s in analyzed["segments"]]
+        self.assertIn("pr0~pr25", ranges)
+        self.assertIn("pr95~pr99", ranges)
+        self.assertIn("pr0~pr9", ranges)
+        self.assertIn("pr90~pr99", ranges)
 
     def test_analyze_pr_gap_events_with_top_none_returns_all_adjacent_pairs(self):
         events = []
@@ -76,6 +83,11 @@ class FrontPrGapTaskTests(unittest.TestCase):
         self.assertEqual(len(risks), 2)
         self.assertEqual(risks[0]["risk_level"], "overtake_risk")
         self.assertEqual(risks[1]["risk_level"], "tie_risk")
+
+    def test_parse_pr_range_text(self):
+        self.assertEqual(parse_pr_range_text("pr0~pr30", max_rank=99), (0, 30))
+        self.assertEqual(parse_pr_range_text("pr30~pr0", max_rank=99), (0, 30))
+        self.assertEqual(parse_pr_range_text("", max_rank=50), (0, 50))
 
 
 if __name__ == "__main__":

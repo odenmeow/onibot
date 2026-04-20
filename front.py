@@ -453,6 +453,31 @@ DEFAULT_PR_SEGMENTS = [
 ]
 
 
+def build_extended_pr_segments():
+    segments = list(DEFAULT_PR_SEGMENTS)
+    for start in range(0, 100, 10):
+        segments.append((start, start + 9))
+    return segments
+
+
+def parse_pr_range_text(text, max_rank):
+    raw = str(text or "").strip().lower().replace(" ", "")
+    if not raw:
+        return 0, int(max_rank)
+    if "~" not in raw:
+        raise ValueError("pr 區間格式需為 prX~prY")
+    left, right = raw.split("~", 1)
+    if not left.startswith("pr") or not right.startswith("pr"):
+        raise ValueError("pr 區間格式需為 prX~prY")
+    start = int(left[2:])
+    end = int(right[2:])
+    if start > end:
+        start, end = end, start
+    start = max(0, start)
+    end = min(int(max_rank), end)
+    return start, end
+
+
 def build_pr_gap_pairs(events):
     ordered = sorted(
         [dict(ev) for ev in events],
@@ -481,7 +506,7 @@ def build_pr_gap_pairs(events):
 
 def build_pr_segment_summary(pairs, segments=None):
     if segments is None:
-        segments = DEFAULT_PR_SEGMENTS
+        segments = build_extended_pr_segments()
     summary = []
     for start, end in segments:
         section = [p for p in pairs if start <= int(p.get("pr_rank", -1)) <= end]
@@ -1492,28 +1517,34 @@ class App:
             command=self.insert_randat_row,
             width=14
         ).grid(row=2, column=0, padx=(8, 5), pady=(0, 6), sticky="w")
+        action_row = tk.Frame(jitter_frame)
+        action_row.grid(row=2, column=1, columnspan=5, padx=(0, 8), pady=(0, 6), sticky="w")
         tk.Button(
-            jitter_frame,
+            action_row,
             text="at 交換",
             command=self.swap_selected_at,
             width=9
-        ).grid(row=2, column=1, padx=(0, 8), pady=(0, 6), sticky="w")
+        ).pack(side="left", padx=(0, 6))
         tk.Button(
-            jitter_frame,
+            action_row,
             text="PR 分析",
             command=self.analyze_pr_pairs,
             width=9
-        ).grid(row=2, column=2, padx=(0, 8), pady=(0, 6), sticky="w")
-        tk.Label(jitter_frame, text="minimum gap:").grid(row=2, column=3, padx=(0, 4), pady=(0, 6), sticky="e")
-        self.minimum_gap_entry = tk.Entry(jitter_frame, width=8)
+        ).pack(side="left", padx=(0, 6))
+        tk.Label(action_row, text="minimum gap:").pack(side="left", padx=(2, 3))
+        self.minimum_gap_entry = tk.Entry(action_row, width=7)
         self.minimum_gap_entry.insert(0, "0.050")
-        self.minimum_gap_entry.grid(row=2, column=4, padx=(0, 4), pady=(0, 6), sticky="w")
+        self.minimum_gap_entry.pack(side="left", padx=(0, 6))
+        tk.Label(action_row, text="pr 區間:").pack(side="left", padx=(2, 3))
+        self.pr_range_entry = tk.Entry(action_row, width=10)
+        self.pr_range_entry.insert(0, "pr0~pr99")
+        self.pr_range_entry.pack(side="left", padx=(0, 6))
         tk.Button(
-            jitter_frame,
+            action_row,
             text="套用 min gap",
             command=self.apply_minimum_gap_for_pairs,
             width=12
-        ).grid(row=2, column=5, padx=(0, 8), pady=(0, 6), sticky="w")
+        ).pack(side="left", padx=(0, 0))
 
         right_content_paned = tk.PanedWindow(right_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED)
         right_content_paned.pack(fill="both", expand=True)
@@ -3737,9 +3768,20 @@ class App:
             return
 
         before_analysis = analyze_pr_gap_events(events, top_n=None)
+        max_rank = max(0, len(before_analysis.get("pr_pairs", [])) - 1)
+        try:
+            range_text = self.pr_range_entry.get().strip() if hasattr(self, "pr_range_entry") else ""
+            start_rank, end_rank = parse_pr_range_text(range_text, max_rank=max_rank)
+        except Exception as e:
+            self.show_error("錯誤", str(e))
+            return
+        target_pairs = [
+            row for row in before_analysis.get("pr_pairs", [])
+            if start_rank <= int(row.get("pr_rank", -1)) <= end_rank
+        ]
         adjusted, adjust_logs = apply_minimum_gap_by_pairs(
             events=events,
-            pairs_snapshot=before_analysis.get("pr_pairs", []),
+            pairs_snapshot=target_pairs,
             minimum_gap=min_gap
         )
         after_analysis = analyze_pr_gap_events(adjusted, top_n=None)
@@ -3756,6 +3798,7 @@ class App:
         self.write_text({
             "task": "minimum_gap_adjustment",
             "minimum_gap": round(min_gap, 4),
+            "pr_range": "pr{}~pr{}".format(start_rank, end_rank),
             "analysis_before": {
                 "min_all_pairs": before_analysis["min_all_pairs"],
                 "pr_pairs": before_analysis["pr_pairs"][:100],
@@ -3799,7 +3842,11 @@ class App:
                 }
             ]
         )
-        self.set_status("minimum gap 套用完成：共處理 {} 組相鄰 pair（表格已開啟）".format(len(adjust_logs)))
+        self.set_status(
+            "minimum gap 套用完成：區間 pr{}~pr{}，共處理 {} 組相鄰 pair（表格已開啟）".format(
+                start_rank, end_rank, len(adjust_logs)
+            )
+        )
 
     def delete_selected_rows(self):
         if not self._ensure_runtime_editable():
