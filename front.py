@@ -460,24 +460,6 @@ def build_extended_pr_segments():
     return segments
 
 
-def parse_pr_range_text(text, max_rank):
-    raw = str(text or "").strip().lower().replace(" ", "")
-    if not raw:
-        return 0, int(max_rank)
-    if "~" not in raw:
-        raise ValueError("pr 區間格式需為 prX~prY")
-    left, right = raw.split("~", 1)
-    if not left.startswith("pr") or not right.startswith("pr"):
-        raise ValueError("pr 區間格式需為 prX~prY")
-    start = int(left[2:])
-    end = int(right[2:])
-    if start > end:
-        start, end = end, start
-    start = max(0, start)
-    end = min(int(max_rank), end)
-    return start, end
-
-
 def build_pr_gap_pairs(events):
     ordered = sorted(
         [dict(ev) for ev in events],
@@ -1539,10 +1521,6 @@ class App:
         self.minimum_gap_entry = tk.Entry(action_row, width=7)
         self.minimum_gap_entry.insert(0, "0.050")
         self.minimum_gap_entry.pack(side="left", padx=(0, 6))
-        tk.Label(action_row, text="pr 區間:").pack(side="left", padx=(2, 3))
-        self.pr_range_entry = tk.Entry(action_row, width=10)
-        self.pr_range_entry.insert(0, "pr0~pr99")
-        self.pr_range_entry.pack(side="left", padx=(0, 6))
         tk.Button(
             action_row,
             text="套用 min gap",
@@ -3772,17 +3750,7 @@ class App:
             return
 
         before_analysis = analyze_pr_gap_events(events, top_n=None)
-        max_rank = max(0, len(before_analysis.get("pr_pairs", [])) - 1)
-        try:
-            range_text = self.pr_range_entry.get().strip() if hasattr(self, "pr_range_entry") else ""
-            start_rank, end_rank = parse_pr_range_text(range_text, max_rank=max_rank)
-        except Exception as e:
-            self.show_error("錯誤", str(e))
-            return
-        target_pairs = [
-            row for row in before_analysis.get("pr_pairs", [])
-            if start_rank <= int(row.get("pr_rank", -1)) <= end_rank
-        ]
+        target_pairs = before_analysis.get("pr_pairs", [])
         adjusted, adjust_logs = apply_minimum_gap_by_pairs(
             events=events,
             pairs_snapshot=target_pairs,
@@ -3802,7 +3770,6 @@ class App:
         self.write_text({
             "task": "minimum_gap_adjustment",
             "minimum_gap": round(min_gap, 4),
-            "pr_range": "pr{}~pr{}".format(start_rank, end_rank),
             "analysis_before": {
                 "min_all_pairs": before_analysis["min_all_pairs"],
                 "pr_pairs": before_analysis["pr_pairs"][:100],
@@ -3847,9 +3814,7 @@ class App:
             ]
         )
         self.set_status(
-            "minimum gap 套用完成：區間 pr{}~pr{}，共處理 {} 組相鄰 pair（表格已開啟）".format(
-                start_rank, end_rank, len(adjust_logs)
-            )
+            "minimum gap 套用完成：共處理 {} 組相鄰 pair（表格已開啟）".format(len(adjust_logs))
         )
 
     def delete_selected_rows(self):
