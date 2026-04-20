@@ -2267,6 +2267,22 @@ class App:
             "first_event_jitter": float(first_event_jitter)
         }
 
+    def _sanitize_events_for_backend(self, events):
+        sanitized = []
+        for ev in events or []:
+            if not isinstance(ev, dict):
+                continue
+            row = {}
+            for key, value in ev.items():
+                text = str(key or "")
+                if text.startswith("runtime_") or text.startswith("__"):
+                    continue
+                if text in {"row_color", "replicatedRow"}:
+                    continue
+                row[text] = value
+            sanitized.append(row)
+        return sanitized
+
     def _arm_first_event_progress_watch(self, sent_at_monotonic, send_delay_sec, first_event_timing):
         if not first_event_timing:
             self._reset_first_event_progress_watch()
@@ -3131,9 +3147,10 @@ class App:
         self.runtime_working_timeline = self.copy_events(prepared_events)
         self._show_runtime_view_timeline()
 
+        backend_events = self._sanitize_events_for_backend(prepared_events)
         payload = {
             "action": "run_timeline",
-            "events": prepared_events,
+            "events": backend_events,
             "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
         }
 
@@ -3146,7 +3163,7 @@ class App:
             delay = self.apply_send_delay_if_needed()
             res = self.request_pi(payload, write_response=False)
             sent_at_monotonic = time.monotonic()
-            first_event_timing = self._extract_first_event_timing(prepared_events)
+            first_event_timing = self._extract_first_event_timing(backend_events)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
@@ -3216,9 +3233,10 @@ class App:
         self.runtime_working_timeline = self.copy_events(prepared_events)
         self._show_runtime_view_timeline()
 
+        backend_events = self._sanitize_events_for_backend(prepared_events)
         payload = {
             "action": "run_timeline",
-            "events": prepared_events,
+            "events": backend_events,
             "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
         }
 
@@ -3232,7 +3250,7 @@ class App:
                 delay = 0.0
             res = self.request_pi(payload, write_response=False)
             sent_at_monotonic = time.monotonic()
-            first_event_timing = self._extract_first_event_timing(prepared_events)
+            first_event_timing = self._extract_first_event_timing(backend_events)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
