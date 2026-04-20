@@ -444,6 +444,153 @@ def _safe_float(value, default=0.0):
         return float(default)
 
 
+DEFAULT_PR_SEGMENTS = [
+    (0, 25),
+    (26, 50),
+    (51, 70),
+    (71, 95),
+    (95, 99),
+]
+
+
+def build_pr_gap_pairs(events):
+    ordered = sorted(
+        [dict(ev) for ev in events],
+        key=lambda x: (_safe_float(x.get("at", 0.0)), int(x.get("idx", 0)))
+    )
+    pairs = []
+    for i in range(len(ordered) - 1):
+        a = ordered[i]
+        b = ordered[i + 1]
+        pairs.append({
+            "idx_a": int(a.get("idx", 0)),
+            "idx_b": int(b.get("idx", 0)),
+            "button_a": str(a.get("button_id", "")),
+            "button_b": str(b.get("button_id", "")),
+            "type_a": str(a.get("type", "")),
+            "type_b": str(b.get("type", "")),
+            "at_a": round(_safe_float(a.get("at", 0.0)), 4),
+            "at_b": round(_safe_float(b.get("at", 0.0)), 4),
+            "gap": round(_safe_float(b.get("at", 0.0)) - _safe_float(a.get("at", 0.0)), 4)
+        })
+    pairs.sort(key=lambda x: (x["gap"], x["idx_a"], x["idx_b"]))
+    for rank, row in enumerate(pairs):
+        row["pr_rank"] = rank
+    return ordered, pairs
+
+
+def build_pr_segment_summary(pairs, segments=None):
+    if segments is None:
+        segments = DEFAULT_PR_SEGMENTS
+    summary = []
+    for start, end in segments:
+        section = [p for p in pairs if start <= int(p.get("pr_rank", -1)) <= end]
+        avg_gap = 0.0
+        if section:
+            avg_gap = round(sum(_safe_float(item.get("gap", 0.0)) for item in section) / len(section), 4)
+        summary.append({
+            "range": "pr{}~pr{}".format(start, end),
+            "avg_gap": avg_gap,
+            "pairs": [
+                {
+                    "pr_rank": int(item["pr_rank"]),
+                    "idx_a": int(item["idx_a"]),
+                    "idx_b": int(item["idx_b"])
+                }
+                for item in section
+            ]
+        })
+    return summary
+
+
+def analyze_pr_gap_events(events, top_n=100):
+    ordered, pairs = build_pr_gap_pairs(events)
+    if top_n is None:
+        selected_pairs = list(pairs)
+    else:
+        selected_pairs = pairs[:max(0, int(top_n))]
+    return {
+        "min_all_pairs": round(min((_safe_float(p.get("gap", 0.0)) for p in pairs), default=0.0), 4),
+        "pr_pairs": selected_pairs,
+        "segments": build_pr_segment_summary(pairs),
+        "pair_count": len(pairs),
+        "events_sorted": ordered,
+    }
+
+
+def apply_minimum_gap_by_pairs(events, pairs_snapshot, minimum_gap):
+    min_gap = max(0.0, _safe_float(minimum_gap, 0.0))
+    working = [dict(ev) for ev in events]
+    logs = []
+    for pair in sorted([dict(p) for p in pairs_snapshot], key=lambda x: int(x.get("pr_rank", 0))):
+        idx_a = int(pair.get("idx_a", 0))
+        idx_b = int(pair.get("idx_b", 0))
+        at_a = None
+        at_b = None
+        for ev in working:
+            idx = int(ev.get("idx", -1))
+            if idx == idx_a:
+                at_a = _safe_float(ev.get("at", 0.0))
+            if idx == idx_b:
+                at_b = _safe_float(ev.get("at", 0.0))
+        if at_a is None or at_b is None:
+            continue
+        current_gap = round(at_b - at_a, 4)
+        delta = round(max(0.0, min_gap - current_gap), 4)
+        affected = []
+        for ev in working:
+            if int(ev.get("idx", -1)) >= idx_b:
+                ev["at"] = round(_safe_float(ev.get("at", 0.0)) + delta, 4)
+                affected.append(int(ev.get("idx", -1)))
+        logs.append({
+            "pr_rank": int(pair.get("pr_rank", 0)),
+            "idx_a": idx_a,
+            "idx_b": idx_b,
+            "current_gap": current_gap,
+            "minimum_gap": min_gap,
+            "delta": delta,
+            "affected_idx_range": {
+                "from_idx": idx_b,
+                "count": len(affected),
+                "affected_indices": affected
+            }
+        })
+    return working, logs
+
+
+def detect_jitter_order_risk_pairs(events):
+    ordered = sorted(
+        [dict(ev) for ev in events],
+        key=lambda x: (_safe_float(x.get("at", 0.0)), int(x.get("idx", 0)))
+    )
+    risks = []
+    for i in range(len(ordered) - 1):
+        a = ordered[i]
+        b = ordered[i + 1]
+        gap = round(_safe_float(b.get("at", 0.0)) - _safe_float(a.get("at", 0.0)), 4)
+        jitter_a = max(0.0, _safe_float(a.get("at_jitter", 0.0), 0.0))
+        if gap < jitter_a:
+            level = "overtake_risk"
+        elif gap == jitter_a:
+            level = "tie_risk"
+        else:
+            continue
+        risks.append({
+            "risk_level": level,
+            "idx_a": int(a.get("idx", 0)),
+            "idx_b": int(b.get("idx", 0)),
+            "type_a": str(a.get("type", "")),
+            "type_b": str(b.get("type", "")),
+            "button_a": str(a.get("button_id", "")),
+            "button_b": str(b.get("button_id", "")),
+            "at_a": round(_safe_float(a.get("at", 0.0)), 4),
+            "at_b": round(_safe_float(b.get("at", 0.0)), 4),
+            "gap": gap,
+            "at_jitter_a": round(jitter_a, 4),
+        })
+    return risks
+
+
 def apply_positive_jitter(base_value, jitter):
     base = max(0.0, _safe_float(base_value, 0.0))
     j = max(0.0, _safe_float(jitter, 0.0))
@@ -1351,6 +1498,22 @@ class App:
             command=self.swap_selected_at,
             width=9
         ).grid(row=2, column=1, padx=(0, 8), pady=(0, 6), sticky="w")
+        tk.Button(
+            jitter_frame,
+            text="PR 分析",
+            command=self.analyze_pr_pairs,
+            width=9
+        ).grid(row=2, column=2, padx=(0, 8), pady=(0, 6), sticky="w")
+        tk.Label(jitter_frame, text="minimum gap:").grid(row=2, column=3, padx=(0, 4), pady=(0, 6), sticky="e")
+        self.minimum_gap_entry = tk.Entry(jitter_frame, width=8)
+        self.minimum_gap_entry.insert(0, "0.050")
+        self.minimum_gap_entry.grid(row=2, column=4, padx=(0, 4), pady=(0, 6), sticky="w")
+        tk.Button(
+            jitter_frame,
+            text="套用 min gap",
+            command=self.apply_minimum_gap_for_pairs,
+            width=12
+        ).grid(row=2, column=5, padx=(0, 8), pady=(0, 6), sticky="w")
 
         right_content_paned = tk.PanedWindow(right_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED)
         right_content_paned.pack(fill="both", expand=True)
@@ -1671,6 +1834,45 @@ class App:
     def write_text(self, obj):
         self.text.delete("1.0", tk.END)
         self.text.insert(tk.END, json.dumps(obj, ensure_ascii=False, indent=2))
+
+    def _open_pr_tables_dialog(self, title, sections):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("1080x620")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+        for section in sections:
+            tab = ttk.Frame(notebook)
+            notebook.add(tab, text=section["title"])
+            columns = section.get("columns", [])
+            rows = section.get("rows", [])
+
+            tree = ttk.Treeview(tab, columns=columns, show="headings")
+            for col in columns:
+                tree.heading(col, text=col)
+                tree.column(col, width=110, minwidth=60, stretch=True, anchor="w")
+
+            y_scroll = ttk.Scrollbar(tab, orient="vertical", command=tree.yview)
+            x_scroll = ttk.Scrollbar(tab, orient="horizontal", command=tree.xview)
+            tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+
+            tree.grid(row=0, column=0, sticky="nsew")
+            y_scroll.grid(row=0, column=1, sticky="ns")
+            x_scroll.grid(row=1, column=0, sticky="ew")
+            tab.grid_rowconfigure(0, weight=1)
+            tab.grid_columnconfigure(0, weight=1)
+
+            for ridx, row in enumerate(rows):
+                values = [str(row.get(col, "")) for col in columns]
+                tree.insert("", "end", iid=str(ridx), values=values)
+
+        btn_row = tk.Frame(dialog)
+        btn_row.pack(fill="x", padx=8, pady=(0, 8))
+        tk.Button(btn_row, text="關閉", command=dialog.destroy, width=10).pack(side="right")
 
     def on_json_mode_change(self):
         mode_var = getattr(self, "json_view_mode_var", None)
@@ -2608,6 +2810,7 @@ class App:
         for idx in selected:
             self.tree.selection_add(str(idx))
         self.set_status("已套用 jitter 到 {} 筆選取列".format(len(selected)))
+        self._show_jitter_order_risk_reminder("套用 jitter 到選取列")
 
     def apply_jitter_to_all(self):
         if not self.timeline:
@@ -2627,6 +2830,7 @@ class App:
         self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.set_status("已套用 jitter 到全部 event")
+        self._show_jitter_order_risk_reminder("套用 jitter 到全部 event")
 
     def clear_jitter_selected(self):
         if not self.timeline:
@@ -3442,6 +3646,160 @@ class App:
         self.mark_timeline_dirty()
         self.tree.selection_set([str(idx_a), str(idx_b)])
         self.set_status("已交換 idx {} 與 idx {} 的 at".format(idx_a, idx_b))
+
+    def _collect_press_release_for_pr(self):
+        rows = []
+        for idx, ev in enumerate(self.timeline):
+            ev_type = str(ev.get("type", "")).strip().lower()
+            if ev_type not in ("press", "release"):
+                continue
+            rows.append({
+                "idx": idx,
+                "at": round(max(0.0, _safe_float(ev.get("at", 0.0))), 4),
+                "type": ev_type,
+                "button_id": str(ev.get("button", "")).strip(),
+                "at_jitter": round(max(0.0, _safe_float(ev.get("at_jitter", 0.0))), 4),
+            })
+        return rows
+
+    def _show_jitter_order_risk_reminder(self, source_label):
+        events = self._collect_press_release_for_pr()
+        if len(events) < 2:
+            return
+        risks = detect_jitter_order_risk_pairs(events)
+        if not risks:
+            return
+        overtakes = [r for r in risks if r.get("risk_level") == "overtake_risk"]
+        ties = [r for r in risks if r.get("risk_level") == "tie_risk"]
+        preview_rows = risks[:20]
+        lines = [
+            "來源：{}".format(source_label),
+            "偵測到順序風險 {} 組（超車風險 {}、同時刻風險 {}）".format(
+                len(risks), len(overtakes), len(ties)
+            ),
+            "（僅列前 20 組）"
+        ]
+        for row in preview_rows:
+            lines.append(
+                "idx{idx_a}->{idx_b} gap={gap:.4f} jitter_a={at_jitter_a:.4f} {risk_level}".format(**row)
+            )
+        self.show_warning("jitter 順序提醒", "\n".join(lines))
+
+    def analyze_pr_pairs(self):
+        events = self._collect_press_release_for_pr()
+        if len(events) < 2:
+            self.show_warning("提醒", "至少需要 2 筆 press/release 才能做 PR 分析")
+            return
+        analysis = analyze_pr_gap_events(events, top_n=None)
+        payload = {
+            "task": "pr_gap_analysis",
+            "total_events": len(events),
+            "min_all_pairs": analysis["min_all_pairs"],
+            "pr_pairs": analysis["pr_pairs"][:100],
+            "segments": analysis["segments"]
+        }
+        self.write_text(payload)
+        self._open_pr_tables_dialog(
+            "PR 分析結果",
+            sections=[
+                {
+                    "title": "PR Pairs",
+                    "columns": ["pr_rank", "idx_a", "idx_b", "button_a", "button_b", "type_a", "type_b", "at_a", "at_b", "gap"],
+                    "rows": analysis["pr_pairs"]
+                },
+                {
+                    "title": "Segments",
+                    "columns": ["range", "avg_gap", "pair_count"],
+                    "rows": [
+                        {
+                            "range": item.get("range", ""),
+                            "avg_gap": item.get("avg_gap", 0.0),
+                            "pair_count": len(item.get("pairs", []))
+                        }
+                        for item in analysis.get("segments", [])
+                    ]
+                }
+            ]
+        )
+        self.set_status("PR 分析完成：共 {} 組相鄰 pair（表格已開啟）".format(len(analysis["pr_pairs"])))
+
+    def apply_minimum_gap_for_pairs(self):
+        if not self._ensure_runtime_editable():
+            return
+        events = self._collect_press_release_for_pr()
+        if len(events) < 2:
+            self.show_warning("提醒", "至少需要 2 筆 press/release 才能套用 minimum gap")
+            return
+        try:
+            min_gap = max(0.0, float(self.minimum_gap_entry.get().strip()))
+        except Exception:
+            self.show_error("錯誤", "minimum gap 必須是數字")
+            return
+
+        before_analysis = analyze_pr_gap_events(events, top_n=None)
+        adjusted, adjust_logs = apply_minimum_gap_by_pairs(
+            events=events,
+            pairs_snapshot=before_analysis.get("pr_pairs", []),
+            minimum_gap=min_gap
+        )
+        after_analysis = analyze_pr_gap_events(adjusted, top_n=None)
+
+        idx_to_at = {int(ev["idx"]): round(_safe_float(ev.get("at", 0.0)), 4) for ev in adjusted}
+        before = self._begin_timeline_change()
+        for idx, ev in enumerate(self.timeline):
+            if idx in idx_to_at:
+                ev["at"] = idx_to_at[idx]
+        self._finalize_timeline_change(before)
+        self.mark_timeline_dirty()
+        self.refresh_tree()
+
+        self.write_text({
+            "task": "minimum_gap_adjustment",
+            "minimum_gap": round(min_gap, 4),
+            "analysis_before": {
+                "min_all_pairs": before_analysis["min_all_pairs"],
+                "pr_pairs": before_analysis["pr_pairs"][:100],
+                "segments": before_analysis["segments"],
+            },
+            "manual_adjustment_log": adjust_logs,
+            "analysis_after": {
+                "min_all_pairs": after_analysis["min_all_pairs"],
+                "pr_pairs": after_analysis["pr_pairs"][:100],
+                "segments": after_analysis["segments"],
+            }
+        })
+        self._open_pr_tables_dialog(
+            "minimum gap 套用結果",
+            sections=[
+                {
+                    "title": "Before PR",
+                    "columns": ["pr_rank", "idx_a", "idx_b", "button_a", "button_b", "type_a", "type_b", "at_a", "at_b", "gap"],
+                    "rows": before_analysis["pr_pairs"]
+                },
+                {
+                    "title": "After PR",
+                    "columns": ["pr_rank", "idx_a", "idx_b", "button_a", "button_b", "type_a", "type_b", "at_a", "at_b", "gap"],
+                    "rows": after_analysis["pr_pairs"]
+                },
+                {
+                    "title": "Adjustment Log",
+                    "columns": ["pr_rank", "idx_a", "idx_b", "current_gap", "minimum_gap", "delta", "affected_count"],
+                    "rows": [
+                        {
+                            "pr_rank": row.get("pr_rank", ""),
+                            "idx_a": row.get("idx_a", ""),
+                            "idx_b": row.get("idx_b", ""),
+                            "current_gap": row.get("current_gap", ""),
+                            "minimum_gap": row.get("minimum_gap", ""),
+                            "delta": row.get("delta", ""),
+                            "affected_count": row.get("affected_idx_range", {}).get("count", 0),
+                        }
+                        for row in adjust_logs
+                    ]
+                }
+            ]
+        )
+        self.set_status("minimum gap 套用完成：共處理 {} 組相鄰 pair（表格已開啟）".format(len(adjust_logs)))
 
     def delete_selected_rows(self):
         if not self._ensure_runtime_editable():
