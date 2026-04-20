@@ -558,6 +558,39 @@ def apply_minimum_gap_by_pairs(events, pairs_snapshot, minimum_gap):
     return working, logs
 
 
+def detect_jitter_order_risk_pairs(events):
+    ordered = sorted(
+        [dict(ev) for ev in events],
+        key=lambda x: (_safe_float(x.get("at", 0.0)), int(x.get("idx", 0)))
+    )
+    risks = []
+    for i in range(len(ordered) - 1):
+        a = ordered[i]
+        b = ordered[i + 1]
+        gap = round(_safe_float(b.get("at", 0.0)) - _safe_float(a.get("at", 0.0)), 4)
+        jitter_a = max(0.0, _safe_float(a.get("at_jitter", 0.0), 0.0))
+        if gap < jitter_a:
+            level = "overtake_risk"
+        elif gap == jitter_a:
+            level = "tie_risk"
+        else:
+            continue
+        risks.append({
+            "risk_level": level,
+            "idx_a": int(a.get("idx", 0)),
+            "idx_b": int(b.get("idx", 0)),
+            "type_a": str(a.get("type", "")),
+            "type_b": str(b.get("type", "")),
+            "button_a": str(a.get("button_id", "")),
+            "button_b": str(b.get("button_id", "")),
+            "at_a": round(_safe_float(a.get("at", 0.0)), 4),
+            "at_b": round(_safe_float(b.get("at", 0.0)), 4),
+            "gap": gap,
+            "at_jitter_a": round(jitter_a, 4),
+        })
+    return risks
+
+
 def apply_positive_jitter(base_value, jitter):
     base = max(0.0, _safe_float(base_value, 0.0))
     j = max(0.0, _safe_float(jitter, 0.0))
@@ -2777,6 +2810,7 @@ class App:
         for idx in selected:
             self.tree.selection_add(str(idx))
         self.set_status("已套用 jitter 到 {} 筆選取列".format(len(selected)))
+        self._show_jitter_order_risk_reminder("套用 jitter 到選取列")
 
     def apply_jitter_to_all(self):
         if not self.timeline:
@@ -2796,6 +2830,7 @@ class App:
         self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
         self.set_status("已套用 jitter 到全部 event")
+        self._show_jitter_order_risk_reminder("套用 jitter 到全部 event")
 
     def clear_jitter_selected(self):
         if not self.timeline:
@@ -3622,9 +3657,33 @@ class App:
                 "idx": idx,
                 "at": round(max(0.0, _safe_float(ev.get("at", 0.0))), 4),
                 "type": ev_type,
-                "button_id": str(ev.get("button", "")).strip()
+                "button_id": str(ev.get("button", "")).strip(),
+                "at_jitter": round(max(0.0, _safe_float(ev.get("at_jitter", 0.0))), 4),
             })
         return rows
+
+    def _show_jitter_order_risk_reminder(self, source_label):
+        events = self._collect_press_release_for_pr()
+        if len(events) < 2:
+            return
+        risks = detect_jitter_order_risk_pairs(events)
+        if not risks:
+            return
+        overtakes = [r for r in risks if r.get("risk_level") == "overtake_risk"]
+        ties = [r for r in risks if r.get("risk_level") == "tie_risk"]
+        preview_rows = risks[:20]
+        lines = [
+            "來源：{}".format(source_label),
+            "偵測到順序風險 {} 組（超車風險 {}、同時刻風險 {}）".format(
+                len(risks), len(overtakes), len(ties)
+            ),
+            "（僅列前 20 組）"
+        ]
+        for row in preview_rows:
+            lines.append(
+                "idx{idx_a}->{idx_b} gap={gap:.4f} jitter_a={at_jitter_a:.4f} {risk_level}".format(**row)
+            )
+        self.show_warning("jitter 順序提醒", "\n".join(lines))
 
     def analyze_pr_pairs(self):
         events = self._collect_press_release_for_pr()

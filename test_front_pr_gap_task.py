@@ -7,7 +7,7 @@ if "pynput" not in sys.modules:
     pynput_stub.keyboard = types.SimpleNamespace(Listener=object)
     sys.modules["pynput"] = pynput_stub
 
-from front import analyze_pr_gap_events, apply_minimum_gap_by_pairs
+from front import analyze_pr_gap_events, apply_minimum_gap_by_pairs, detect_jitter_order_risk_pairs
 
 
 class FrontPrGapTaskTests(unittest.TestCase):
@@ -65,6 +65,17 @@ class FrontPrGapTaskTests(unittest.TestCase):
         self.assertEqual(adjusted[0]["at"], 1.0)
         self.assertEqual(adjusted[1]["at"], 1.1)
         self.assertEqual(logs[0]["delta"], 0.0)
+
+    def test_detect_jitter_order_risk_pairs_flags_overtake_and_tie(self):
+        events = [
+            {"idx": 0, "at": 1.00, "type": "press", "button_id": "a", "at_jitter": 0.15},
+            {"idx": 1, "at": 1.10, "type": "release", "button_id": "a", "at_jitter": 0.15},
+            {"idx": 2, "at": 1.25, "type": "press", "button_id": "b", "at_jitter": 0.10},
+        ]
+        risks = detect_jitter_order_risk_pairs(events)
+        self.assertEqual(len(risks), 2)
+        self.assertEqual(risks[0]["risk_level"], "overtake_risk")
+        self.assertEqual(risks[1]["risk_level"], "tie_risk")
 
 
 if __name__ == "__main__":
