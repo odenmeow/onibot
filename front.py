@@ -2529,18 +2529,14 @@ class App:
     def _show_runtime_view_timeline(self):
         if not self.runtime_working_timeline:
             return
-        before = self._begin_timeline_change()
         self.timeline = self.copy_events(self.runtime_working_timeline)
-        self._finalize_timeline_change(before)
         self.refresh_tree()
         self.refresh_preview()
 
     def _restore_pre_run_snapshot_after_runtime(self):
         if not self.has_pre_run_snapshot:
             return
-        before = self._begin_timeline_change()
         self.timeline = self.copy_events(self.pre_run_timeline_snapshot)
-        self._finalize_timeline_change(before)
         self.runtime_display_frozen = False
         self.runtime_manual_restore_active = False
         self.has_pre_run_snapshot = False
