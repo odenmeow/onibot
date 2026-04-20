@@ -18,7 +18,7 @@ BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 RUNTIME_POLL_INTERVAL_MS = 300
-CONTROL_REQUEST_TIMEOUT_SEC = 5.0
+CONTROL_REQUEST_TIMEOUT_SEC = 8.0
 STATUS_REQUEST_TIMEOUT_SEC = 0.45
 FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
 ROUND_TRACE_REASON_LABELS = {
@@ -643,8 +643,6 @@ def allocate_randat_blocks(events):
         ev["__runtime_gid"] = "__row_{}".format(idx)
 
     free_slots = set(randat_slots)
-    for group in group_order:
-        free_slots.add(blocks[group]["first"])
 
     block_assignments = {}
     round_traces = []
@@ -668,10 +666,7 @@ def allocate_randat_blocks(events):
         if src_start is None:
             continue
         span_len = (src_end - src_start) + 1
-        if src_start not in free_slots:
-            free_slots.add(src_start)
-
-        candidates = sorted(free_slots)
+        candidates = [src_start] + [idx for idx in sorted(free_slots) if idx != src_start]
         free_candidates = [
             idx for idx in candidates
             if 0 <= idx <= max(0, len(working) - span_len)
@@ -717,9 +712,9 @@ def allocate_randat_blocks(events):
             if 0 <= idx < len(working):
                 working[idx]["at"] = round(max(0.0, dst_anchor_at + at_offset), 4)
 
-        free_slots.discard(picked_slot)
-        free_slots.add(src_range[0])
-        free_slots.add(dst_range[0])
+        if picked_slot != src_range[0]:
+            free_slots.discard(picked_slot)
+            free_slots.add(src_range[0])
 
         self_picked = (picked_slot == blocks[group]["first"] and dst_range[0] == blocks[group]["first"])
         color = "light_yellow" if self_picked else "light_blue"
@@ -2039,23 +2034,14 @@ class App:
 
     def _runtime_trace_group_meta(self, trace):
         group = str(trace.get("buffGroup", "")).strip()
-        candidate_idx_list = trace.get("candidateIdxList", [])
-        if not isinstance(candidate_idx_list, list):
-            candidate_idx_list = []
-        idx_pool = []
-        for raw_idx in candidate_idx_list + [trace.get("anchorIdx"), trace.get("pickedIdx")]:
-            try:
-                idx = int(raw_idx)
-            except Exception:
-                continue
-            if idx < 0 or idx >= len(self.timeline):
-                continue
-            if idx not in idx_pool:
-                idx_pool.append(idx)
+        source_rows = self.runtime_working_timeline if self.runtime_working_timeline else self.timeline
         buttons = []
-        for idx in idx_pool:
-            ev = self.timeline[idx] if idx < len(self.timeline) else {}
-            btn = str(ev.get("button", "")).strip()
+        for ev in source_rows:
+            if not isinstance(ev, dict):
+                continue
+            if str(ev.get("buff_group", "")).strip() != group:
+                continue
+            btn = str(ev.get("button", "")).strip().lower()
             if btn and btn not in buttons:
                 buttons.append(btn)
         return {
@@ -2079,6 +2065,8 @@ class App:
             "round_traces": []
         }
         lines = []
+        lines.append("round | group_id | src_range -> dst_range | picked_slot | self_picked | color")
+        lines.append("-" * 84)
         for trace in traces:
             if not isinstance(trace, dict):
                 continue
@@ -2099,34 +2087,30 @@ class App:
             picked_slot = trace.get("picked_slot", trace.get("pickedIdx"))
             self_picked = bool(trace.get("self_picked", False))
             color = str(trace.get("color", "")).strip().lower()
-            trace_with_group_meta = dict(trace)
-            trace_with_group_meta["group_label"] = group_label
-            trace_with_group_meta["group_buttons"] = list(group_meta["group_buttons"])
+            trace_with_group_meta = {
+                "round": round_no,
+                "group_id": group,
+                "group_label": group_label,
+                "src_range": src_range,
+                "dst_range": dst_range,
+                "picked_slot": picked_slot,
+                "self_picked": bool(self_picked),
+                "color": color,
+                "picked_reason": reason
+            }
             payload["round_traces"].append(trace_with_group_meta)
-            lines.append("{} 候選池: {} / 可用池: {}".format(group_label, candidate_list, free_candidate_list))
-            lines.append("骰點: pos={} dice={}".format(picked_pos, dice_value))
             lines.append(
-                "runtime trace: group_id={} src_range={} dst_range={} picked_slot={} self_picked={} color={}".format(
+                "{:>5} | {:>8} | {} -> {} | {:>11} | {:>11} | {}".format(
+                    str(round_no),
                     group,
                     src_range,
                     dst_range,
-                    picked_slot,
+                    str(picked_slot),
                     str(self_picked).lower(),
                     color
                 )
             )
-            if result == "applied":
-                lines.append("idx {} = 淺藍".format(idx))
-                lines.append("本輪 {} 套用 idx {}（淺藍，原因：{}）".format(group_label, idx, self._round_trace_reason_label(reason)))
-            else:
-                if reason is None:
-                    print("[RoundTrace warning] round {} kept 缺少 reason".format(round_no))
-                lines.append("本輪 {} 維持原位 idx {}（anchor {}，淺黃，原因：{}）".format(
-                    group_label,
-                    idx,
-                    anchor_idx,
-                    self._round_trace_reason_label(reason)
-                ))
+            lines.append("      {}，原因：{}".format(group_label, self._round_trace_reason_label(reason)))
 
         self.text.delete("1.0", tk.END)
         if lines:
@@ -3397,10 +3381,13 @@ class App:
             ev["runtime_source_index"] = idx
         events = [ev for ev in events if str(ev.get("type", "")).strip().lower() in ("press", "release")]
         for ev in events:
-            ev["runtime_block_assignments"] = block_assignments
             group = str(ev.get("buff_group", "")).strip()
             if group in trace_by_group:
-                ev["runtime_round_trace"] = dict(trace_by_group[group])
+                trace = trace_by_group[group]
+                ev["runtime_round"] = int(trace.get("round", 0) or 0)
+                ev["runtime_picked_slot"] = int(trace.get("picked_slot", trace.get("pickedIdx", ev.get("runtime_landed_index", 0))) or 0)
+                ev["runtime_self_picked"] = 1 if bool(trace.get("self_picked", False)) else 0
+                ev["runtime_group_color"] = str(trace.get("color", ev.get("runtime_group_color", ""))).strip().lower()
 
         resolve_note = ""
         if resolved_groups:
