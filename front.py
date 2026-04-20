@@ -2445,6 +2445,15 @@ class App:
             elif runtime_status == "skipped_by_cooldown":
                 buff_group = "{}（冷卻中）".format(original_buff_group) if original_buff_group else "冷卻中"
             at_value = "{:.2f}".format(float(ev["at"]))
+            buff_cycle_value = ev.get("buff_cycle_sec", 0.0)
+            buff_cycle_display = buff_cycle_value
+            if runtime_state == "running":
+                base_cycle = _safe_float(ev.get("runtime_buff_cycle_base", buff_cycle_value))
+                applied_cycle = _safe_float(ev.get("runtime_buff_cycle_applied", buff_cycle_value))
+                if base_cycle > 0.0 and abs(applied_cycle - base_cycle) > 1e-9:
+                    buff_cycle_display = "{:.4f} ({:.4f})".format(base_cycle, applied_cycle)
+                else:
+                    buff_cycle_display = "{:.4f}".format(applied_cycle)
             tags = []
             row_type = str(ev.get("type", "")).strip().lower()
             if row_type == "randat":
@@ -2490,7 +2499,7 @@ class App:
                 at_value,
                 ev["at_jitter"],
                 buff_group,
-                ev.get("buff_cycle_sec", 0.0),
+                buff_cycle_display,
                 ev.get("buff_jitter_sec", 0.0),
                 grp_display
             ), tags=tuple(tags))
@@ -3388,11 +3397,22 @@ class App:
             for item in round_traces
             if isinstance(item, dict) and str(item.get("buffGroup", "")).strip()
         }
+        group_cycle_roll = {}
         for ev in events:
             ev["at"] = apply_positive_jitter(ev.get("at", 0.0), ev.get("at_jitter", 0.0))
             cycle = max(0.0, _safe_float(ev.get("buff_cycle_sec", 0.0)))
             jitter = max(0.0, _safe_float(ev.get("buff_jitter_sec", 0.0)))
-            ev["buff_cycle_sec"] = round(cycle + random.uniform(0.0, jitter), 4)
+            group = str(ev.get("buff_group", "")).strip()
+            cycle_key = group if group else "__nogroup_{}".format(id(ev))
+            if cycle > 0.0:
+                if cycle_key not in group_cycle_roll:
+                    group_cycle_roll[cycle_key] = round(cycle + random.uniform(0.0, jitter), 4)
+                rolled_cycle = group_cycle_roll[cycle_key]
+            else:
+                rolled_cycle = round(cycle, 4)
+            ev["runtime_buff_cycle_base"] = round(cycle, 4)
+            ev["runtime_buff_cycle_applied"] = round(rolled_cycle, 4)
+            ev["buff_cycle_sec"] = round(rolled_cycle, 4)
             ev["buff_jitter_sec"] = round(jitter, 4)
             ev["at_random_sec"] = 0.0
         for idx, ev in enumerate(events):
