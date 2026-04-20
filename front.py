@@ -20,6 +20,7 @@ NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 RUNTIME_POLL_INTERVAL_MS = 300
 CONTROL_REQUEST_TIMEOUT_SEC = 1.2
 STATUS_REQUEST_TIMEOUT_SEC = 0.45
+FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
 ROUND_TRACE_REASON_LABELS = {
     "randat_disabled": "未啟用 randat（無可用 randat 列）",
     "fallback_no_free_slot": "無可用 idx（候選位置皆被占用）",
@@ -1048,8 +1049,11 @@ class App:
                     kind = self._classify_request_error(last_err)
                     err_msg = str(last_err)
                     if kind == "timeout":
-                        if action in {"run_timeline", "run_timeline_loop", "run_macro", "stop"}:
-                            err_msg = "{}（可能已送達但未收到回應，請先確認後端實際狀態）".format(err_msg)
+                        if channel == "control" and action in {"run_timeline", "run_timeline_loop", "run_macro", "stop"}:
+                            err_msg = "控制請求逾時：未在 {:.2f} 秒內收到 ACK 回應（action={}）".format(
+                                req_timeout,
+                                action or "unknown"
+                            )
                         else:
                             err_msg = "{}（未收到回應）".format(err_msg)
                     err = "[{}:{}] {}".format(channel, kind, err_msg)
@@ -1165,6 +1169,7 @@ class App:
         self.front_loop_after_id = None
         self.front_loop_round = 0
         self.last_prepared_payload = {}
+        self.first_event_progress_watch = {}
         self.json_view_mode_var = tk.StringVar(value="preview")
 
         container = tk.Frame(root)
@@ -1834,6 +1839,7 @@ class App:
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
                     state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+                    self._check_first_event_progress_timeout(state)
                     if state == "running":
                         self.runtime_manual_restore_active = False
                         self.runtime_display_frozen = False
@@ -1863,6 +1869,86 @@ class App:
         self.runtime_recent_skipped_indices = []
         self.runtime_latest_index = None
         self.last_runtime_signature = ""
+        self._reset_first_event_progress_watch()
+
+    def _reset_first_event_progress_watch(self):
+        self.first_event_progress_watch = {}
+
+    def _extract_first_event_timing(self, prepared_events):
+        first_event_at = None
+        first_event_jitter = 0.0
+        for ev in prepared_events or []:
+            if not isinstance(ev, dict):
+                continue
+            try:
+                at_value = float(ev.get("at", 0.0))
+            except Exception:
+                continue
+            if first_event_at is None or at_value < first_event_at:
+                first_event_at = at_value
+                try:
+                    first_event_jitter = max(0.0, float(ev.get("at_jitter", 0.0)))
+                except Exception:
+                    first_event_jitter = 0.0
+
+        if first_event_at is None:
+            return None
+        return {
+            "first_event_at": float(first_event_at),
+            "first_event_jitter": float(first_event_jitter)
+        }
+
+    def _arm_first_event_progress_watch(self, sent_at_monotonic, send_delay_sec, first_event_timing):
+        if not first_event_timing:
+            self._reset_first_event_progress_watch()
+            return
+        first_event_at = float(first_event_timing["first_event_at"])
+        first_event_jitter = float(first_event_timing["first_event_jitter"])
+
+        grace_sec = FIRST_EVENT_DEADLINE_GRACE_SEC + first_event_jitter
+        self.first_event_progress_watch = {
+            "sent_at_monotonic": float(sent_at_monotonic),
+            "send_delay_sec": float(send_delay_sec or 0.0),
+            "first_event_at": float(first_event_at),
+            "first_event_jitter": float(first_event_jitter),
+            "grace_sec": float(grace_sec),
+            "expected_first_event_deadline": float(sent_at_monotonic) + float(first_event_at) + float(grace_sec),
+            "timeout_reported": False
+        }
+
+    def _check_first_event_progress_timeout(self, runtime_state):
+        watch = self.first_event_progress_watch if isinstance(self.first_event_progress_watch, dict) else {}
+        if not watch:
+            return
+
+        state = str(runtime_state or "").strip().lower()
+        if state in {"stopped", "idle", "error"}:
+            return
+
+        processed_count_raw = self.timeline_runtime_info.get("processed_count", 0)
+        try:
+            processed_count = int(processed_count_raw)
+        except Exception:
+            processed_count = 0
+        if processed_count > 0:
+            return
+
+        deadline = watch.get("expected_first_event_deadline")
+        try:
+            deadline = float(deadline)
+        except Exception:
+            return
+
+        if time.monotonic() < deadline:
+            return
+        if watch.get("timeout_reported"):
+            return
+
+        msg = "已收到執行請求，但超過預期首事件時間仍無執行紀錄"
+        self.set_frontend_error(msg)
+        self.set_status(msg)
+        watch["timeout_reported"] = True
+        self.first_event_progress_watch = watch
 
     def focus_latest_runtime_row(self):
         if self.runtime_latest_index is None:
@@ -2592,6 +2678,7 @@ class App:
             self.update_current_labels()
 
             self.set_frontend_error("")
+            self._reset_first_event_progress_watch()
             self.request_pi({"action": "stop"})
             self.runtime_manual_restore_active = False
             self.runtime_display_frozen = bool(self.has_pre_run_snapshot)
@@ -2646,19 +2733,26 @@ class App:
             self.refresh_tree()
             delay = self.apply_send_delay_if_needed()
             res = self.request_pi(payload, write_response=False)
+            sent_at_monotonic = time.monotonic()
+            first_event_timing = self._extract_first_event_timing(prepared_events)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
                 "send_delay_sec": delay,
+                "sent_at_monotonic": sent_at_monotonic,
+                "first_event_at": first_event_timing["first_event_at"] if first_event_timing else None,
                 "request": payload,
                 "response": res
             })
 
             if res.get("status") == "stopped":
+                self._reset_first_event_progress_watch()
                 self.set_status("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
             elif res.get("status") in ("error", "busy"):
+                self._reset_first_event_progress_watch()
                 self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
             else:
+                self._arm_first_event_progress_watch(sent_at_monotonic, delay, first_event_timing)
                 suffix = ""
                 if resolve_note:
                     suffix = "（{}）".format(resolve_note)
@@ -2720,19 +2814,25 @@ class App:
             else:
                 delay = 0.0
             res = self.request_pi(payload, write_response=False)
+            sent_at_monotonic = time.monotonic()
+            first_event_timing = self._extract_first_event_timing(prepared_events)
             self.write_text({
                 "sending_name": display_name,
                 "pi_host": self.config["pi_host"],
                 "send_delay_sec": delay,
+                "sent_at_monotonic": sent_at_monotonic,
+                "first_event_at": first_event_timing["first_event_at"] if first_event_timing else None,
                 "request": payload,
                 "response": res
             })
             if res.get("status") in ("error", "busy"):
+                self._reset_first_event_progress_watch()
                 self.front_loop_after_id = self.root.after(
                     300,
                     lambda: self._dispatch_front_loop_once(display_name)
                 )
                 return
+            self._arm_first_event_progress_watch(sent_at_monotonic, delay, first_event_timing)
 
             self.front_loop_round += 1
             suffix = ""
