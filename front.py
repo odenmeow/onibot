@@ -18,7 +18,7 @@ BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 RUNTIME_POLL_INTERVAL_MS = 300
-CONTROL_REQUEST_TIMEOUT_SEC = 1.2
+CONTROL_REQUEST_TIMEOUT_SEC = 5.0
 STATUS_REQUEST_TIMEOUT_SEC = 0.45
 FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
 ROUND_TRACE_REASON_LABELS = {
@@ -421,8 +421,16 @@ def build_overlap_summary(timeline):
 
     summary = []
     for i, grp in enumerate(groups):
+        buttons = []
+        for ev in grp:
+            btn = str(ev.get("button", "")).strip()
+            if btn and btn not in buttons:
+                buttons.append(btn)
+        buttons_text = "+".join(buttons) if buttons else "-"
         summary.append({
             "group": i,
+            "group_buttons": buttons,
+            "group_label": "group {} ({})".format(i, buttons_text),
             "at_range": [grp[0]["at"], grp[-1]["at"]],
             "events": grp
         })
@@ -1701,6 +1709,46 @@ class App:
     def _round_trace_reason_label(self, reason):
         return ROUND_TRACE_REASON_LABELS.get(str(reason or "").strip(), "未知原因")
 
+    def _format_group_label(self, group, buttons=None):
+        group_text = str(group).strip()
+        if not isinstance(buttons, list):
+            buttons = []
+        normalized_buttons = []
+        for raw in buttons:
+            btn = str(raw).strip()
+            if btn and btn not in normalized_buttons:
+                normalized_buttons.append(btn)
+        if normalized_buttons:
+            return "group {} ({})".format(group_text, "+".join(normalized_buttons))
+        return "group {}".format(group_text)
+
+    def _runtime_trace_group_meta(self, trace):
+        group = str(trace.get("buffGroup", "")).strip()
+        candidate_idx_list = trace.get("candidateIdxList", [])
+        if not isinstance(candidate_idx_list, list):
+            candidate_idx_list = []
+        idx_pool = []
+        for raw_idx in candidate_idx_list + [trace.get("anchorIdx"), trace.get("pickedIdx")]:
+            try:
+                idx = int(raw_idx)
+            except Exception:
+                continue
+            if idx < 0 or idx >= len(self.timeline):
+                continue
+            if idx not in idx_pool:
+                idx_pool.append(idx)
+        buttons = []
+        for idx in idx_pool:
+            ev = self.timeline[idx] if idx < len(self.timeline) else {}
+            btn = str(ev.get("button", "")).strip()
+            if btn and btn not in buttons:
+                buttons.append(btn)
+        return {
+            "group": group,
+            "group_buttons": buttons,
+            "group_label": self._format_group_label(group, buttons)
+        }
+
     def render_runtime_analysis(self, force=False):
         mode_var = getattr(self, "json_view_mode_var", None)
         mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
@@ -1713,14 +1761,16 @@ class App:
             "state": runtime.get("state"),
             "processed_count": runtime.get("processed_count"),
             "events_total": runtime.get("events_total"),
-            "round_traces": traces
+            "round_traces": []
         }
         lines = []
         for trace in traces:
             if not isinstance(trace, dict):
                 continue
             round_no = trace.get("round")
-            group = trace.get("buffGroup", "")
+            group_meta = self._runtime_trace_group_meta(trace)
+            group = group_meta["group"]
+            group_label = group_meta["group_label"]
             idx = trace.get("pickedIdx")
             anchor_idx = trace.get("anchorIdx")
             candidate_list = trace.get("candidateIdxList", [])
@@ -1729,16 +1779,20 @@ class App:
             dice_value = trace.get("diceValue")
             result = str(trace.get("result", "")).strip().lower()
             reason = trace.get("pickedReason", trace.get("reason"))
-            lines.append("group {} 候選池: {} / 可用池: {}".format(group, candidate_list, free_candidate_list))
+            trace_with_group_meta = dict(trace)
+            trace_with_group_meta["group_label"] = group_label
+            trace_with_group_meta["group_buttons"] = list(group_meta["group_buttons"])
+            payload["round_traces"].append(trace_with_group_meta)
+            lines.append("{} 候選池: {} / 可用池: {}".format(group_label, candidate_list, free_candidate_list))
             lines.append("骰點: pos={} dice={}".format(picked_pos, dice_value))
             if result == "applied":
                 lines.append("idx {} = 淺藍".format(idx))
-                lines.append("本輪 group {} 套用 idx {}（淺藍，原因：{}）".format(group, idx, self._round_trace_reason_label(reason)))
+                lines.append("本輪 {} 套用 idx {}（淺藍，原因：{}）".format(group_label, idx, self._round_trace_reason_label(reason)))
             else:
                 if reason is None:
                     print("[RoundTrace warning] round {} kept 缺少 reason".format(round_no))
-                lines.append("本輪 group {} 維持原位 idx {}（anchor {}，淺黃，原因：{}）".format(
-                    group,
+                lines.append("本輪 {} 維持原位 idx {}（anchor {}，淺黃，原因：{}）".format(
+                    group_label,
                     idx,
                     anchor_idx,
                     self._round_trace_reason_label(reason)
@@ -2021,9 +2075,13 @@ class App:
 
         for grp in summary:
             group_id = grp["group"]
+            group_label = grp.get("group_label", self._format_group_label(group_id, grp.get("group_buttons", [])))
             for ev in grp["events"]:
                 key = (ev["type"], ev["button"], ev["at"])
-                event_to_group[key] = group_id
+                event_to_group[key] = {
+                    "group": group_id,
+                    "group_label": group_label
+                }
 
         cooldown_by_row = self._runtime_cooldown_by_row()
         runtime_landing = self._runtime_landing_map()
@@ -2035,7 +2093,13 @@ class App:
         for i, ev in enumerate(self.timeline):
             self._sync_replicated_row(ev)
             key = (ev["type"], ev["button"], ev["at"])
-            grp = event_to_group.get(key, "")
+            grp_meta = event_to_group.get(key, {})
+            if isinstance(grp_meta, dict):
+                grp = grp_meta.get("group", "")
+                grp_display = grp_meta.get("group_label", grp)
+            else:
+                grp = grp_meta
+                grp_display = grp
             original_buff_group = str(ev.get("buff_group", "")).strip()
             buff_group = original_buff_group
             runtime_event = self.timeline_runtime_by_index.get(i, {})
@@ -2086,7 +2150,7 @@ class App:
                 buff_group,
                 ev.get("buff_cycle_sec", 0.0),
                 ev.get("buff_jitter_sec", 0.0),
-                grp
+                grp_display
             ), tags=tuple(tags))
 
     def _is_runtime_readonly(self):

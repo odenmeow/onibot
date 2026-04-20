@@ -39,13 +39,13 @@ runtime_lock = threading.Lock()
 
 current_run_thread = None
 current_run_status = {
-    "state": "idle",   # idle / running / stopped / error
+    "state": "idle",   # idle / running / stopping / stopped / error
     "mode": "",
     "message": ""
 }
 timeline_runtime = {
     "run_id": 0,
-    "state": "idle",   # idle / running / stopped / error / done
+    "state": "idle",   # idle / running / stopping / stopped / error / done
     "mode": "",
     "loop_count": 0,
     "events_total": 0,
@@ -514,19 +514,35 @@ def run_macro_background(steps):
         }
 
 
+def _release_all_background():
+    global current_run_status
+    try:
+        release_all()
+    finally:
+        state = str(current_run_status.get("state", "")).strip().lower()
+        if state == "stopping":
+            current_run_status = {
+                "state": "stopped",
+                "mode": current_run_status.get("mode", ""),
+                "message": "已停止，GPIO 全部釋放"
+            }
+            patch_timeline_runtime(state="stopped")
+
+
 def stop_current_run():
     global current_run_status
     stop_event.set()
-    release_all()
+    mode = current_run_status.get("mode", "")
     current_run_status = {
-        "state": "stopped",
-        "mode": current_run_status.get("mode", ""),
-        "message": "已送出停止指令，並釋放所有 GPIO"
+        "state": "stopping",
+        "mode": mode,
+        "message": "已收到停止指令，正在停止並釋放 GPIO"
     }
-    patch_timeline_runtime(state="stopped")
+    patch_timeline_runtime(state="stopping")
+    threading.Thread(target=_release_all_background, daemon=True).start()
     return {
         "status": "ok",
-        "message": "已送出停止指令，並釋放所有 GPIO"
+        "message": "已收到停止指令"
     }
 
 
