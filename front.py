@@ -777,6 +777,9 @@ def allocate_randat_blocks(events, execution_round=1):
         "mix_slot_mapping": {},
         "mix_slot_mapping_done": [],
         "table_b_before_insert": [],
+        "apply_order": [],
+        "placement_ledger": [],
+        "group_final_positions": {},
         "at_rebase": {
             "first_at_before_shift": 0.0,
             "target_first_at": 0.3,
@@ -1007,12 +1010,54 @@ def allocate_randat_blocks(events, execution_round=1):
                 "back_gap": back_gap,
             }
 
-        reorder_order = sorted(
+        apply_order = sorted(
             block_assignments.keys(),
             key=lambda gid: (int(block_assignments[gid]["picked_slot"]), _group_sort_key(gid))
         )
+        runtime_debug["apply_order"] = [str(gid) for gid in apply_order]
+        a_to_b_mapper = {}
+        for b_idx_str, a_idx in runtime_debug.get("b_to_a_mapper", {}).items():
+            try:
+                a_to_b_mapper[int(a_idx)] = int(b_idx_str)
+            except Exception:
+                continue
+        running_offset = 0
+        placement_ledger = []
+        group_final_positions = {}
+        for group in apply_order:
+            assign = block_assignments.get(group, {})
+            picked_slot_a_idx = int(assign.get("picked_slot", -1))
+            block_len = int(blocks.get(group, {}).get("span_len", 1))
+            base_b_idx_before_offset = a_to_b_mapper.get(picked_slot_a_idx)
+            if base_b_idx_before_offset is None:
+                base_b_idx_before_offset = -1
+            offset_before = int(running_offset)
+            final_b_idx_after_offset = int(base_b_idx_before_offset + offset_before)
+            final_b_end = int(final_b_idx_after_offset + block_len - 1)
+            offset_after = int(offset_before + max(0, block_len - 1))
+            entry = {
+                "group_id": str(group),
+                "picked_slot_a_idx": picked_slot_a_idx,
+                "base_b_idx_before_offset": int(base_b_idx_before_offset),
+                "offset_before": offset_before,
+                "offset_after": offset_after,
+                "final_b_idx_after_offset": final_b_idx_after_offset,
+                "block_len": int(block_len),
+                "final_b_range": [final_b_idx_after_offset, final_b_end],
+                "color_mode": ("yellow" if bool(assign.get("self_picked", False)) else "blue")
+            }
+            placement_ledger.append(entry)
+            group_final_positions[str(group)] = dict(entry)
+            running_offset += max(0, block_len - 1)
+            round_trace = assign.get("round_trace")
+            if isinstance(round_trace, dict):
+                round_trace["placement"] = dict(entry)
+
+        runtime_debug["placement_ledger"] = placement_ledger
+        runtime_debug["group_final_positions"] = group_final_positions
+
         reordered = list(working)
-        for group in reorder_order:
+        for group in apply_order:
             rows = [row for row in reordered if str(row.get("__runtime_gid", "")).strip() == str(group)]
             if not rows:
                 continue
@@ -2620,6 +2665,9 @@ class App:
             "b_group_mapper": {},
             "linker_to_mix_slot_show": {},
             "b_to_a_mapper": {},
+            "apply_order": [],
+            "placement_ledger": [],
+            "group_final_positions": {},
             "at_rebase": {}
         }
         prepared_payload = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
@@ -2633,6 +2681,9 @@ class App:
             payload["b_group_mapper"] = copy.deepcopy(prepared_runtime_meta.get("b_group_mapper", {}))
             payload["linker_to_mix_slot_show"] = copy.deepcopy(prepared_runtime_meta.get("linker_to_mix_slot_show", {}))
             payload["b_to_a_mapper"] = copy.deepcopy(prepared_runtime_meta.get("b_to_a_mapper", {}))
+            payload["apply_order"] = copy.deepcopy(prepared_runtime_meta.get("apply_order", []))
+            payload["placement_ledger"] = copy.deepcopy(prepared_runtime_meta.get("placement_ledger", []))
+            payload["group_final_positions"] = copy.deepcopy(prepared_runtime_meta.get("group_final_positions", {}))
             payload["at_rebase"] = copy.deepcopy(prepared_runtime_meta.get("at_rebase", {}))
         lines = []
         warning_lines = []
@@ -2693,7 +2744,8 @@ class App:
                     "free_candidate_idx_list": free_candidate_list,
                     "picked_candidate_pos": picked_pos,
                     "dice_value": dice_value
-                }
+                },
+                "placement": copy.deepcopy(trace.get("placement", {}))
             }
             payload["round_traces"].append(trace_with_group_meta)
             payload["draws"].append({
@@ -2735,9 +2787,42 @@ class App:
                     picked_slot = trace.get("picked_slot", trace.get("pickedIdx"))
                     self_picked = bool(trace.get("self_picked", False))
                     reason = trace.get("pickedReason", trace.get("reason"))
-                    picked_text = "self" if self_picked else "idx {}".format(str(picked_slot))
-                    lines.append("Draw {}/{}（群組抽籤次序）: {} -> picked {}".format(draw_order, total_groups, group_label, picked_text))
+                    placement = trace.get("placement", {})
+                    if not isinstance(placement, dict):
+                        placement = {}
+                    picked_a = placement.get("picked_slot_a_idx", picked_slot)
+                    base_b = placement.get("base_b_idx_before_offset", -1)
+                    final_range = placement.get("final_b_range", [])
+                    if isinstance(final_range, list) and len(final_range) >= 2:
+                        final_b_text = "{}~{}".format(final_range[0], final_range[1])
+                    else:
+                        final_b = placement.get("final_b_idx_after_offset", -1)
+                        final_b_text = "{}".format(final_b)
+                    lines.append(
+                        "Draw {}/{}（群組抽籤次序）: {} -> picked A-slot={}, base B={}, final B={}".format(
+                            draw_order,
+                            total_groups,
+                            group_label,
+                            picked_a,
+                            base_b,
+                            final_b_text
+                        )
+                    )
                     lines.append("  reason={}".format(self._round_trace_reason_label(reason)))
+                if payload.get("group_final_positions"):
+                    lines.append("Final positions:")
+                    for group_id in payload.get("apply_order", []):
+                        info = payload["group_final_positions"].get(str(group_id), {})
+                        if not isinstance(info, dict):
+                            continue
+                        a_slot = info.get("picked_slot_a_idx", -1)
+                        base_b = info.get("base_b_idx_before_offset", -1)
+                        b_range = info.get("final_b_range", [])
+                        if isinstance(b_range, list) and len(b_range) >= 2:
+                            range_text = "{}~{}".format(b_range[0], b_range[1])
+                        else:
+                            range_text = str(info.get("final_b_idx_after_offset", -1))
+                        lines.append("  group{}: A{} -> base B{} -> final B{}".format(group_id, a_slot, base_b, range_text))
                 lines.append(
                     "Consistency: expected_groups={} / actual_draws={}".format(
                         expected_groups,
@@ -4719,6 +4804,9 @@ class App:
                 "b_group_mapper": copy.deepcopy(randat_debug.get("b_group_mapper", {})),
                 "linker_to_mix_slot_show": copy.deepcopy(randat_debug.get("linker_to_mix_slot_show", {})),
                 "b_to_a_mapper": copy.deepcopy(randat_debug.get("b_to_a_mapper", {})),
+                "apply_order": copy.deepcopy(randat_debug.get("apply_order", [])),
+                "placement_ledger": copy.deepcopy(randat_debug.get("placement_ledger", [])),
+                "group_final_positions": copy.deepcopy(randat_debug.get("group_final_positions", {})),
                 "at_rebase": copy.deepcopy(randat_debug.get("at_rebase", {}))
             },
             "resolve_note": resolve_note

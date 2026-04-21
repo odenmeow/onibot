@@ -229,7 +229,15 @@ def _extract_runtime_diag_from_start_task(data):
     diag = {}
     normalized_round_traces = []
     if isinstance(runtime_meta, dict):
-        for key in ("rslot_count", "randat_executed", "picked_reason", "draw_result"):
+        for key in (
+            "rslot_count",
+            "randat_executed",
+            "picked_reason",
+            "draw_result",
+            "apply_order",
+            "placement_ledger",
+            "group_final_positions"
+        ):
             if key in runtime_meta:
                 diag[key] = runtime_meta.get(key)
         normalized_round_traces = _normalize_round_traces_payload(runtime_meta.get("round_traces"))
