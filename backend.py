@@ -1064,6 +1064,14 @@ def handle_request(data):
             incoming_execution_round = int(incoming_execution_round or 0)
         except Exception:
             incoming_execution_round = 0
+        if incoming_execution_round <= 0:
+            runtime_meta_for_round = data.get("runtime_meta", {})
+            if isinstance(runtime_meta_for_round, dict):
+                try:
+                    incoming_execution_round = int(runtime_meta_for_round.get("execution_round", 0) or 0)
+                except Exception:
+                    incoming_execution_round = 0
+        incoming_execution_round = max(1, incoming_execution_round)
         skip_mode_values = [str(row.get("skip_mode", "")).strip().lower() for row in data.get("timeline", []) if isinstance(row, dict)]
         chosen_skip_mode = next((mode for mode in skip_mode_values if mode), BUFF_SKIP_MODE_WALK)
         buff_skip_mode, deprecated_alias = normalize_buff_skip_mode(chosen_skip_mode)
@@ -1072,7 +1080,7 @@ def handle_request(data):
         pause_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
-            args=(events, buff_skip_mode, max(0, incoming_runtime_version), max(0, incoming_execution_round)),
+            args=(events, buff_skip_mode, max(0, incoming_runtime_version), incoming_execution_round),
             daemon=True
         )
         current_run_thread.start()
@@ -1082,7 +1090,7 @@ def handle_request(data):
             patch_timeline_runtime(runtime_diag=incoming_runtime_diag)
         patch_timeline_runtime(
             runtime_version=max(0, incoming_runtime_version),
-            execution_round=max(0, incoming_execution_round)
+            execution_round=incoming_execution_round
         )
         runtime_snapshot = get_timeline_runtime_snapshot()
         return {

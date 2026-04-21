@@ -174,6 +174,7 @@
   "sent_at_ms": 1234567890,
   "origin_version": 7,
   "runtime_version": 23,
+  "execution_round": 1,
   "timeline": [
     {
       "idx": 37,
@@ -204,8 +205,13 @@
 - `sent_at_ms`
 - `origin_version`
 - `runtime_version`
+- `execution_round`（整數，且 `>=1`）
 - `timeline[]`（每列至少：`idx`, `at_ms`, `action`, `btn`, `skip_mode`）
 - `runtime_meta`（抽籤輸入與結果）
+
+相容說明：
+- `execution_round` 主來源為 `start_task` payload 頂層欄位。
+- `runtime_meta.execution_round` 僅作為相容 fallback（當頂層欄位缺失或無效時才採用）。
 
 ### G.2 Ack Response
 
@@ -526,4 +532,3 @@
 - [ ] `rslot_count==0` 是否關閉抽籤與連續性強檢核。
 - [ ] Pause/Resume 是否保留同一 `server_task_id` 上下文。
 - [ ] timeout diag 是否可直接定位問題相位。
-

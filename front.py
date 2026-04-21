@@ -3507,12 +3507,38 @@ class App:
         runtime_meta = prepared.get("runtime_meta", {})
         if not isinstance(runtime_meta, dict):
             runtime_meta = {}
+        round_value = prepared.get("execution_round")
+        if round_value in (None, ""):
+            round_value = runtime_meta.get("execution_round")
+        if round_value in (None, ""):
+            round_value = int(getattr(self, "front_loop_round", 0) or 0) + 1
+        try:
+            normalized_execution_round = int(round_value)
+        except Exception:
+            normalized_execution_round = 0
+        normalized_execution_round = max(1, normalized_execution_round)
+        runtime_version_value = prepared.get("runtime_version")
+        if runtime_version_value in (None, ""):
+            runtime_version_value = runtime_meta.get("runtime_version")
+        try:
+            normalized_runtime_version = int(runtime_version_value or 0)
+        except Exception:
+            normalized_runtime_version = 0
+        round_traces_payload = prepared.get("round_traces")
+        if not isinstance(round_traces_payload, list):
+            round_traces_payload = []
+        payload["execution_round"] = normalized_execution_round
+        payload["runtime_version"] = normalized_runtime_version
+        payload["round_traces"] = copy.deepcopy(round_traces_payload)
         if not runtime_meta and prepared:
             runtime_meta = {
                 "rslot_count": int(prepared.get("rslot_count", 0) or 0),
                 "randat_executed": bool(prepared.get("rslot_count", 0)),
                 "draw_result": copy.deepcopy(prepared.get("block_assignments", {}))
             }
+        runtime_meta = copy.deepcopy(runtime_meta) if isinstance(runtime_meta, dict) else {}
+        runtime_meta["execution_round"] = normalized_execution_round
+        runtime_meta["runtime_version"] = normalized_runtime_version
         if runtime_meta:
             payload["runtime_meta"] = runtime_meta
         return payload
@@ -4489,12 +4515,20 @@ class App:
         if not isinstance(payload, dict):
             return None
         round_value = payload.get("execution_round")
-        if round_value is None:
-            return None
         try:
             execution_round = int(round_value)
         except Exception:
-            return None
+            execution_round = 0
+        if execution_round <= 0:
+            prepared = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
+            fallback_round = prepared.get("execution_round")
+            if fallback_round in (None, ""):
+                fallback_round = int(getattr(self, "front_loop_round", 0) or 0) + 1
+            try:
+                execution_round = int(fallback_round or 0)
+            except Exception:
+                execution_round = 0
+        execution_round = max(1, execution_round)
         try:
             processed_count = int(payload.get("processed_count", 0) or 0)
         except Exception:
