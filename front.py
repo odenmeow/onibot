@@ -611,34 +611,28 @@ def apply_positive_jitter(base_value, jitter):
 
 def allocate_randat_blocks(events):
     working = [dict(ev) for ev in events]
-    randat_slots = [
+    rslot = [
         idx for idx, ev in enumerate(working)
         if str(ev.get("type", "")).strip().lower() == "randat"
     ]
 
     blocks = {}
-    group_order = []
+    bslot = []
     for idx, ev in enumerate(working):
         group = str(ev.get("buff_group", "")).strip()
         if not group:
             continue
         if group not in blocks:
-            blocks[group] = {"first": idx, "last": idx, "indices": [idx]}
-            group_order.append(group)
+            blocks[group] = {"first": idx, "indices": [idx]}
+            bslot.append(idx)
         else:
-            blocks[group]["last"] = idx
             blocks[group]["indices"].append(idx)
 
-    for group in group_order:
+    for group in blocks:
         first = blocks[group]["first"]
-        last = blocks[group]["last"]
-        blocks[group]["rows_len"] = len(blocks[group]["indices"])
-        blocks[group]["span_len"] = (last - first) + 1
-        blocks[group]["at_anchor"] = max(0.0, _safe_float(working[first].get("at", 0.0)))
-        blocks[group]["at_offsets"] = [
-            round(max(0.0, _safe_float(working[i].get("at", 0.0)) - blocks[group]["at_anchor"]), 4)
-            for i in range(first, last + 1)
-        ]
+        indices = list(blocks[group]["indices"])
+        blocks[group]["rows_len"] = len(indices)
+        blocks[group]["span_len"] = len(indices)
 
     for idx, ev in enumerate(working):
         group = str(ev.get("buff_group", "")).strip()
@@ -647,90 +641,55 @@ def allocate_randat_blocks(events):
             continue
         ev["__runtime_gid"] = "__row_{}".format(idx)
 
-    free_slots = set(randat_slots)
+    pool = []
+    seen = set()
+    for idx in (rslot + bslot):
+        if idx in seen:
+            continue
+        seen.add(idx)
+        pool.append(idx)
 
     block_assignments = {}
     round_traces = []
-    randat_executed = bool(randat_slots)
+    randat_executed = bool(rslot)
 
-    def _find_group_range(group_id):
-        start = None
-        end = None
-        for pos, row in enumerate(working):
-            if row.get("__runtime_gid") != group_id:
-                continue
-            if start is None:
-                start = pos
-            end = pos
-        if start is None or end is None:
-            return None, None
-        return int(start), int(end)
+    def _group_sort_key(group_id):
+        text = str(group_id).strip()
+        try:
+            return (0, int(text))
+        except Exception:
+            return (1, text)
+
+    group_order = sorted(blocks.keys(), key=_group_sort_key)
 
     for round_idx, group in enumerate(group_order, start=1):
-        src_start, src_end = _find_group_range(group)
-        if src_start is None:
-            continue
-        span_len = (src_end - src_start) + 1
-        candidates = [src_start] + [idx for idx in sorted(free_slots) if idx != src_start]
-        free_candidates = [
-            idx for idx in candidates
-            if 0 <= idx <= max(0, len(working) - span_len)
-        ]
-        dice_value = None
+        src_anchor = int(blocks[group]["first"])
+        src_range = [src_anchor, src_anchor + blocks[group]["span_len"] - 1]
+        candidates = list(pool)
         picked_candidate_pos = None
-        if free_candidates and randat_executed:
-            picked_candidate_pos = random.randrange(len(free_candidates))
-            picked_slot = free_candidates[picked_candidate_pos]
+        dice_value = None
+        if candidates:
+            picked_candidate_pos = random.randrange(len(candidates))
+            picked_slot = int(candidates[picked_candidate_pos])
+            pool.pop(picked_candidate_pos)
             reason = "random_pick"
-        elif not randat_executed:
-            picked_slot = src_start
-            reason = "randat_disabled"
         else:
-            picked_slot = src_start
+            picked_slot = src_anchor
             reason = "fallback_no_free_slot"
-        if free_candidates:
-            dice_value = round((picked_candidate_pos + 1) / float(len(free_candidates)), 4) if picked_candidate_pos is not None else None
+        if picked_candidate_pos is not None and candidates:
+            dice_value = round((picked_candidate_pos + 1) / float(len(candidates)), 4)
 
-        src_range = [src_start, src_end]
-        dst_start = int(picked_slot)
-        if dst_start > len(working):
-            dst_start = len(working)
-        moving_segment = working[src_start:src_end + 1]
-        dst_anchor_at = max(0.0, _safe_float(working[dst_start].get("at", 0.0))) if dst_start < len(working) else (
-            max(0.0, _safe_float(working[-1].get("at", 0.0))) if working else 0.0
-        )
-
-        if dst_start < src_start or dst_start > src_end + 1:
-            del working[src_start:src_end + 1]
-            if dst_start > len(working):
-                dst_start = len(working)
-            for offset, row in enumerate(moving_segment):
-                working.insert(dst_start + offset, row)
-            dst_range = [dst_start, dst_start + span_len - 1]
-        else:
-            dst_range = [src_start, src_end]
-
-        offsets = blocks[group]["at_offsets"]
-        dst_first = dst_range[0]
-        for offset, at_offset in enumerate(offsets):
-            idx = dst_first + offset
-            if 0 <= idx < len(working):
-                working[idx]["at"] = round(max(0.0, dst_anchor_at + at_offset), 4)
-
-        if picked_slot != src_range[0]:
-            free_slots.discard(picked_slot)
-            free_slots.add(src_range[0])
-
-        self_picked = (picked_slot == blocks[group]["first"] and dst_range[0] == blocks[group]["first"])
+        dst_range = [picked_slot, picked_slot + blocks[group]["span_len"] - 1]
+        self_picked = (picked_slot == src_anchor)
         color = "light_yellow" if self_picked else "light_blue"
-        result = "kept" if src_range == dst_range else "applied"
+        result = "kept" if self_picked else "applied"
         round_trace = {
             "round": round_idx,
             "buffGroup": group,
             "group_id": group,
             "anchorIdx": blocks[group]["first"],
             "candidateIdxList": candidates,
-            "freeCandidateIdxList": free_candidates,
+            "freeCandidateIdxList": candidates,
             "pickedCandidatePos": picked_candidate_pos,
             "diceValue": dice_value,
             "pickedIdx": picked_slot,
@@ -747,7 +706,7 @@ def allocate_randat_blocks(events):
         block_assignments[group] = {
             "group": group,
             "anchor_index": blocks[group]["first"],
-            "landed_index": dst_range[0],
+            "landed_index": picked_slot,
             "occupies_original": bool(self_picked),
             "src_range": src_range,
             "dst_range": dst_range,
