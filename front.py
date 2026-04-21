@@ -27,6 +27,11 @@ FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
 ACK_TIMEOUT_MS = 1500
 START_TIMEOUT_MS = 5000
 PROGRESS_STALL_MS = 3000
+PROGRESS_STALL_FALLBACK_MS = 8000
+PROGRESS_PREDICT_JITTER_BUDGET_MS = 1500
+PROGRESS_PREDICT_GRACE_MS = 900
+PROGRESS_TIMEOUT_MIN_MS = 2000
+PROGRESS_TIMEOUT_MAX_MS = 30000
 HANDSHAKE_ACTION = "status"
 ROUND_TRACE_REASON_LABELS = {
     "randat_disabled": "未啟用 randat（無可用 randat 列）",
@@ -2758,7 +2763,16 @@ class App:
         except Exception:
             pass
 
-    def _mark_task_monitor_failed(self, phase, elapsed_ms, threshold_ms, last_state=""):
+    def _mark_task_monitor_failed(
+        self,
+        phase,
+        elapsed_ms,
+        threshold_ms,
+        last_state="",
+        predicted_timeout_ms=None,
+        used_threshold_ms=None,
+        fallback_mode=False
+    ):
         monitor_obj = getattr(self, "task_monitor", {})
         monitor = monitor_obj if isinstance(monitor_obj, dict) else {}
         server_task_id = str(monitor.get("server_task_id", "")).strip()
@@ -2773,12 +2787,15 @@ class App:
             "failed": True
         }
         message = (
-            "任務監控逾時（{}）\nserver_task_id={}\nlast_state={}\nelapsed_ms={}\nthreshold_ms={}".format(
+            "任務監控逾時（{}）\nserver_task_id={}\nlast_state={}\nelapsed_ms={}\nthreshold_ms={}\npredicted_timeout_ms={}\nused_threshold_ms={}\nfallback_mode={}".format(
                 str(phase or "").upper(),
                 server_task_id or "unknown",
                 self.task_monitor["last_state"] or "unknown",
                 int(max(0, elapsed_ms)),
-                int(max(0, threshold_ms))
+                int(max(0, threshold_ms)),
+                int(max(0, predicted_timeout_ms or 0)),
+                int(max(0, used_threshold_ms if used_threshold_ms is not None else threshold_ms)),
+                bool(fallback_mode)
             )
         )
         self.set_frontend_error(message)
@@ -2857,13 +2874,43 @@ class App:
             self.task_monitor = monitor
             return
 
+        runtime_info = self.timeline_runtime_info if isinstance(self.timeline_runtime_info, dict) else {}
+        progress = runtime_info.get("progress", {})
+        progress = progress if isinstance(progress, dict) else {}
+        fallback_mode = True
+        predicted_timeout_ms = None
+        used_threshold_ms = PROGRESS_STALL_FALLBACK_MS
+        next_expected_at_ms = progress.get("next_expected_at_ms")
+        last_progress_event_time_ms = progress.get("event_time_ms")
+        try:
+            next_expected_at_ms = int(next_expected_at_ms)
+            last_progress_event_time_ms = int(last_progress_event_time_ms)
+        except Exception:
+            next_expected_at_ms = None
+            last_progress_event_time_ms = None
+        if next_expected_at_ms is not None and last_progress_event_time_ms is not None:
+            predicted_timeout_ms = (
+                (next_expected_at_ms - last_progress_event_time_ms)
+                + PROGRESS_PREDICT_JITTER_BUDGET_MS
+                + PROGRESS_PREDICT_GRACE_MS
+            )
+            predicted_timeout_ms = max(
+                PROGRESS_TIMEOUT_MIN_MS,
+                min(PROGRESS_TIMEOUT_MAX_MS, int(predicted_timeout_ms))
+            )
+            used_threshold_ms = predicted_timeout_ms
+            fallback_mode = False
+
         stall_ms = int((now - float(last_progress_at)) * 1000.0)
-        if stall_ms >= PROGRESS_STALL_MS:
+        if stall_ms >= used_threshold_ms:
             self._mark_task_monitor_failed(
                 phase="PROGRESS_STALL",
                 elapsed_ms=stall_ms,
-                threshold_ms=PROGRESS_STALL_MS,
-                last_state=state or "running"
+                threshold_ms=used_threshold_ms,
+                last_state=state or "running",
+                predicted_timeout_ms=predicted_timeout_ms,
+                used_threshold_ms=used_threshold_ms,
+                fallback_mode=fallback_mode
             )
             return
         self.task_monitor = monitor
@@ -2988,11 +3035,34 @@ class App:
         if processed_count > 0:
             return
 
+        runtime_info = self.timeline_runtime_info if isinstance(self.timeline_runtime_info, dict) else {}
+        progress = runtime_info.get("progress", {})
+        progress = progress if isinstance(progress, dict) else {}
+        backend_next_expected_at_ms = progress.get("next_expected_at_ms")
+        backend_event_time_ms = progress.get("event_time_ms")
         deadline = watch.get("expected_first_event_deadline")
         try:
             deadline = float(deadline)
         except Exception:
             return
+        try:
+            backend_next_expected_at_ms = int(backend_next_expected_at_ms)
+            backend_event_time_ms = int(backend_event_time_ms)
+            if backend_next_expected_at_ms > backend_event_time_ms:
+                predicted_wait_ms = (
+                    backend_next_expected_at_ms
+                    - backend_event_time_ms
+                    + PROGRESS_PREDICT_JITTER_BUDGET_MS
+                    + PROGRESS_PREDICT_GRACE_MS
+                )
+                predicted_wait_ms = max(
+                    PROGRESS_TIMEOUT_MIN_MS,
+                    min(PROGRESS_TIMEOUT_MAX_MS, int(predicted_wait_ms))
+                )
+                backend_deadline = time.monotonic() + (predicted_wait_ms / 1000.0)
+                deadline = max(deadline, backend_deadline)
+        except Exception:
+            pass
 
         if time.monotonic() < deadline:
             return
