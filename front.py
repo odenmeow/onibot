@@ -786,14 +786,16 @@ def allocate_randat_blocks(events):
 
     block_assignments = {}
     round_traces = []
+    execution_round = 1
     randat_executed = bool(rslot)
 
     if not randat_executed:
-        for round_idx, group in enumerate(sorted(blocks.keys()), start=1):
+        for draw_order, group in enumerate(sorted(blocks.keys()), start=1):
             src_anchor = int(blocks[group]["first"])
             src_range = [src_anchor, src_anchor + blocks[group]["span_len"] - 1]
             round_trace = {
-                "round": round_idx,
+                "draw_order": draw_order,
+                "execution_round": execution_round,
                 "buffGroup": group,
                 "group_id": group,
                 "anchorIdx": src_anchor,
@@ -851,7 +853,7 @@ def allocate_randat_blocks(events):
 
     group_order = sorted(blocks.keys(), key=_group_sort_key)
 
-    for round_idx, group in enumerate(group_order, start=1):
+    for draw_order, group in enumerate(group_order, start=1):
         src_anchor = int(blocks[group]["first"])
         src_range = [src_anchor, src_anchor + blocks[group]["span_len"] - 1]
         candidates = list(pool)
@@ -873,7 +875,8 @@ def allocate_randat_blocks(events):
         color = "light_yellow" if self_picked else "light_blue"
         result = "kept" if self_picked else "applied"
         round_trace = {
-            "round": round_idx,
+            "draw_order": draw_order,
+            "execution_round": execution_round,
             "buffGroup": group,
             "group_id": group,
             "anchorIdx": blocks[group]["first"],
@@ -2380,11 +2383,13 @@ class App:
             if btn and btn not in normalized_buttons:
                 normalized_buttons.append(btn)
         if normalized_buttons:
-            return "group {} ({})".format(group_text, "+".join(normalized_buttons))
-        return "group {}".format(group_text)
+            return "group{}({})".format(group_text, "+".join(normalized_buttons))
+        return "group{}".format(group_text)
 
     def _runtime_trace_group_meta(self, trace):
         group = str(trace.get("buffGroup", "")).strip()
+        if not group:
+            group = str(trace.get("group_id", "")).strip()
         source_rows = self.runtime_working_timeline if self.runtime_working_timeline else self.timeline
         buttons = []
         for ev in source_rows:
@@ -2419,23 +2424,35 @@ class App:
             "events_total": runtime.get("events_total"),
             "rslot_count": 0,
             "randat_executed": False,
-            "round_traces": []
+            "round_traces": [],
+            "execution_round": 0,
+            "participating_groups": [],
+            "draws": [],
+            "consistency": {
+                "expected_groups": 0,
+                "actual_draws": 0,
+                "is_consistent": True
+            }
         }
         lines = []
+        warning_lines = []
         status_note = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
         if status_note:
             lines.append("狀態：{}".format(status_note))
             lines.append("-" * 84)
-        grouped_by_round = {}
+        grouped_by_execution_round = {}
+        participating_groups = []
         for trace in traces:
             if not isinstance(trace, dict):
                 continue
-            round_no = trace.get("round")
-            round_key = int(round_no) if isinstance(round_no, int) else round_no
-            grouped_by_round.setdefault(round_key, []).append(trace)
+            draw_order = trace.get("draw_order", trace.get("round"))
+            execution_round = int(trace.get("execution_round", 1) or 1)
+            grouped_by_execution_round.setdefault(execution_round, []).append(trace)
             group_meta = self._runtime_trace_group_meta(trace)
             group = group_meta["group"]
             group_label = group_meta["group_label"]
+            if group and group not in participating_groups:
+                participating_groups.append(group)
             candidate_list = trace.get("candidateIdxList", [])
             free_candidate_list = trace.get("freeCandidateIdxList", [])
             picked_pos = trace.get("pickedCandidatePos")
@@ -2447,7 +2464,8 @@ class App:
             self_picked = bool(trace.get("self_picked", False))
             color = str(trace.get("color", "")).strip().lower()
             trace_with_group_meta = {
-                "round": round_no,
+                "draw_order": draw_order,
+                "execution_round": execution_round,
                 "group_id": group,
                 "group_label": group_label,
                 "src_range": src_range,
@@ -2465,37 +2483,57 @@ class App:
                 }
             }
             payload["round_traces"].append(trace_with_group_meta)
+            payload["draws"].append({
+                "draw_order": draw_order,
+                "group": group,
+                "picked_slot": picked_slot,
+                "self_picked": bool(self_picked),
+                "reason": reason
+            })
         payload["rslot_count"] = int(sum(1 for trace in payload["round_traces"] if bool(trace.get("randat_executed", True))))
         payload["randat_executed"] = bool(payload["rslot_count"] > 0)
+        payload["participating_groups"] = list(participating_groups)
+        payload["execution_round"] = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(runtime.get("execution_round", 0) or 0)
+        expected_groups = len(payload["participating_groups"])
+        actual_draws = len(payload["draws"])
+        is_consistent = bool(expected_groups == actual_draws)
+        payload["consistency"] = {
+            "expected_groups": expected_groups,
+            "actual_draws": actual_draws,
+            "is_consistent": is_consistent
+        }
         if payload["rslot_count"] == 0:
             lines.append("未啟用 randat 抽籤")
             lines.append("-" * 84)
-        if grouped_by_round:
-            ordered_rounds = sorted(grouped_by_round.keys(), key=lambda x: (999999 if x is None else int(x)))
-            for round_no in ordered_rounds:
-                round_text = str(round_no) if round_no is not None else "?"
-                lines.append("Round {} 預計".format(round_text))
-                for trace in grouped_by_round.get(round_no, []):
+        if grouped_by_execution_round:
+            ordered_rounds = sorted(grouped_by_execution_round.keys())
+            for execution_round in ordered_rounds:
+                execution_traces = grouped_by_execution_round.get(execution_round, [])
+                total_groups = len(execution_traces)
+                lines.append("Execution Round #{}（groups={}）".format(execution_round, total_groups))
+                ordered_draws = sorted(
+                    execution_traces,
+                    key=lambda item: int(item.get("draw_order", item.get("round", 999999)) or 999999)
+                )
+                for trace in ordered_draws:
                     group_meta = self._runtime_trace_group_meta(trace)
                     group_label = group_meta["group_label"]
+                    draw_order = int(trace.get("draw_order", trace.get("round", 0)) or 0)
                     picked_slot = trace.get("picked_slot", trace.get("pickedIdx"))
                     self_picked = bool(trace.get("self_picked", False))
                     reason = trace.get("pickedReason", trace.get("reason"))
-                    candidate_list = trace.get("candidateIdxList", [])
-                    free_candidate_list = trace.get("freeCandidateIdxList", [])
-                    picked_pos = trace.get("pickedCandidatePos")
-                    dice_value = trace.get("diceValue")
-                    picked_text = "抽中自己 idx={}".format(str(picked_slot)) if self_picked else "抽中 idx {}".format(str(picked_slot))
-                    lines.append("- {} {}".format(group_label, picked_text))
-                    lines.append(
-                        "  reason={} / candidates={} free={} dice={} pos={}".format(
-                            self._round_trace_reason_label(reason),
-                            candidate_list,
-                            free_candidate_list,
-                            dice_value,
-                            picked_pos
-                        )
+                    picked_text = "self" if self_picked else "idx {}".format(str(picked_slot))
+                    lines.append("Draw {}/{}: {} -> picked {}".format(draw_order, total_groups, group_label, picked_text))
+                    lines.append("  reason={}".format(self._round_trace_reason_label(reason)))
+                lines.append(
+                    "Consistency: expected_groups={} / actual_draws={}".format(
+                        expected_groups,
+                        actual_draws
                     )
+                )
+                if not is_consistent:
+                    warning_lines.append("⚠ Draw mismatch detected (possible missing group draw).")
+                    warning_lines.append("⚠ expected_groups={} but actual_draws={}".format(expected_groups, actual_draws))
                 lines.append("-" * 84)
         self.text.delete("1.0", tk.END)
         if lines:
@@ -2503,6 +2541,12 @@ class App:
         else:
             summary_text = "暫無 runtime 回合資料"
         self.text.insert(tk.END, summary_text)
+        if warning_lines:
+            warning_start = self.text.index(tk.END)
+            self.text.insert(tk.END, "\n{}\n".format("\n".join(warning_lines)))
+            warning_end = self.text.index(tk.END)
+            self.text.tag_configure("runtime_consistency_warning", foreground="#cc0000")
+            self.text.tag_add("runtime_consistency_warning", warning_start, warning_end)
         self.text.insert(tk.END, "\n\n---\n詳細 JSON\n")
         self.text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -4283,7 +4327,7 @@ class App:
             group = str(ev.get("buff_group", "")).strip()
             if group in trace_by_group:
                 trace = trace_by_group[group]
-                ev["runtime_round"] = int(trace.get("round", 0) or 0)
+                ev["runtime_round"] = int(trace.get("draw_order", trace.get("round", 0)) or 0)
                 ev["runtime_picked_slot"] = int(trace.get("picked_slot", trace.get("pickedIdx", ev.get("runtime_landed_index", 0))) or 0)
                 ev["runtime_self_picked"] = 1 if bool(trace.get("self_picked", False)) else 0
                 ev["runtime_group_color"] = str(trace.get("color", ev.get("runtime_group_color", ""))).strip().lower()
