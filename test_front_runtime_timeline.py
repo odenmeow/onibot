@@ -197,6 +197,8 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.runtime_round_traces = []
         app.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
         app.runtime_trace_status_note = ""
+        app.runtime_trace_mismatch_diag = ""
+        app.runtime_cached_prepared_meta_snapshot = {}
         app.runtime_latest_index = None
         app.last_runtime_signature = ""
         app.runtime_display_frozen = False
@@ -438,6 +440,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertIn("Execution Round #1", captured["text"])
         self.assertIn("Execution Round #2", captured["text"])
         self.assertIn("picked A-slot=", captured["text"])
+        self.assertIn("A-slot=抽中的 A 表 idx", captured["text"])
+        self.assertIn("base B=由 b_to_a_mapper 反查對應（未套 offset）", captured["text"])
+        self.assertIn("final B=套用 offset 後的 B 範圍", captured["text"])
 
     def test_render_runtime_analysis_hides_prepared_meta_on_key_mismatch(self):
         app = self._new_app()
@@ -548,7 +553,10 @@ class RuntimeDisplayTests(unittest.TestCase):
             "runtime_meta": {
                 "server_task_id": "srv-new",
                 "runtime_version": 3,
-                "execution_round": 3
+                "execution_round": 3,
+                "linker_to_mix_slot_show": {"1": 7},
+                "b_to_a_mapper": {"2": 9},
+                "at_rebase": {"2": {"base_at": 1.2, "final_at": 1.4}}
             }
         }
 
@@ -567,6 +575,58 @@ class RuntimeDisplayTests(unittest.TestCase):
         })
 
         self.assertEqual(app.runtime_round_traces, [])
+        self.assertIn("已拒收後端舊 traces", app.runtime_trace_status_note)
+        self.assertIn("server_task_id mismatch", app.runtime_trace_status_note)
+        self.assertIn("prepared server_task_id=", app.runtime_trace_mismatch_diag)
+        self.assertIn("backend server_task_id=", app.runtime_trace_mismatch_diag)
+        self.assertEqual(
+            app.runtime_cached_prepared_meta_snapshot.get("source"),
+            "cached prepared meta (非本次後端回報)"
+        )
+        self.assertEqual(app.runtime_cached_prepared_meta_snapshot.get("b_to_a_mapper"), {"2": 9})
+
+    def test_render_runtime_analysis_mismatch_keeps_warning_and_cached_mapper_snapshot(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.last_prepared_payload = {
+            "runtime_version": 3,
+            "execution_round": 3,
+            "runtime_meta": {
+                "server_task_id": "srv-new-task",
+                "runtime_version": 3,
+                "execution_round": 3,
+                "linker_to_mix_slot_show": {"1": 3},
+                "b_to_a_mapper": {"1": 2},
+                "at_rebase": {"1": {"base_at": 2.0, "final_at": 2.2}}
+            }
+        }
+        app.update_runtime_from_status({
+            "timeline_runtime": {
+                "state": "running",
+                "run_id": 20,
+                "server_task_id": "srv-old-task",
+                "runtime_version": 2,
+                "execution_round": 2,
+                "round_traces": [
+                    {"execution_round": 2, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick"}
+                ],
+                "events": []
+            }
+        })
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("已拒收後端舊 traces", captured["text"])
+        self.assertIn("診斷：prepared server_task_id=", captured["text"])
+        self.assertIn("cached prepared meta (非本次後端回報)", captured["text"])
+        self.assertIn("\"linker_to_mix_slot_show\": {", captured["text"])
+        self.assertIn("\"b_to_a_mapper\": {", captured["text"])
+        self.assertIn("\"at_rebase\": {", captured["text"])
 
     def test_update_runtime_rejects_backend_trace_when_runtime_keys_missing(self):
         app = self._new_app()
