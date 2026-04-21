@@ -467,7 +467,78 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.render_runtime_analysis(force=True)
 
         self.assertIn("key 不一致", captured["text"])
-        self.assertNotIn("Final positions:", captured["text"])
+        self.assertNotIn("Current round final positions:", captured["text"])
+
+    def test_render_runtime_analysis_shows_previous_round_summary_for_round2(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {
+                "execution_round": 1,
+                "draw_order": 1,
+                "buffGroup": "A",
+                "pickedReason": "random_pick",
+                "picked_slot": 2,
+                "placement": {"picked_slot_a_idx": 2, "base_b_idx_before_offset": 4, "final_b_range": [4, 5]},
+            },
+            {
+                "execution_round": 2,
+                "draw_order": 1,
+                "buffGroup": "B",
+                "pickedReason": "random_pick",
+                "picked_slot": 1,
+                "placement": {"picked_slot_a_idx": 1, "base_b_idx_before_offset": 2, "final_b_range": [2, 3]},
+            },
+        ]
+        app.timeline_runtime_info = {"execution_round": 2}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertTrue(captured["text"].startswith("Previous round final positions (Round #1):"))
+        self.assertIn("A2 -> base B4 -> final B4~5", captured["text"])
+
+    def test_render_runtime_analysis_shows_previous_round_summary_for_latest_round3(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 0, "base_b_idx_before_offset": 0, "final_b_range": [0, 1]}},
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 3, "base_b_idx_before_offset": 6, "final_b_range": [6, 7]}},
+            {"execution_round": 3, "draw_order": 1, "buffGroup": "C", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 5, "base_b_idx_before_offset": 8, "final_b_range": [8, 9]}},
+        ]
+        app.timeline_runtime_info = {"execution_round": 3}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Previous round final positions (Round #2):", captured["text"])
+        self.assertIn("A3 -> base B6 -> final B6~7", captured["text"])
+        self.assertNotIn("Previous round final positions (Round #1):", captured["text"])
+
+    def test_render_runtime_analysis_does_not_show_previous_summary_for_round1(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 0, "base_b_idx_before_offset": 0, "final_b_range": [0, 1]}},
+        ]
+        app.timeline_runtime_info = {"execution_round": 1}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertNotIn("Previous round final positions", captured["text"])
 
     def test_update_runtime_ignores_old_backend_traces_against_prepared_meta(self):
         app = self._new_app()

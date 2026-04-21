@@ -2854,6 +2854,46 @@ class App:
             lines.append("未啟用 randat 抽籤")
             lines.append("-" * 84)
         if grouped_by_execution_round:
+            current_round = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(payload.get("execution_round", 0) or 0)
+            if current_round <= 0:
+                current_round = int(payload.get("execution_round", 0) or 0)
+            if current_round <= 0:
+                current_round = int(runtime.get("execution_round", 0) or 0)
+            if current_round <= 0:
+                current_round = 1
+            previous_round = current_round - 1
+            if previous_round >= 1:
+                previous_round_traces = [
+                    trace for trace in payload.get("round_traces", [])
+                    if int(trace.get("execution_round", 0) or 0) == previous_round
+                ]
+                if previous_round_traces:
+                    lines.append("Previous round final positions (Round #{}):".format(previous_round))
+                    ordered_previous_draws = sorted(
+                        previous_round_traces,
+                        key=lambda item: int(item.get("draw_order", 999999) or 999999)
+                    )
+                    for trace in ordered_previous_draws:
+                        group_label = str(trace.get("group_label") or trace.get("group_id") or "?")
+                        placement = trace.get("placement", {})
+                        if not isinstance(placement, dict):
+                            placement = {}
+                        picked_a = placement.get("picked_slot_a_idx", trace.get("picked_slot", -1))
+                        base_b = placement.get("base_b_idx_before_offset", -1)
+                        final_range = placement.get("final_b_range", [])
+                        if isinstance(final_range, list) and len(final_range) >= 2:
+                            final_b_text = "{}~{}".format(final_range[0], final_range[1])
+                        else:
+                            final_b_text = str(placement.get("final_b_idx_after_offset", -1))
+                        lines.append(
+                            "  {}: A{} -> base B{} -> final B{}".format(
+                                group_label,
+                                picked_a,
+                                base_b,
+                                final_b_text
+                            )
+                        )
+                    lines.append("-" * 84)
             ordered_rounds = sorted(grouped_by_execution_round.keys())
             for execution_round in ordered_rounds:
                 execution_traces = grouped_by_execution_round.get(execution_round, [])
@@ -2898,7 +2938,7 @@ class App:
                     and int(prepared_consistency_key.get("execution_round", 0) or 0) in {0, int(execution_round)}
                 )
                 if show_final_positions:
-                    lines.append("Final positions:")
+                    lines.append("Current round final positions:")
                     for group_id in payload.get("apply_order", []):
                         info = payload["group_final_positions"].get(str(group_id), {})
                         if not isinstance(info, dict):
