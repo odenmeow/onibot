@@ -32,6 +32,7 @@ PROGRESS_PREDICT_JITTER_BUDGET_MS = 1500
 PROGRESS_PREDICT_GRACE_MS = 900
 PROGRESS_TIMEOUT_MIN_MS = 2000
 PROGRESS_TIMEOUT_MAX_MS = 30000
+ROUND_DONE_FINISH_GRACE_MS = 350
 HANDSHAKE_ACTION = "status"
 ROUND_TRACE_REASON_LABELS = {
     "randat_disabled": "未啟用 randat（無可用 randat 列）",
@@ -1361,6 +1362,10 @@ class App:
         self.frontend_error_main = str(message or "").strip()
         self._render_frontend_error()
 
+    def set_frontend_monitor_alert(self, message):
+        self.frontend_monitor_alert = str(message or "").strip()
+        self._render_frontend_error()
+
     def set_backend_error(self, message):
         self.update_error_text(self.backend_error_text, message)
 
@@ -1395,6 +1400,7 @@ class App:
 
     def clear_errors(self):
         self.frontend_error_main = ""
+        self.frontend_monitor_alert = ""
         self.last_control_error = ""
         self.last_status_error = ""
         self.set_frontend_error("")
@@ -1404,6 +1410,8 @@ class App:
         lines = []
         if self.frontend_error_main:
             lines.append(self.frontend_error_main)
+        if self.frontend_monitor_alert:
+            lines.append("監控告警（可恢復）：{}".format(self.frontend_monitor_alert))
         if self.last_control_error:
             lines.append("最後 control 錯誤：{}".format(self.last_control_error))
         if self.last_status_error:
@@ -1887,6 +1895,7 @@ class App:
         self.status_conn = None
         self.status_conn_file = None
         self.frontend_error_main = ""
+        self.frontend_monitor_alert = ""
         self.last_control_error = ""
         self.last_status_error = ""
         self.timeline_runtime_info = {"events": []}
@@ -1918,6 +1927,9 @@ class App:
         self.front_loop_after_id = None
         self.front_loop_round = 0
         self.front_round_state = "idle"
+        self.front_round_state_changed_at = 0.0
+        self.front_round_last_running_at = None
+        self.last_round_finished_at = None
         self.front_inflight_client_task_id = ""
         self.pending_runtime_version = 0
         self.current_round_runtime_version = 0
@@ -3002,9 +3014,11 @@ class App:
             "last_state": "submitted",
             "last_processed_count": 0,
             "last_progress_at": None,
+            "paused_at": None,
             "failed": False
         }
         self.runtime_wait_ack_active = True
+        self.set_frontend_monitor_alert("")
 
     def _freeze_runtime_for_wait_ack(self, snapshot_events):
         self.wait_ack_snapshot_timeline = self.copy_events(snapshot_events or [])
@@ -3039,10 +3053,11 @@ class App:
             "last_state": str(last_state or monitor.get("last_state", "")).strip(),
             "last_processed_count": int(monitor.get("last_processed_count", 0) or 0),
             "last_progress_at": monitor.get("last_progress_at"),
+            "paused_at": monitor.get("paused_at"),
             "failed": True
         }
         message = (
-            "任務監控逾時（{}）\nserver_task_id={}\nlast_state={}\nelapsed_ms={}\nthreshold_ms={}\npredicted_timeout_ms={}\nused_threshold_ms={}\nfallback_mode={}".format(
+            "任務監控告警（{}）\nserver_task_id={}\nlast_state={}\nelapsed_ms={}\nthreshold_ms={}\npredicted_timeout_ms={}\nused_threshold_ms={}\nfallback_mode={}".format(
                 str(phase or "").upper(),
                 server_task_id or "unknown",
                 self.task_monitor["last_state"] or "unknown",
@@ -3053,7 +3068,7 @@ class App:
                 bool(fallback_mode)
             )
         )
-        self.set_frontend_error(message)
+        self.set_frontend_monitor_alert(message)
 
     def _monitor_after_ack(self, ack_response):
         monitor_obj = getattr(self, "task_monitor", {})
@@ -3068,6 +3083,7 @@ class App:
         monitor["last_state"] = "accepted"
         monitor["last_processed_count"] = 0
         monitor["last_progress_at"] = None
+        monitor["paused_at"] = None
         monitor["failed"] = False
         self.task_monitor = monitor
         self.runtime_wait_ack_active = False
@@ -3098,6 +3114,7 @@ class App:
                 monitor["phase_started_at"] = now
                 monitor["last_progress_at"] = now
                 monitor["last_processed_count"] = int(max(0, processed_count))
+                monitor["paused_at"] = now if state == "paused" else None
                 self.task_monitor = monitor
                 return
             elapsed_ms = int((now - started) * 1000.0)
@@ -3114,6 +3131,21 @@ class App:
 
         if state in {"finished", "stopped", "idle", "error"}:
             self._reset_task_monitor()
+            return
+
+
+        if state == "paused":
+            monitor["paused_at"] = now
+            monitor["last_progress_at"] = None
+            monitor["last_processed_count"] = int(max(0, processed_count))
+            self.task_monitor = monitor
+            return
+
+        if state in {"running", "resumed"} and monitor.get("paused_at") is not None:
+            monitor["paused_at"] = None
+            monitor["last_progress_at"] = now
+            monitor["last_processed_count"] = int(max(0, processed_count))
+            self.task_monitor = monitor
             return
 
         last_progress_at = monitor.get("last_progress_at")
@@ -4187,6 +4219,9 @@ class App:
 
     def _set_front_round_state(self, state):
         self.front_round_state = str(state or "idle").strip().lower()
+        self.front_round_state_changed_at = float(time.monotonic())
+        if self.front_round_state in {"running", "paused", "resumed"}:
+            self.front_round_last_running_at = self.front_round_state_changed_at
 
     def _mark_loop_terminal(self):
         self.front_loop_enabled = False
@@ -4324,6 +4359,7 @@ class App:
             "server_task_id": ""
         }
         self._set_front_round_state("waiting_ack")
+        self.front_round_last_running_at = None
 
         sanitized_backend_events = self._sanitize_events_for_backend(backend_events)
         payload = self._build_start_task_payload(sanitized_backend_events)
@@ -4390,6 +4426,11 @@ class App:
                     self._arm_first_event_progress_watch(sent_at_monotonic, delay_meta["send_delay_sec"], first_event_timing)
                     self._monitor_after_ack(res)
                     self._set_front_round_state("running")
+                    monitor_obj = getattr(self, "task_monitor", {})
+                    if isinstance(monitor_obj, dict):
+                        monitor_obj["last_progress_at"] = float(time.monotonic())
+                        monitor_obj["last_processed_count"] = 0
+                        self.task_monitor = monitor_obj
 
                     self.front_loop_round += 1
                     suffix = ""
@@ -4455,11 +4496,28 @@ class App:
                 )
                 return
             if state == "finished":
+                now = float(time.monotonic())
+                last_running = getattr(self, "front_round_last_running_at", None)
+                if last_running is not None:
+                    elapsed_since_running_ms = int((now - float(last_running)) * 1000.0)
+                    if elapsed_since_running_ms < ROUND_DONE_FINISH_GRACE_MS:
+                        self.front_loop_after_id = self.root.after(
+                            80,
+                            lambda: self._poll_front_loop_round_done(display_name)
+                        )
+                        return
                 self._set_front_round_state("round_done")
+                self.last_round_finished_at = now
                 self.front_inflight_client_task_id = ""
                 self.front_loop_after_id = self.root.after(
                     80,
                     lambda: self._schedule_next_round_dispatch(display_name)
+                )
+                return
+            if state == "waiting_ack":
+                self.front_loop_after_id = self.root.after(
+                    80,
+                    lambda: self._poll_front_loop_round_done(display_name)
                 )
                 return
             if state in ("stopped", "error"):

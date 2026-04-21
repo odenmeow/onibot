@@ -12,6 +12,7 @@ if "pynput" not in sys.modules:
 from front import (
     App,
     PiRequestError,
+    ROUND_DONE_FINISH_GRACE_MS,
     recalculate_runtime_events_by_index,
     allocate_randat_blocks,
     get_buff_cell_visual_state,
@@ -620,12 +621,19 @@ class RuntimeDisplayTests(unittest.TestCase):
 
     def test_ack_success_unfreezes_and_enters_running(self):
         app = self._new_app()
-        app.task_monitor = {"phase": "wait_ack", "client_task_id": "ct-1"}
+        app.task_monitor = {
+            "phase": "wait_ack",
+            "client_task_id": "ct-1",
+            "last_processed_count": 99,
+            "last_progress_at": 777.0
+        }
         app.runtime_wait_ack_active = True
         app.runtime_display_frozen = True
         app.request_pi = lambda *_args, **_kwargs: {"timeline_runtime": {"state": "running", "events": []}}
 
         app._monitor_after_ack({"server_task_id": "srv-1"})
+        self.assertEqual(app.task_monitor.get("last_processed_count"), 0)
+        self.assertIsNone(app.task_monitor.get("last_progress_at"))
         app.poll_runtime_status()
 
         self.assertFalse(app.runtime_wait_ack_active)
@@ -673,9 +681,11 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
         app.timeline_runtime_info = {"progress": {}}
         app.error_messages = []
         app.set_frontend_error = lambda msg: app.error_messages.append(msg)
+        app.set_frontend_monitor_alert = lambda msg: app.error_messages.append(msg)
         app._mark_task_monitor_failed = App._mark_task_monitor_failed.__get__(app, App)
         app._monitor_task_status_progress = App._monitor_task_status_progress.__get__(app, App)
         app.first_event_progress_watch = {}
+        app._reset_task_monitor = App._reset_task_monitor.__get__(app, App)
         return app
 
     def test_monitor_no_false_stall_when_first_event_is_late(self):
@@ -702,6 +712,51 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
             app._monitor_task_status_progress("running", 1)
         self.assertFalse(app.task_monitor.get("failed"))
         self.assertEqual(len(app.error_messages), 0)
+
+    def test_running_paused_resumed_does_not_trigger_progress_stall(self):
+        app = self._new_monitor_app()
+        with mock.patch("front.time.monotonic", return_value=100.0):
+            app._monitor_task_status_progress("running", 1)
+        with mock.patch("front.time.monotonic", return_value=105.0):
+            app._monitor_task_status_progress("paused", 1)
+        with mock.patch("front.time.monotonic", return_value=106.0):
+            app._monitor_task_status_progress("resumed", 1)
+        with mock.patch("front.time.monotonic", return_value=106.1):
+            app._monitor_task_status_progress("running", 1)
+        self.assertFalse(app.task_monitor.get("failed"))
+        self.assertEqual(len(app.error_messages), 0)
+
+
+class FrontLoopRoundTransitionTests(unittest.TestCase):
+    def _new_loop_app(self):
+        app = App.__new__(App)
+        app.front_loop_enabled = True
+        app.front_loop_after_id = None
+        app.front_round_state = "running"
+        app.front_round_last_running_at = 10.0
+        app.front_inflight_client_task_id = "ct-1"
+        app.root = types.SimpleNamespace(after=lambda _ms, _cb: "after-id")
+        app.request_pi = lambda *_args, **_kwargs: {"timeline_runtime": {"state": "finished"}}
+        app._set_front_round_state = App._set_front_round_state.__get__(app, App)
+        app._poll_front_loop_round_done = App._poll_front_loop_round_done.__get__(app, App)
+        app._schedule_next_round_dispatch = lambda *_args, **_kwargs: None
+        app._mark_loop_terminal = lambda: None
+        app._update_runtime_control_buttons = lambda: None
+        return app
+
+    def test_finished_transition_has_grace_window(self):
+        app = self._new_loop_app()
+        with mock.patch("front.time.monotonic", return_value=10.0 + (ROUND_DONE_FINISH_GRACE_MS / 1000.0) - 0.01):
+            app._poll_front_loop_round_done("demo")
+        self.assertEqual(app.front_round_state, "running")
+        self.assertEqual(app.front_inflight_client_task_id, "ct-1")
+
+    def test_round2_waiting_ack_not_marked_terminal_after_round1_finished(self):
+        app = self._new_loop_app()
+        app.request_pi = lambda *_args, **_kwargs: {"timeline_runtime": {"state": "waiting_ack"}}
+        app._poll_front_loop_round_done("demo")
+        self.assertEqual(app.front_round_state, "running")
+        self.assertEqual(app.front_inflight_client_task_id, "ct-1")
 
 
 class TimelineWorkflowTests(unittest.TestCase):
