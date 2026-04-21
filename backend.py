@@ -843,7 +843,17 @@ def pause_current_run():
         "server_task_id": current_server_task_id
     }
     patch_timeline_runtime(state="paused")
-    return {"status": "ok", "state": "paused", "message": "已暫停"}
+    runtime_snapshot = get_timeline_runtime_snapshot()
+    progress = runtime_snapshot.get("progress", {}) if isinstance(runtime_snapshot, dict) else {}
+    return {
+        "status": "ok",
+        "state": "paused",
+        "message": "已暫停",
+        "execution_round": int(runtime_snapshot.get("execution_round", 0) or 0),
+        "processed_count": int(runtime_snapshot.get("processed_count", 0) or 0),
+        "events_total": int(runtime_snapshot.get("events_total", 0) or 0),
+        "current_idx": int(progress.get("current_idx", -1) or -1)
+    }
 
 
 def resume_current_run():
@@ -861,7 +871,17 @@ def resume_current_run():
         "server_task_id": current_server_task_id
     }
     patch_timeline_runtime(state="resumed")
-    return {"status": "ok", "state": "resumed", "message": "已繼續"}
+    runtime_snapshot = get_timeline_runtime_snapshot()
+    progress = runtime_snapshot.get("progress", {}) if isinstance(runtime_snapshot, dict) else {}
+    return {
+        "status": "ok",
+        "state": "resumed",
+        "message": "已繼續",
+        "execution_round": int(runtime_snapshot.get("execution_round", 0) or 0),
+        "processed_count": int(runtime_snapshot.get("processed_count", 0) or 0),
+        "events_total": int(runtime_snapshot.get("events_total", 0) or 0),
+        "current_idx": int(progress.get("current_idx", -1) or -1)
+    }
 
 
 def handle_request(data):
