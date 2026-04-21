@@ -49,6 +49,7 @@ run_lock = threading.Lock()
 runtime_lock = threading.Lock()
 
 current_run_thread = None
+current_run_clock = None
 current_server_task_id = ""
 current_run_status = {
     "state": "idle",   # idle / running / stopping / stopped / error
@@ -309,8 +310,52 @@ def release_only(name):
 
 
 def _wait_if_paused():
+    return _wait_if_paused_by_clock(current_run_clock)
+
+
+class PausableClock:
+    def __init__(self):
+        self.start_monotonic = time.monotonic()
+        self.paused_total_sec = 0.0
+        self.pause_started_at = None
+        self.is_paused = False
+        self._lock = threading.Lock()
+
+    def now(self):
+        with self._lock:
+            current = time.monotonic()
+            paused_total = self.paused_total_sec
+            if self.is_paused and self.pause_started_at is not None:
+                paused_total += max(0.0, current - self.pause_started_at)
+            return max(0.0, current - self.start_monotonic - paused_total)
+
+    def pause(self):
+        with self._lock:
+            if self.is_paused:
+                return False
+            self.pause_started_at = time.monotonic()
+            self.is_paused = True
+            return True
+
+    def resume(self):
+        with self._lock:
+            if not self.is_paused:
+                return False
+            now = time.monotonic()
+            if self.pause_started_at is not None:
+                self.paused_total_sec += max(0.0, now - self.pause_started_at)
+            self.pause_started_at = None
+            self.is_paused = False
+            return True
+
+    def paused(self):
+        with self._lock:
+            return self.is_paused
+
+
+def _wait_if_paused_by_clock(clock):
     paused_once = False
-    while pause_event.is_set():
+    while clock is not None and clock.paused():
         if stop_event.is_set():
             raise InterruptedError("執行已被停止")
         paused_once = True
@@ -323,29 +368,29 @@ def _wait_if_paused():
     return paused_once
 
 
-def safe_sleep(seconds, check_interval=0.01):
-    remaining = max(0.0, float(seconds))
-    while remaining > 0.0:
-        _wait_if_paused()
+def safe_sleep(seconds, clock=None, check_interval=0.01):
+    logical_end = (clock.now() if clock is not None else time.monotonic()) + max(0.0, float(seconds))
+    while True:
+        _wait_if_paused_by_clock(clock)
         if stop_event.is_set():
             raise InterruptedError("執行已被停止")
+        current = clock.now() if clock is not None else time.monotonic()
+        remaining = logical_end - current
+        if remaining <= 0.0:
+            break
         chunk = min(check_interval, remaining)
-        tick = time.monotonic()
         time.sleep(chunk)
-        elapsed = max(0.0, time.monotonic() - tick)
-        if not pause_event.is_set():
-            remaining -= elapsed
 
 
-def press_button(name, duration=DEFAULT_PRESS_TIME):
+def press_button(name, duration=DEFAULT_PRESS_TIME, clock=None):
     if stop_event.is_set():
         raise InterruptedError("執行已被停止")
     press_only(name)
     try:
-        safe_sleep(duration)
+        safe_sleep(duration, clock=clock)
     finally:
         release_only(name)
-    safe_sleep(0.03)
+    safe_sleep(0.03, clock=clock)
 
 
 def apply_jitter(base_value, jitter):
@@ -360,6 +405,7 @@ def run_macro(steps):
     results = []
     stop_event.clear()
 
+    clock = current_run_clock or PausableClock()
     with run_lock:
         for i, step in enumerate(steps):
             if stop_event.is_set():
@@ -373,8 +419,8 @@ def run_macro(steps):
                 i, button, delay, duration
             ))
 
-            safe_sleep(delay)
-            press_button(button, duration)
+            safe_sleep(delay, clock=clock)
+            press_button(button, duration, clock=clock)
 
             results.append({
                 "index": i,
@@ -438,13 +484,13 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
     results = []
 
     with run_lock:
-        start = time.monotonic()
-        start_wall_ms = _now_ms()
+        clock = current_run_clock or PausableClock()
+        wall_start = time.monotonic()
         timeline_shift = 0.0
         emitted_round_trace_groups = set()
         try:
             for i, ev in enumerate(normalized):
-                resumed = _wait_if_paused()
+                resumed = _wait_if_paused_by_clock(clock)
                 if resumed:
                     patch_timeline_runtime(state="running")
                 if stop_event.is_set():
@@ -452,13 +498,13 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 
                 source_target = ev["at"]
                 target = max(0.0, source_target - timeline_shift)
+                logical_now = clock.now()
+                wait_time = target - logical_now
                 update_timeline_runtime_progress_prediction(
                     next_expected_idx=int(ev.get("original_index", i)),
-                    next_expected_at_ms=start_wall_ms + int(round(target * 1000.0)),
+                    next_expected_at_ms=_now_ms() + max(0, int(round(wait_time * 1000.0))),
                     hint_slow_segment=(target >= 10.0)
                 )
-                now = time.monotonic() - start
-                wait_time = target - now
                 skip_by_cooldown = False
 
                 buff_group = ev.get("buff_group", "")
@@ -490,7 +536,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         compressed_sec = max(0.0, wait_time)
                         timeline_shift += compressed_sec
                     elif buff_skip_mode == BUFF_SKIP_MODE_WALK and wait_time > 0:
-                        safe_sleep(wait_time)
+                        safe_sleep(wait_time, clock=clock)
                     results.append({
                         "index": i,
                         "original_index": ev["original_index"],
@@ -498,7 +544,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         "button": ev["button"],
                         "source_target_at": round(source_target, 4),
                         "target_at": round(target, 4),
-                        "actual_at": round(time.monotonic() - start, 4),
+                        "actual_at": round(time.monotonic() - wall_start, 4),
                         "status": "skipped_by_cooldown",
                         "buff_skip_mode": buff_skip_mode,
                         "compressed_sec": round(compressed_sec, 4)
@@ -511,7 +557,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         "status": "skipped_by_cooldown",
                         "source_target_at": round(source_target, 4),
                         "target_at": round(target, 4),
-                        "actual_at": round(time.monotonic() - start, 4),
+                        "actual_at": round(time.monotonic() - wall_start, 4),
                         "buff_skip_mode": buff_skip_mode,
                         "buff_group": buff_group,
                         "runtime_landed_index": ev.get("runtime_landed_index"),
@@ -521,14 +567,14 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     continue
 
                 if wait_time > 0:
-                    safe_sleep(wait_time)
+                    safe_sleep(wait_time, clock=clock)
 
                 if ev["type"] == "press":
                     press_only(ev["button"])
                 else:
                     release_only(ev["button"])
 
-                actual_now = time.monotonic() - start
+                actual_now = time.monotonic() - wall_start
                 results.append({
                     "index": i,
                     "original_index": ev["original_index"],
@@ -564,9 +610,10 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 
 
 def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
-    global current_run_status
+    global current_run_status, current_run_clock
     try:
         pause_event.clear()
+        current_run_clock = PausableClock()
         set_timeline_runtime(
             "timeline",
             "running",
@@ -607,15 +654,18 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
             "message": str(e),
             "server_task_id": current_server_task_id
         }
+    finally:
+        current_run_clock = None
 
 
 def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
-    global current_run_status
+    global current_run_status, current_run_clock
     loop_count = 0
     buff_runtime = {"next_ready_at": {}}
     try:
         stop_event.clear()
         pause_event.clear()
+        current_run_clock = PausableClock()
         while not stop_event.is_set():
             loop_count += 1
             set_timeline_runtime(
@@ -665,6 +715,8 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
             "message": str(e),
             "server_task_id": current_server_task_id
         }
+    finally:
+        current_run_clock = None
 
 
 def parse_start_task_timeline(raw_timeline):
@@ -702,8 +754,9 @@ def parse_start_task_timeline(raw_timeline):
 
 
 def run_macro_background(steps):
-    global current_run_status
+    global current_run_status, current_run_clock
     try:
+        current_run_clock = PausableClock()
         current_run_status = {
             "state": "running",
             "mode": "macro",
@@ -734,6 +787,8 @@ def run_macro_background(steps):
             "message": str(e),
             "server_task_id": current_server_task_id
         }
+    finally:
+        current_run_clock = None
 
 
 def _release_all_background():
@@ -756,6 +811,8 @@ def stop_current_run():
     global current_run_status
     stop_event.set()
     pause_event.clear()
+    if current_run_clock is not None:
+        current_run_clock.resume()
     mode = current_run_status.get("mode", "")
     current_run_status = {
         "state": "stopping",
@@ -776,6 +833,8 @@ def pause_current_run():
     if current_run_thread is None or not current_run_thread.is_alive():
         return {"status": "error", "message": "目前沒有執行中的工作"}
     pause_event.set()
+    if current_run_clock is not None:
+        current_run_clock.pause()
     mode = current_run_status.get("mode", "")
     current_run_status = {
         "state": "paused",
@@ -792,6 +851,8 @@ def resume_current_run():
     if current_run_thread is None or not current_run_thread.is_alive():
         return {"status": "error", "message": "目前沒有可繼續的工作"}
     pause_event.clear()
+    if current_run_clock is not None:
+        current_run_clock.resume()
     mode = current_run_status.get("mode", "")
     current_run_status = {
         "state": "resumed",

@@ -155,7 +155,7 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             tick = {"t": 0.0}
             waits = []
             backend.time.monotonic = lambda: tick.__setitem__("t", tick["t"] + 0.001) or tick["t"]
-            backend.safe_sleep = lambda sec: waits.append(sec)
+            backend.safe_sleep = lambda sec, **_kwargs: waits.append(sec)
             backend.press_only = lambda *_args, **_kwargs: None
             backend.release_only = lambda *_args, **_kwargs: None
             results = backend.run_timeline(events, buff_runtime=runtime, buff_skip_mode=backend.BUFF_SKIP_MODE_PASS)
@@ -182,7 +182,7 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             tick = {"t": 0.0}
             waits = []
             backend.time.monotonic = lambda: tick.__setitem__("t", tick["t"] + 0.001) or tick["t"]
-            backend.safe_sleep = lambda sec: waits.append(sec)
+            backend.safe_sleep = lambda sec, **_kwargs: waits.append(sec)
             backend.press_only = lambda *_args, **_kwargs: None
             backend.release_only = lambda *_args, **_kwargs: None
             results = backend.run_timeline(events, buff_runtime=runtime, buff_skip_mode=backend.BUFF_SKIP_MODE_WALK)
@@ -194,6 +194,56 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
 
         self.assertEqual(results[1]["status"], "skipped_by_cooldown")
         self.assertGreater(waits[0], 0.0)
+
+    def test_pause_resume_delays_timeline_without_catchup(self):
+        events = [
+            {"type": "press", "button": "f", "at": 1.0},
+            {"type": "release", "button": "f", "at": 2.0},
+        ]
+        orig_monotonic = backend.time.monotonic
+        orig_sleep = backend.time.sleep
+        orig_press = backend.press_only
+        orig_release = backend.release_only
+        try:
+            tick = {"t": 0.0}
+            pause_state = {"done": False, "started_at": None}
+            pause_sec = 0.73
+
+            def _mono():
+                return tick["t"]
+
+            def _sleep(sec):
+                sec = max(0.0, float(sec))
+                tick["t"] += sec
+                clock = backend.current_run_clock
+                if clock is None:
+                    return
+                if (not pause_state["done"]) and tick["t"] >= 0.41 and not clock.paused():
+                    clock.pause()
+                    pause_state["started_at"] = tick["t"]
+                if clock.paused() and pause_state["started_at"] is not None:
+                    if tick["t"] - pause_state["started_at"] >= pause_sec:
+                        clock.resume()
+                        pause_state["done"] = True
+
+            backend.time.monotonic = _mono
+            backend.time.sleep = _sleep
+            backend.press_only = lambda *_args, **_kwargs: None
+            backend.release_only = lambda *_args, **_kwargs: None
+
+            backend.current_run_clock = backend.PausableClock()
+            results = backend.run_timeline(events)
+        finally:
+            backend.current_run_clock = None
+            backend.time.monotonic = orig_monotonic
+            backend.time.sleep = orig_sleep
+            backend.press_only = orig_press
+            backend.release_only = orig_release
+
+        self.assertTrue(pause_state["done"])
+        self.assertAlmostEqual(results[0]["actual_at"], 1.0 + pause_sec, delta=0.05)
+        self.assertAlmostEqual(results[1]["actual_at"], 2.0 + pause_sec, delta=0.05)
+        self.assertAlmostEqual(results[1]["actual_at"] - results[0]["actual_at"], 1.0, delta=0.05)
 
     def test_handle_request_maps_legacy_compress_to_pass(self):
         orig_thread = backend.threading.Thread
