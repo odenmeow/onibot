@@ -288,6 +288,27 @@ class RuntimeDisplayTests(unittest.TestCase):
             group = trace["buffGroup"]
             self.assertEqual(assignments[group]["landed_index"], picked_idx)
 
+    def test_allocate_randat_blocks_reorders_runtime_queue_with_gap_preserved(self):
+        events = [
+            {"type": "press", "button": "a", "at": 0.0, "buff_group": "1"},
+            {"type": "release", "button": "a", "at": 0.2, "buff_group": "1"},
+            {"type": "press", "button": "x", "at": 1.0, "buff_group": ""},
+            {"type": "randat", "button": "", "at": 2.0, "buff_group": ""},
+            {"type": "press", "button": "b", "at": 3.0, "buff_group": "2"},
+            {"type": "release", "button": "b", "at": 3.3, "buff_group": "2"},
+            {"type": "press", "button": "y", "at": 4.0, "buff_group": ""},
+        ]
+
+        with mock.patch("front.random.randrange", side_effect=[2, 0]):
+            working, assignments, _traces = allocate_randat_blocks(events)
+
+        self.assertEqual(working[0].get("buff_group", ""), "")
+        self.assertEqual(working[1].get("buff_group", ""), "1")
+        self.assertEqual(working[3].get("buff_group", ""), "2")
+        at_values = [float(row.get("at", 0.0)) for row in working]
+        self.assertEqual(at_values, sorted(at_values))
+        self.assertNotEqual(assignments["1"]["landed_index"], assignments["1"]["anchor_index"])
+
     def test_running_shows_cooldown_text_in_buff_group_column(self):
         app = self._new_app()
         app.timeline = [
