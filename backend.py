@@ -809,22 +809,54 @@ def _release_all_background():
 
 def stop_current_run():
     global current_run_status
+    runtime_snapshot = get_timeline_runtime_snapshot()
+    is_active_task = bool(current_run_thread is not None and current_run_thread.is_alive())
+    stop_code = "stopped" if is_active_task else "no_active_task"
+
     stop_event.set()
     pause_event.clear()
     if current_run_clock is not None:
         current_run_clock.resume()
-    mode = current_run_status.get("mode", "")
-    current_run_status = {
-        "state": "stopping",
-        "mode": mode,
-        "message": "已收到停止指令，正在停止並釋放 GPIO",
-        "server_task_id": current_server_task_id
-    }
-    patch_timeline_runtime(state="stopped")
-    threading.Thread(target=_release_all_background, daemon=True).start()
+    if is_active_task:
+        mode = current_run_status.get("mode", "")
+        current_run_status = {
+            "state": "stopping",
+            "mode": mode,
+            "message": "已收到停止指令，正在停止並釋放 GPIO",
+            "server_task_id": current_server_task_id
+        }
+        patch_timeline_runtime(state="stopped")
+        threading.Thread(target=_release_all_background, daemon=True).start()
+    else:
+        runtime_state = str(runtime_snapshot.get("state", "idle")).strip().lower()
+        if runtime_state == "idle":
+            patch_timeline_runtime(
+                state="stopped",
+                execution_round=0,
+                processed_count=0,
+                events_total=0,
+                server_task_id=""
+            )
+        else:
+            patch_timeline_runtime(state="stopped")
+        current_run_status = {
+            "state": "stopped",
+            "mode": str(runtime_snapshot.get("mode", current_run_status.get("mode", ""))),
+            "message": "目前沒有執行中的工作",
+            "server_task_id": str(runtime_snapshot.get("server_task_id", current_server_task_id))
+        }
+
+    runtime_snapshot = get_timeline_runtime_snapshot()
     return {
-        "status": "ok",
-        "message": "已收到停止指令"
+        "status": "stopped",
+        "code": stop_code,
+        "state": "stopped",
+        "message": "已收到停止指令" if is_active_task else "目前沒有執行中的工作",
+        "execution_round": int(runtime_snapshot.get("execution_round", 0) or 0),
+        "processed_count": int(runtime_snapshot.get("processed_count", 0) or 0),
+        "events_total": int(runtime_snapshot.get("events_total", 0) or 0),
+        "server_task_id": str(runtime_snapshot.get("server_task_id", current_server_task_id)),
+        "timeline_runtime": runtime_snapshot
     }
 
 
