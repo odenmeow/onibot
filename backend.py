@@ -4,6 +4,7 @@ import random
 import socket
 import threading
 import time
+import uuid
 import RPi.GPIO as GPIO
 
 HOST = "0.0.0.0"
@@ -39,13 +40,16 @@ run_lock = threading.Lock()
 runtime_lock = threading.Lock()
 
 current_run_thread = None
+current_server_task_id = ""
 current_run_status = {
     "state": "idle",   # idle / running / stopping / stopped / error
     "mode": "",
-    "message": ""
+    "message": "",
+    "server_task_id": ""
 }
 timeline_runtime = {
     "run_id": 0,
+    "server_task_id": "",
     "state": "idle",   # idle / running / stopping / stopped / error / done
     "mode": "",
     "loop_count": 0,
@@ -65,9 +69,31 @@ STATUS_EVENTS_LIMIT = 120
 STATUS_ROUND_TRACES_LIMIT = 40
 
 
-def set_timeline_runtime(mode, state, events_total=0, loop_count=0):
+def _now_ms():
+    return int(time.time() * 1000)
+
+
+def _new_server_task_id():
+    return "srv-{}-{}".format(_now_ms(), uuid.uuid4().hex[:8])
+
+
+def make_error_response(code, message, phase, diag=None, status="error", server_task_id=None):
+    return {
+        "type": "error",
+        "status": str(status or "error"),
+        "code": str(code or "unknown_error"),
+        "phase": str(phase or "request"),
+        "message": str(message or "error"),
+        "server_task_id": str(server_task_id or current_server_task_id or "").strip(),
+        "diag": diag if isinstance(diag, dict) else {},
+        "event_time_ms": _now_ms()
+    }
+
+
+def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_id=""):
     with runtime_lock:
         timeline_runtime["run_id"] += 1
+        timeline_runtime["server_task_id"] = str(server_task_id or "")
         timeline_runtime["state"] = state
         timeline_runtime["mode"] = mode
         timeline_runtime["loop_count"] = int(loop_count)
@@ -125,6 +151,7 @@ def get_timeline_runtime_snapshot():
 
         return {
             "run_id": int(timeline_runtime.get("run_id", 0)),
+            "server_task_id": str(timeline_runtime.get("server_task_id", "")),
             "state": timeline_runtime.get("state", "idle"),
             "mode": timeline_runtime.get("mode", ""),
             "loop_count": int(timeline_runtime.get("loop_count", 0)),
@@ -405,11 +432,18 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
     global current_run_status
     try:
-        set_timeline_runtime("timeline", "running", events_total=len(events), loop_count=1)
+        set_timeline_runtime(
+            "timeline",
+            "running",
+            events_total=len(events),
+            loop_count=1,
+            server_task_id=current_server_task_id
+        )
         current_run_status = {
             "state": "running",
             "mode": "timeline",
-            "message": "正在執行 timeline"
+            "message": "正在執行 timeline",
+            "server_task_id": current_server_task_id
         }
         run_timeline(events, buff_skip_mode=buff_skip_mode)
         release_all()
@@ -417,7 +451,8 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         current_run_status = {
             "state": "idle",
             "mode": "timeline",
-            "message": "timeline 執行完成"
+            "message": "timeline 執行完成",
+            "server_task_id": current_server_task_id
         }
     except InterruptedError as e:
         release_all()
@@ -425,7 +460,8 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         current_run_status = {
             "state": "stopped",
             "mode": "timeline",
-            "message": str(e)
+            "message": str(e),
+            "server_task_id": current_server_task_id
         }
     except Exception as e:
         release_all()
@@ -433,7 +469,8 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         current_run_status = {
             "state": "error",
             "mode": "timeline",
-            "message": str(e)
+            "message": str(e),
+            "server_task_id": current_server_task_id
         }
 
 
@@ -445,11 +482,18 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         stop_event.clear()
         while not stop_event.is_set():
             loop_count += 1
-            set_timeline_runtime("timeline_loop", "running", events_total=len(events), loop_count=loop_count)
+            set_timeline_runtime(
+                "timeline_loop",
+                "running",
+                events_total=len(events),
+                loop_count=loop_count,
+                server_task_id=current_server_task_id
+            )
             current_run_status = {
                 "state": "running",
                 "mode": "timeline_loop",
-                "message": "正在第 {} 次循環".format(loop_count)
+                "message": "正在第 {} 次循環".format(loop_count),
+                "server_task_id": current_server_task_id
             }
             run_timeline(
                 events,
@@ -464,7 +508,8 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         current_run_status = {
             "state": "stopped",
             "mode": "timeline_loop",
-            "message": "已停止循環，共執行 {} 次".format(loop_count)
+            "message": "已停止循環，共執行 {} 次".format(loop_count),
+            "server_task_id": current_server_task_id
         }
     except InterruptedError as e:
         release_all()
@@ -472,7 +517,8 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         current_run_status = {
             "state": "stopped",
             "mode": "timeline_loop",
-            "message": "{}（共執行 {} 次）".format(str(e), loop_count)
+            "message": "{}（共執行 {} 次）".format(str(e), loop_count),
+            "server_task_id": current_server_task_id
         }
     except Exception as e:
         release_all()
@@ -480,7 +526,8 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         current_run_status = {
             "state": "error",
             "mode": "timeline_loop",
-            "message": str(e)
+            "message": str(e),
+            "server_task_id": current_server_task_id
         }
 
 
@@ -516,28 +563,32 @@ def run_macro_background(steps):
         current_run_status = {
             "state": "running",
             "mode": "macro",
-            "message": "正在執行 macro"
+            "message": "正在執行 macro",
+            "server_task_id": current_server_task_id
         }
         run_macro(steps)
         release_all()
         current_run_status = {
             "state": "idle",
             "mode": "macro",
-            "message": "macro 執行完成"
+            "message": "macro 執行完成",
+            "server_task_id": current_server_task_id
         }
     except InterruptedError as e:
         release_all()
         current_run_status = {
             "state": "stopped",
             "mode": "macro",
-            "message": str(e)
+            "message": str(e),
+            "server_task_id": current_server_task_id
         }
     except Exception as e:
         release_all()
         current_run_status = {
             "state": "error",
             "mode": "macro",
-            "message": str(e)
+            "message": str(e),
+            "server_task_id": current_server_task_id
         }
 
 
@@ -551,7 +602,8 @@ def _release_all_background():
             current_run_status = {
                 "state": "stopped",
                 "mode": current_run_status.get("mode", ""),
-                "message": "已停止，GPIO 全部釋放"
+                "message": "已停止，GPIO 全部釋放",
+                "server_task_id": current_server_task_id
             }
             patch_timeline_runtime(state="stopped")
 
@@ -563,7 +615,8 @@ def stop_current_run():
     current_run_status = {
         "state": "stopping",
         "mode": mode,
-        "message": "已收到停止指令，正在停止並釋放 GPIO"
+        "message": "已收到停止指令，正在停止並釋放 GPIO",
+        "server_task_id": current_server_task_id
     }
     patch_timeline_runtime(state="stopping")
     threading.Thread(target=_release_all_background, daemon=True).start()
@@ -574,7 +627,7 @@ def stop_current_run():
 
 
 def handle_request(data):
-    global current_run_thread, current_run_status
+    global current_run_thread, current_run_status, current_server_task_id
 
     action = data.get("action")
 
@@ -602,7 +655,14 @@ def handle_request(data):
 
     if action == "run_macro":
         if current_run_thread is not None and current_run_thread.is_alive():
-            return {"status": "busy", "message": "Pi 目前已有執行中的工作"}
+            return make_error_response(
+                code="busy",
+                message="Pi 目前已有執行中的工作",
+                phase="submit",
+                status="busy",
+                server_task_id=current_server_task_id,
+                diag={"last_state": str(current_run_status.get("state", "")), "elapsed_ms": 0, "threshold_ms": 0}
+            )
 
         steps = data.get("steps", [])
         stop_event.clear()
@@ -616,39 +676,44 @@ def handle_request(data):
 
     if str(data.get("type", "")).strip().lower() == "start_task":
         if current_run_thread is not None and current_run_thread.is_alive():
-            return {
-                "type": "error",
-                "status": "busy",
-                "code": "busy",
-                "message": "Pi 目前已有執行中的工作"
-            }
+            return make_error_response(
+                code="busy",
+                message="Pi 目前已有執行中的工作",
+                phase="submit",
+                status="busy",
+                server_task_id=current_server_task_id,
+                diag={"last_state": str(current_run_status.get("state", "")), "elapsed_ms": 0, "threshold_ms": 0}
+            )
 
         raw_contract_version = data.get("contract_version")
         contract_version = str(raw_contract_version).strip() if raw_contract_version is not None else ""
         if contract_version != RUNTIME_CONTRACT_VERSION:
-            return {
-                "type": "error",
-                "status": "error",
-                "code": "CONTRACT_VERSION_MISMATCH",
-                "message": "contract_version 不相容",
-                "diag": {
+            return make_error_response(
+                code="CONTRACT_VERSION_MISMATCH",
+                message="contract_version 不相容",
+                phase="submit",
+                diag={
                     "expected": RUNTIME_CONTRACT_VERSION,
-                    "actual": raw_contract_version
+                    "actual": raw_contract_version,
+                    "last_state": str(current_run_status.get("state", "")),
+                    "elapsed_ms": 0,
+                    "threshold_ms": 0
                 }
-            }
+            )
         client_task_id = str(data.get("client_task_id", "")).strip()
         if not client_task_id:
-            return {
-                "type": "error",
-                "status": "error",
-                "code": "invalid_client_task_id",
-                "message": "client_task_id 不可空白"
-            }
+            return make_error_response(
+                code="invalid_client_task_id",
+                message="client_task_id 不可空白",
+                phase="submit",
+                diag={"last_state": str(current_run_status.get("state", "")), "elapsed_ms": 0, "threshold_ms": 0}
+            )
 
         events = parse_start_task_timeline(data.get("timeline", []))
         skip_mode_values = [str(row.get("skip_mode", "")).strip().lower() for row in data.get("timeline", []) if isinstance(row, dict)]
         chosen_skip_mode = next((mode for mode in skip_mode_values if mode), BUFF_SKIP_MODE_WALK)
         buff_skip_mode = normalize_buff_skip_mode(chosen_skip_mode)
+        current_server_task_id = _new_server_task_id()
         stop_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
@@ -661,6 +726,7 @@ def handle_request(data):
             "status": "ok",
             "mode": "timeline",
             "client_task_id": client_task_id,
+            "server_task_id": current_server_task_id,
             "state": {
                 "status": "running",
                 "mode": "timeline"
@@ -673,7 +739,12 @@ def handle_request(data):
             "message": "已收到 start_task，開始背景執行"
         }
 
-    return {"type": "error", "status": "error", "code": "unknown_action", "message": "未知 action/type"}
+    return make_error_response(
+        code="unknown_action",
+        message="未知 action/type",
+        phase="request",
+        diag={"last_state": str(current_run_status.get("state", "")), "elapsed_ms": 0, "threshold_ms": 0}
+    )
 
 
 def client_thread(conn, addr):
@@ -687,7 +758,12 @@ def client_thread(conn, addr):
             data = json.loads(text)
             response = handle_request(data)
         except Exception as e:
-            response = {"status": "error", "message": str(e)}
+            response = make_error_response(
+                code="exception",
+                message=str(e),
+                phase="request",
+                diag={"last_state": str(current_run_status.get("state", "")), "elapsed_ms": 0, "threshold_ms": 0}
+            )
 
         try:
             wire = json.dumps(response, ensure_ascii=False) + "\n"
