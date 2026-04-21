@@ -333,6 +333,11 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertEqual([item.get("group_id") for item in debug.get("placement_ledger", [])], ["2", "1"])
         self.assertIn("1", debug.get("group_final_positions", {}))
         self.assertIn("2", debug.get("group_final_positions", {}))
+        group1_info = debug.get("group_final_positions", {}).get("1", {})
+        self.assertIn("final_b_range_slot", group1_info)
+        self.assertIn("final_runtime_row_range", group1_info)
+        self.assertEqual(group1_info.get("final_b_range"), group1_info.get("final_b_range_slot"))
+        self.assertTrue(isinstance(group1_info.get("final_runtime_row_range"), list))
 
     def test_allocate_randat_blocks_excludes_numeric_groups_greater_than_100(self):
         random.seed(11)
@@ -437,6 +442,8 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertIn("Execution Round #1", captured["text"])
         self.assertIn("Execution Round #2", captured["text"])
         self.assertIn("picked A-slot=", captured["text"])
+        self.assertIn("final slot B", captured["text"])
+        self.assertIn("final row idx", captured["text"])
 
     def test_render_runtime_analysis_uses_local_traces_without_backend_key_check(self):
         app = self._new_app()
@@ -486,7 +493,7 @@ class RuntimeDisplayTests(unittest.TestCase):
                 "buffGroup": "A",
                 "pickedReason": "random_pick",
                 "picked_slot": 2,
-                "placement": {"picked_slot_a_idx": 2, "base_b_idx_before_offset": 4, "final_b_range": [4, 5]},
+                "placement": {"picked_slot_a_idx": 2, "base_b_idx_before_offset": 4, "final_b_range_slot": [4, 5], "final_runtime_row_range": [7, 8]},
             },
             {
                 "execution_round": 2,
@@ -494,7 +501,7 @@ class RuntimeDisplayTests(unittest.TestCase):
                 "buffGroup": "B",
                 "pickedReason": "random_pick",
                 "picked_slot": 1,
-                "placement": {"picked_slot_a_idx": 1, "base_b_idx_before_offset": 2, "final_b_range": [2, 3]},
+                "placement": {"picked_slot_a_idx": 1, "base_b_idx_before_offset": 2, "final_b_range_slot": [2, 3], "final_runtime_row_range": [3, 4]},
             },
         ]
         app.timeline_runtime_info = {"execution_round": 2}
@@ -502,7 +509,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.render_runtime_analysis(force=True)
 
         self.assertTrue(captured["text"].startswith("Previous round final positions (Round #1):"))
-        self.assertIn("A2 -> base B4 -> final B4~5", captured["text"])
+        self.assertIn("A2 -> base B4 -> final slot B4~5 -> final row idx 7~8", captured["text"])
 
     def test_render_runtime_analysis_shows_previous_round_summary_for_latest_round3(self):
         app = self._new_app()
@@ -513,16 +520,16 @@ class RuntimeDisplayTests(unittest.TestCase):
         )
         app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
         app.runtime_round_traces = [
-            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 0, "base_b_idx_before_offset": 0, "final_b_range": [0, 1]}},
-            {"execution_round": 2, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 3, "base_b_idx_before_offset": 6, "final_b_range": [6, 7]}},
-            {"execution_round": 3, "draw_order": 1, "buffGroup": "C", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 5, "base_b_idx_before_offset": 8, "final_b_range": [8, 9]}},
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 0, "base_b_idx_before_offset": 0, "final_b_range_slot": [0, 1], "final_runtime_row_range": [0, 1]}},
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 3, "base_b_idx_before_offset": 6, "final_b_range_slot": [6, 7], "final_runtime_row_range": [9, 10]}},
+            {"execution_round": 3, "draw_order": 1, "buffGroup": "C", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 5, "base_b_idx_before_offset": 8, "final_b_range_slot": [8, 9], "final_runtime_row_range": [12, 13]}},
         ]
         app.timeline_runtime_info = {"execution_round": 3}
 
         app.render_runtime_analysis(force=True)
 
         self.assertIn("Previous round final positions (Round #2):", captured["text"])
-        self.assertIn("A3 -> base B6 -> final B6~7", captured["text"])
+        self.assertIn("A3 -> base B6 -> final slot B6~7 -> final row idx 9~10", captured["text"])
         self.assertNotIn("Previous round final positions (Round #1):", captured["text"])
 
     def test_render_runtime_analysis_does_not_show_previous_summary_for_round1(self):
@@ -556,14 +563,14 @@ class RuntimeDisplayTests(unittest.TestCase):
                 "drawOrder": 1,
                 "buffGroup": "A",
                 "pickedReason": "random_pick",
-                "placement": {"picked_slot_a_idx": 2, "base_b_idx_before_offset": 4, "final_b_range": [4, 5]},
+                "placement": {"picked_slot_a_idx": 2, "base_b_idx_before_offset": 4, "final_b_range_slot": [4, 5], "final_runtime_row_range": [11, 12]},
             },
             {
                 "executionRound": 2,
                 "drawOrder": 1,
                 "buffGroup": "B",
                 "pickedReason": "random_pick",
-                "placement": {"picked_slot_a_idx": 1, "base_b_idx_before_offset": 2, "final_b_range": [2, 3]},
+                "placement": {"picked_slot_a_idx": 1, "base_b_idx_before_offset": 2, "final_b_range_slot": [2, 3], "final_runtime_row_range": [6, 7]},
             },
         ]
         app.timeline_runtime_info = {"executionRound": 2}
@@ -571,8 +578,38 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.render_runtime_analysis(force=True)
 
         self.assertIn("Previous round final positions (Round #1):", captured["text"])
-        self.assertIn("A2 -> base B4 -> final B4~5", captured["text"])
+        self.assertIn("A2 -> base B4 -> final slot B4~5 -> final row idx 11~12", captured["text"])
         self.assertIn("Execution Round #2", captured["text"])
+
+    def test_render_runtime_analysis_shows_slot_and_row_idx_ranges_together(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {
+                "execution_round": 2,
+                "draw_order": 1,
+                "buffGroup": "A",
+                "pickedReason": "random_pick",
+                "placement": {
+                    "picked_slot_a_idx": 4,
+                    "base_b_idx_before_offset": 1,
+                    "final_b_range_slot": [2, 3],
+                    "final_runtime_row_range": [8, 9]
+                },
+            }
+        ]
+        app.timeline_runtime_info = {"execution_round": 2}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("final slot B=2~3", captured["text"])
+        self.assertIn("final row idx=8~9", captured["text"])
+        self.assertNotIn("final row idx=2~3", captured["text"])
 
     def test_render_runtime_analysis_emits_trace_diagnosis_when_previous_round_missing(self):
         app = self._new_app()
@@ -1086,6 +1123,10 @@ class TimelineWorkflowTests(unittest.TestCase):
         runtime_meta = app.last_prepared_payload.get("runtime_meta", {})
         self.assertIn("placement_ledger", runtime_meta)
         self.assertIn("group_final_positions", runtime_meta)
+        placement_ledger = runtime_meta.get("placement_ledger", [])
+        if placement_ledger:
+            self.assertIn("final_b_range_slot", placement_ledger[0])
+            self.assertIn("final_runtime_row_range", placement_ledger[0])
 
     def test_build_start_task_payload_promotes_execution_round_runtime_fields_to_top_level(self):
         app = self._new_workflow_app()
