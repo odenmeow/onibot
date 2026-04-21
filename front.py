@@ -2989,13 +2989,24 @@ class App:
         prepared_execution_round = int(prepared_trace_key.get("execution_round", 0) or 0)
         backend_runtime_version = int(backend_trace_key.get("runtime_version", 0) or 0)
         backend_execution_round = int(backend_trace_key.get("execution_round", 0) or 0)
+        rejection_reasons = []
         if allow_backend_round_traces and prepared_task_id and server_task_id and prepared_task_id != server_task_id:
+            rejection_reasons.append("server_task_id mismatch")
+            allow_backend_round_traces = False
+        if allow_backend_round_traces and prepared_runtime_version > 0 and backend_runtime_version <= 0:
+            rejection_reasons.append("runtime_version missing")
             allow_backend_round_traces = False
         if allow_backend_round_traces and prepared_runtime_version > 0 and backend_runtime_version > 0 and prepared_runtime_version != backend_runtime_version:
+            rejection_reasons.append("runtime_version mismatch")
+            allow_backend_round_traces = False
+        if allow_backend_round_traces and prepared_execution_round > 0 and backend_execution_round <= 0:
+            rejection_reasons.append("execution_round missing")
             allow_backend_round_traces = False
         if allow_backend_round_traces and prepared_execution_round > 0 and backend_execution_round > 0 and prepared_execution_round != backend_execution_round:
+            rejection_reasons.append("execution_round mismatch")
             allow_backend_round_traces = False
         if allow_backend_round_traces and not self._is_runtime_key_compatible(backend_trace_key, prepared_trace_key):
+            rejection_reasons.append("consistency_key mismatch")
             allow_backend_round_traces = False
         if allow_backend_round_traces:
             round_traces = backend_round_traces
@@ -3004,6 +3015,10 @@ class App:
                 "server_task_id": server_task_id
             }
             self.runtime_trace_status_note = ""
+        elif backend_round_traces and rejection_reasons:
+            if isinstance(self.runtime_round_traces, list) and self.runtime_round_traces:
+                round_traces = list(self.runtime_round_traces)
+            self.runtime_trace_status_note = "⚠ 已拒收後端舊 traces（{}）".format(", ".join(rejection_reasons))
         elif isinstance(self.runtime_round_traces, list) and self.runtime_round_traces:
             round_traces = list(self.runtime_round_traces)
         runtime_state = str(runtime.get("state", "")).strip().lower()
@@ -4151,11 +4166,22 @@ class App:
         self.runtime_working_timeline = []
         self.runtime_display_frozen = False
         self.runtime_manual_restore_active = False
+        backend_runtime_reset_ok = True
+        if hasattr(self, "request_pi") and callable(getattr(self, "request_pi")):
+            try:
+                reset_res = self.request_pi({"action": "reset_runtime"}, write_response=False, channel="control")
+                if not isinstance(reset_res, dict) or str(reset_res.get("status", "")).strip().lower() != "ok":
+                    backend_runtime_reset_ok = False
+            except Exception:
+                backend_runtime_reset_ok = False
 
         self.refresh_tree()
         self.refresh_preview()
         self.update_current_labels()
-        self.set_status("已載入：{}，Runtime 已清空".format(self.current_name))
+        if backend_runtime_reset_ok:
+            self.set_status("已載入：{}，Runtime 已清空".format(self.current_name))
+        else:
+            self.set_status("已載入：{}，Runtime 已清空（前端）但後端未清空，可能顯示舊 round".format(self.current_name))
 
     def delete_selected_timeline(self):
         name = self.get_selected_saved_name()
