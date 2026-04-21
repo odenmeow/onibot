@@ -1743,6 +1743,11 @@ class App:
         self.front_loop_enabled = False
         self.front_loop_after_id = None
         self.front_loop_round = 0
+        self.front_round_state = "idle"
+        self.front_inflight_client_task_id = ""
+        self.pending_runtime_version = 0
+        self.current_round_runtime_version = 0
+        self.next_round_prepared_cache = None
         self.origin_snapshot_before_loop = []
         self.origin_version = 0
         self.runtime_version = 0
@@ -2399,29 +2404,10 @@ class App:
             "runtime_version": int(getattr(self, "runtime_version", 0)),
             "processed_count": runtime.get("processed_count"),
             "events_total": runtime.get("events_total"),
-            "round_traces": [],
-            "move_gap_logs": list(getattr(self, "runtime_move_gap_logs", []) or [])[-20:]
+            "round_traces": []
         }
         lines = []
-        if payload["move_gap_logs"]:
-            lines.append("move | range(before->after) | keep(A/B) | preserved | compensation(req->applied)")
-            lines.append("-" * 84)
-            for item in payload["move_gap_logs"]:
-                if not isinstance(item, dict):
-                    continue
-                lines.append(
-                    "{:>4} | {} -> {} | {:>7} | {:>9} | {:+.4f} -> {:+.4f}".format(
-                        str(item.get("direction", "")),
-                        item.get("range_before", []),
-                        item.get("range_after", []),
-                        str(item.get("preserve_target", "-")),
-                        str(bool(item.get("preserved", False))).lower(),
-                        _safe_float(item.get("compensation_requested", 0.0)),
-                        _safe_float(item.get("compensation_applied", 0.0))
-                    )
-                )
-            lines.append("")
-        lines.append("round | group_id | src_range -> dst_range | picked_slot | self_picked | color")
+        lines.append("POOL / group -> picked idx (itself?)")
         lines.append("-" * 84)
         for trace in traces:
             if not isinstance(trace, dict):
@@ -2462,17 +2448,23 @@ class App:
             }
             payload["round_traces"].append(trace_with_group_meta)
             lines.append(
-                "{:>5} | {:>8} | {} -> {} | {:>11} | {:>11} | {}".format(
+                "POOL(r{} g{}): candidates={} free={} dice={} pos={}".format(
                     str(round_no),
                     group,
-                    src_range,
-                    dst_range,
-                    str(picked_slot),
-                    str(self_picked).lower(),
-                    color
+                    candidate_list,
+                    free_candidate_list,
+                    dice_value,
+                    picked_pos
                 )
             )
-            lines.append("      {}，原因：{}".format(group_label, self._round_trace_reason_label(reason)))
+            lines.append(
+                "group {} -> picked {} (itself? {}) [{}]".format(
+                    group_label,
+                    str(picked_slot),
+                    str(self_picked).lower(),
+                    self._round_trace_reason_label(reason)
+                )
+            )
 
         self.text.delete("1.0", tk.END)
         if lines:
@@ -2493,6 +2485,15 @@ class App:
         round_traces = runtime.get("round_traces", [])
         if not isinstance(round_traces, list):
             round_traces = []
+        runtime_state = str(runtime.get("state", "")).strip().lower()
+        if (
+            runtime_state == "idle"
+            and not round_traces
+            and self.front_round_state in {"waiting_ack", "running", "round_done", "preparing_next"}
+            and isinstance(self.runtime_round_traces, list)
+            and self.runtime_round_traces
+        ):
+            round_traces = list(self.runtime_round_traces)
 
         runtime_by_index = {}
         recent_ok = []
@@ -3727,7 +3728,7 @@ class App:
     def stop_pi(self):
         try:
             self.user_stop_requested = True
-            self.front_loop_enabled = False
+            self._mark_loop_terminal()
             after_id = getattr(self, "front_loop_after_id", None)
             if after_id:
                 try:
@@ -3765,6 +3766,22 @@ class App:
         finally:
             self._update_runtime_control_buttons()
 
+    def _set_front_round_state(self, state):
+        self.front_round_state = str(state or "idle").strip().lower()
+
+    def _mark_loop_terminal(self):
+        self.front_loop_enabled = False
+        self.front_inflight_client_task_id = ""
+        self.pending_runtime_version = 0
+        self.next_round_prepared_cache = None
+        self._set_front_round_state("idle")
+
+    def _schedule_next_round_dispatch(self, display_name):
+        if not self.front_loop_enabled:
+            return
+        self._set_front_round_state("preparing_next")
+        self._dispatch_front_loop_once(display_name)
+
     def send_timeline_loop(self):
         if not self.timeline:
             self.show_warning("提醒", "請先錄製並分析，或載入已保存項目")
@@ -3795,6 +3812,11 @@ class App:
         display_name = self.current_name if self.current_name else "未命名資料"
         self.front_loop_enabled = True
         self.front_loop_round = 0
+        self.front_inflight_client_task_id = ""
+        self.pending_runtime_version = 0
+        self.current_round_runtime_version = 0
+        self.next_round_prepared_cache = None
+        self._set_front_round_state("preparing")
         self._update_runtime_control_buttons()
         self.set_status("已啟用前端重複送出：{}".format(display_name))
         self._dispatch_front_loop_once(display_name)
@@ -3802,20 +3824,31 @@ class App:
     def _dispatch_front_loop_once(self, display_name):
         if not self.front_loop_enabled:
             return
+        if self.front_round_state not in {"preparing", "preparing_next", "idle"}:
+            return
 
-        prepared_events, resolve_note = self.prepare_events_for_send(
-            action_reason="before_send_loop",
-            base_events=self.origin_snapshot_before_loop
-        )
+        self._set_front_round_state("preparing")
+        cached = self.next_round_prepared_cache if isinstance(self.next_round_prepared_cache, dict) else None
+        if cached and isinstance(cached.get("events"), list):
+            prepared_events = self.copy_events(cached.get("events", []))
+            resolve_note = str(cached.get("resolve_note", "")).strip()
+            self.next_round_prepared_cache = None
+        else:
+            prepared_events, resolve_note = self.prepare_events_for_send(
+                action_reason="before_send_loop",
+                base_events=self.origin_snapshot_before_loop
+            )
         if prepared_events is None:
-            self.front_loop_enabled = False
+            self._mark_loop_terminal()
             self._update_runtime_control_buttons()
             return
+        self.pending_runtime_version = int(self.runtime_version) + 1
         self.runtime_working_timeline = self.copy_events(prepared_events)
-        self.runtime_version += 1
+        self._set_front_round_state("waiting_ack")
 
         backend_events = self._sanitize_events_for_backend(prepared_events)
         payload = self._build_start_task_payload(backend_events)
+        self.front_inflight_client_task_id = str(payload.get("client_task_id", "")).strip()
         ack_timeout_ms = self._get_ack_timeout_ms()
 
         try:
@@ -3827,6 +3860,8 @@ class App:
 
             def do_send(delay_meta):
                 if not self.front_loop_enabled:
+                    return
+                if self.front_round_state != "waiting_ack":
                     return
                 try:
                     res = self.request_pi(
@@ -3851,20 +3886,29 @@ class App:
                     if self._is_contract_version_mismatch(res):
                         self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
-                        self.front_loop_enabled = False
+                        self._mark_loop_terminal()
                         self._update_runtime_control_buttons()
                         self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
                         return
-                    if res.get("status") in ("error", "busy"):
+                    status_text = str(res.get("status", "")).strip().lower()
+                    ack_type = str(res.get("type", "")).strip().lower()
+                    if status_text in ("error", "busy") or ack_type != "ack":
                         self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
-                        self.front_loop_after_id = self.root.after(
-                            300,
-                            lambda: self._dispatch_front_loop_once(display_name)
+                        self.set_frontend_error(
+                            self._format_backend_error(res) if isinstance(res, dict) else "start_task ACK 失敗"
                         )
+                        self._mark_loop_terminal()
+                        self.runtime_wait_ack_active = False
+                        self.runtime_display_frozen = True
+                        self._update_runtime_control_buttons()
                         return
+                    self.runtime_version = int(self.pending_runtime_version or self.runtime_version)
+                    self.current_round_runtime_version = int(self.runtime_version)
+                    self.pending_runtime_version = 0
                     self._arm_first_event_progress_watch(sent_at_monotonic, delay_meta["send_delay_sec"], first_event_timing)
                     self._monitor_after_ack(res)
+                    self._set_front_round_state("running")
 
                     self.front_loop_round += 1
                     suffix = ""
@@ -3873,6 +3917,16 @@ class App:
                     self.set_status(
                         "前端重複送出中：{} 第 {} 輪{}".format(display_name, self.front_loop_round, suffix)
                     )
+                    if self.next_round_prepared_cache is None:
+                        next_events, next_note = self.prepare_events_for_send(
+                            action_reason="before_send_loop_prefetch",
+                            base_events=self.origin_snapshot_before_loop
+                        )
+                        if next_events is not None:
+                            self.next_round_prepared_cache = {
+                                "events": self.copy_events(next_events),
+                                "resolve_note": next_note
+                            }
                     self._poll_front_loop_round_done(display_name)
                 except Exception as e:
                     if isinstance(e, PiRequestError) and e.kind == "ack_read_timeout":
@@ -3885,7 +3939,7 @@ class App:
                     else:
                         self._reset_task_monitor()
                         self.set_frontend_error(str(e))
-                    self.front_loop_enabled = False
+                    self._mark_loop_terminal()
                     self._update_runtime_control_buttons()
                     self.runtime_display_frozen = True
                     self.show_error("重複傳送失敗", str(e))
@@ -3893,7 +3947,7 @@ class App:
             delay_override = None if self.front_loop_round == 0 else 0.0
             self.apply_send_delay_if_needed(do_send, delay_override=delay_override)
         except Exception as e:
-            self.front_loop_enabled = False
+            self._mark_loop_terminal()
             self._update_runtime_control_buttons()
             self.set_frontend_error(str(e))
             self.runtime_display_frozen = True
@@ -3907,19 +3961,28 @@ class App:
             runtime = status_response.get("timeline_runtime", {})
             state = str(runtime.get("state", "")).strip().lower()
             if state in ("running", "paused", "resumed"):
+                self._set_front_round_state("running")
                 self.front_loop_after_id = self.root.after(
                     250,
                     lambda: self._poll_front_loop_round_done(display_name)
                 )
                 return
+            if state == "finished":
+                self._set_front_round_state("round_done")
+                self.front_inflight_client_task_id = ""
+                self.front_loop_after_id = self.root.after(
+                    80,
+                    lambda: self._schedule_next_round_dispatch(display_name)
+                )
+                return
             if state in ("stopped", "error"):
-                self.front_loop_enabled = False
+                self._mark_loop_terminal()
                 self.front_loop_after_id = None
                 self._update_runtime_control_buttons()
                 return
             self.front_loop_after_id = self.root.after(
                 80,
-                lambda: self._dispatch_front_loop_once(display_name)
+                lambda: self._poll_front_loop_round_done(display_name)
             )
         except Exception:
             self.front_loop_after_id = self.root.after(
@@ -4054,7 +4117,7 @@ class App:
         self.last_prepared_payload = {
             "action_reason": action_reason,
             "origin_version": int(getattr(self, "origin_version", 0)),
-            "runtime_version": int(getattr(self, "runtime_version", 0)) + 1,
+            "runtime_version": int(getattr(self, "pending_runtime_version", 0) or (int(getattr(self, "runtime_version", 0)) + 1)),
             "rslot_count": int(rslot_count),
             "prepared_events": self.copy_events(events),
             "block_assignments": copy.deepcopy(block_assignments),
