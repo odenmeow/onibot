@@ -483,6 +483,32 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         }
 
 
+def parse_start_task_timeline(raw_timeline):
+    if not isinstance(raw_timeline, list):
+        raise ValueError("timeline 必須是 list")
+    events = []
+    for i, row in enumerate(raw_timeline):
+        if not isinstance(row, dict):
+            raise ValueError("timeline 第 {} 列格式錯誤".format(i))
+        action = str(row.get("action", "")).strip().lower()
+        button = str(row.get("btn", "")).strip().lower()
+        if action not in ("press", "release"):
+            raise ValueError("timeline 第 {} 列 action 錯誤".format(i))
+        if button not in BUTTONS:
+            raise ValueError("timeline 第 {} 列 btn 不存在: {}".format(i, button))
+
+        try:
+            at_ms = int(row.get("at_ms", 0))
+        except Exception:
+            raise ValueError("timeline 第 {} 列 at_ms 錯誤".format(i))
+        events.append({
+            "type": action,
+            "button": button,
+            "at": max(0, at_ms) / 1000.0
+        })
+    return events
+
+
 def run_macro_background(steps):
     global current_run_status
     try:
@@ -587,12 +613,36 @@ def handle_request(data):
         current_run_thread.start()
         return {"status": "ok", "mode": "macro", "message": "已收到 macro，開始背景執行"}
 
-    if action == "run_timeline":
+    if str(data.get("type", "")).strip().lower() == "start_task":
         if current_run_thread is not None and current_run_thread.is_alive():
-            return {"status": "busy", "message": "Pi 目前已有執行中的工作"}
+            return {
+                "type": "error",
+                "status": "busy",
+                "code": "busy",
+                "message": "Pi 目前已有執行中的工作"
+            }
 
-        events = data.get("events", [])
-        buff_skip_mode = normalize_buff_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_WALK))
+        contract_version = str(data.get("contract_version", "")).strip()
+        if contract_version != "v1":
+            return {
+                "type": "error",
+                "status": "error",
+                "code": "invalid_contract_version",
+                "message": "contract_version 必須是 v1"
+            }
+        client_task_id = str(data.get("client_task_id", "")).strip()
+        if not client_task_id:
+            return {
+                "type": "error",
+                "status": "error",
+                "code": "invalid_client_task_id",
+                "message": "client_task_id 不可空白"
+            }
+
+        events = parse_start_task_timeline(data.get("timeline", []))
+        skip_mode_values = [str(row.get("skip_mode", "")).strip().lower() for row in data.get("timeline", []) if isinstance(row, dict)]
+        chosen_skip_mode = next((mode for mode in skip_mode_values if mode), BUFF_SKIP_MODE_WALK)
+        buff_skip_mode = normalize_buff_skip_mode(chosen_skip_mode)
         stop_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
@@ -601,33 +651,23 @@ def handle_request(data):
         )
         current_run_thread.start()
         return {
+            "type": "ack",
             "status": "ok",
             "mode": "timeline",
+            "client_task_id": client_task_id,
+            "state": {
+                "status": "running",
+                "mode": "timeline"
+            },
+            "progress": {
+                "processed_count": 0,
+                "events_total": len(events)
+            },
             "buff_skip_mode": buff_skip_mode,
-            "message": "已收到 timeline，開始背景執行"
+            "message": "已收到 start_task，開始背景執行"
         }
 
-    if action == "run_timeline_loop":
-        if current_run_thread is not None and current_run_thread.is_alive():
-            return {"status": "busy", "message": "Pi 目前已有執行中的工作"}
-
-        events = data.get("events", [])
-        buff_skip_mode = normalize_buff_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_WALK))
-        stop_event.clear()
-        current_run_thread = threading.Thread(
-            target=run_timeline_loop_background,
-            args=(events, buff_skip_mode),
-            daemon=True
-        )
-        current_run_thread.start()
-        return {
-            "status": "ok",
-            "mode": "timeline_loop",
-            "buff_skip_mode": buff_skip_mode,
-            "message": "已收到 timeline，開始重複執行"
-        }
-
-    return {"status": "error", "message": "未知 action"}
+    return {"type": "error", "status": "error", "code": "unknown_action", "message": "未知 action/type"}
 
 
 def client_thread(conn, addr):

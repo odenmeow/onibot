@@ -8,6 +8,7 @@ import copy
 import time
 import threading 
 import random
+import uuid
 import tkinter as tk
 from tkinter import ttk, simpledialog, colorchooser, messagebox
 from pynput import keyboard
@@ -1272,10 +1273,12 @@ class App:
         self.refresh_preview()
 
     def request_pi(self, payload, success_status=None, write_response=True, channel="control", timeout=None):
-        if self.offline_mode and payload.get("action") != "ping":
+        payload_action = str(payload.get("action", "")).strip().lower()
+        payload_type = str(payload.get("type", "")).strip().lower()
+        if self.offline_mode and payload_action != "ping":
             raise ConnectionError("目前為離線模式，請先按「測試連線」")
 
-        action = str(payload.get("action", "")).strip().lower()
+        action = payload_action or payload_type
         retryable_actions = {"ping", "status", "list_buttons"}
         allow_retry = action in retryable_actions
         last_err = None
@@ -1306,7 +1309,7 @@ class App:
                     kind = self._classify_request_error(last_err)
                     err_msg = str(last_err)
                     if kind == "timeout":
-                        if channel == "control" and action in {"run_timeline", "run_timeline_loop", "run_macro", "stop"}:
+                        if channel == "control" and action in {"start_task", "run_macro", "stop"}:
                             err_msg = "控制請求逾時：未在 {:.2f} 秒內收到 ACK 回應（action={}）".format(
                                 req_timeout,
                                 action or "unknown"
@@ -2001,11 +2004,11 @@ class App:
         self.write_text(payload or {"prepared": "尚無資料"})
 
     def _build_preview_payload(self):
+        sanitized = self._sanitize_events_for_backend(self.timeline)
         return {
             "current_name": self.current_name,
             "pi_host": self.config["pi_host"],
-            "action": "run_timeline",
-            "events": self.timeline,
+            "request_preview": self._build_start_task_payload(sanitized),
             "simultaneous_groups": build_overlap_summary(self.timeline)
         }
 
@@ -2285,9 +2288,38 @@ class App:
                     continue
                 if text in {"row_color", "replicatedRow"}:
                     continue
+                if text in {"round", "runtime_meta"}:
+                    continue
                 row[text] = value
             sanitized.append(row)
         return sanitized
+
+    def _next_client_task_id(self):
+        return "ct-{}-{}".format(int(time.time() * 1000), uuid.uuid4().hex[:10])
+
+    def _build_start_task_payload(self, backend_events):
+        sent_at_ms = int(time.time() * 1000)
+        skip_mode = self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
+        timeline = []
+        for idx, ev in enumerate(backend_events or []):
+            try:
+                at_ms = int(round(max(0.0, float(ev.get("at", 0.0))) * 1000.0))
+            except Exception:
+                at_ms = 0
+            timeline.append({
+                "idx": int(idx),
+                "at_ms": at_ms,
+                "action": str(ev.get("type", "")).strip().lower(),
+                "btn": str(ev.get("button", "")).strip().lower(),
+                "skip_mode": skip_mode
+            })
+        return {
+            "type": "start_task",
+            "contract_version": "v1",
+            "client_task_id": self._next_client_task_id(),
+            "sent_at_ms": sent_at_ms,
+            "timeline": timeline
+        }
 
     def _arm_first_event_progress_watch(self, sent_at_monotonic, send_delay_sec, first_event_timing):
         if not first_event_timing:
@@ -3163,11 +3195,7 @@ class App:
         self._show_runtime_view_timeline()
 
         backend_events = self._sanitize_events_for_backend(prepared_events)
-        payload = {
-            "action": "run_timeline",
-            "events": backend_events,
-            "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
-        }
+        payload = self._build_start_task_payload(backend_events)
 
         display_name = self.current_name if self.current_name else "未命名資料"
 
@@ -3249,11 +3277,7 @@ class App:
         self._show_runtime_view_timeline()
 
         backend_events = self._sanitize_events_for_backend(prepared_events)
-        payload = {
-            "action": "run_timeline",
-            "events": backend_events,
-            "buff_skip_mode": self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
-        }
+        payload = self._build_start_task_payload(backend_events)
 
         try:
             self.set_frontend_error("")
