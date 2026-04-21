@@ -15,6 +15,7 @@ from pynput import keyboard
 
 DEFAULT_PI_HOST = "192.168.100.140"
 PI_PORT = 5000
+RUNTIME_CONTRACT_VERSION = "v1"
 BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
@@ -1345,6 +1346,27 @@ class App:
             })
         return res
 
+    def _is_contract_version_mismatch(self, response):
+        if not isinstance(response, dict):
+            return False
+        code = str(response.get("code", "")).strip().upper()
+        return code == "CONTRACT_VERSION_MISMATCH"
+
+    def _build_contract_version_mismatch_message(self, response):
+        diag = response.get("diag", {}) if isinstance(response, dict) else {}
+        if not isinstance(diag, dict):
+            diag = {}
+        expected = diag.get("expected")
+        actual = diag.get("actual")
+        expected_text = str(expected).strip() if expected is not None else RUNTIME_CONTRACT_VERSION
+        actual_text = "缺失" if actual in (None, "") else str(actual)
+        return (
+            "前後端執行契約版本不一致，已停止送出流程。\n"
+            "請更新前端或後端後重試。\n"
+            "預期版本：{}\n"
+            "實際版本：{}".format(expected_text, actual_text)
+        )
+
     def ensure_connection(self, channel="control", timeout=None):
         conn = self.status_conn if channel == "status" else self.control_conn
         conn_file = self.status_conn_file if channel == "status" else self.control_conn_file
@@ -2315,7 +2337,7 @@ class App:
             })
         return {
             "type": "start_task",
-            "contract_version": "v1",
+            "contract_version": RUNTIME_CONTRACT_VERSION,
             "client_task_id": self._next_client_task_id(),
             "sent_at_ms": sent_at_ms,
             "timeline": timeline
@@ -3221,6 +3243,10 @@ class App:
                 self._reset_first_event_progress_watch()
                 self._restore_pre_run_snapshot_after_runtime()
                 self.set_status("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
+            elif self._is_contract_version_mismatch(res):
+                self._reset_first_event_progress_watch()
+                self._restore_pre_run_snapshot_after_runtime()
+                self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
             elif res.get("status") in ("error", "busy"):
                 self._reset_first_event_progress_watch()
                 self._restore_pre_run_snapshot_after_runtime()
@@ -3299,6 +3325,12 @@ class App:
                 "request": payload,
                 "response": res
             })
+            if self._is_contract_version_mismatch(res):
+                self._reset_first_event_progress_watch()
+                self._restore_pre_run_snapshot_after_runtime()
+                self.front_loop_enabled = False
+                self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
+                return
             if res.get("status") in ("error", "busy"):
                 self._reset_first_event_progress_watch()
                 self._restore_pre_run_snapshot_after_runtime()

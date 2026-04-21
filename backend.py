@@ -13,6 +13,7 @@ ACTIVE_LOW = True
 DEFAULT_PRESS_TIME = 0.25
 BUFF_SKIP_MODE_WALK = "walk"          # 走過：不按，但保留原時間軸（照等）
 BUFF_SKIP_MODE_COMPRESS = "compress"  # 略過：不按，並壓縮時間軸（不等）
+RUNTIME_CONTRACT_VERSION = "v1"
 
 BUTTONS = {
     "fn": 26,
@@ -622,13 +623,18 @@ def handle_request(data):
                 "message": "Pi 目前已有執行中的工作"
             }
 
-        contract_version = str(data.get("contract_version", "")).strip()
-        if contract_version != "v1":
+        raw_contract_version = data.get("contract_version")
+        contract_version = str(raw_contract_version).strip() if raw_contract_version is not None else ""
+        if contract_version != RUNTIME_CONTRACT_VERSION:
             return {
                 "type": "error",
                 "status": "error",
-                "code": "invalid_contract_version",
-                "message": "contract_version 必須是 v1"
+                "code": "CONTRACT_VERSION_MISMATCH",
+                "message": "contract_version 不相容",
+                "diag": {
+                    "expected": RUNTIME_CONTRACT_VERSION,
+                    "actual": raw_contract_version
+                }
             }
         client_task_id = str(data.get("client_task_id", "")).strip()
         if not client_task_id:
