@@ -109,7 +109,7 @@ def make_error_response(code, message, phase, diag=None, status="error", server_
     }
 
 
-def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_id=""):
+def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_id="", runtime_version=0, execution_round=0):
     with runtime_lock:
         timeline_runtime["run_id"] += 1
         timeline_runtime["server_task_id"] = str(server_task_id or "")
@@ -122,8 +122,8 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
         timeline_runtime["last_event"] = None
         timeline_runtime["round_traces"] = []
         timeline_runtime["runtime_diag"] = {}
-        timeline_runtime["runtime_version"] = 0
-        timeline_runtime["execution_round"] = 0
+        timeline_runtime["runtime_version"] = int(runtime_version or 0)
+        timeline_runtime["execution_round"] = int(execution_round or 0)
         timeline_runtime["progress"] = {
             "current_idx": -1,
             "event_time_ms": _now_ms(),
@@ -609,7 +609,12 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
     return results
 
 
-def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
+def run_timeline_background(
+    events,
+    buff_skip_mode=BUFF_SKIP_MODE_WALK,
+    runtime_version=0,
+    execution_round=0
+):
     global current_run_status, current_run_clock
     try:
         pause_event.clear()
@@ -619,7 +624,9 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
             "running",
             events_total=len(events),
             loop_count=1,
-            server_task_id=current_server_task_id
+            server_task_id=current_server_task_id,
+            runtime_version=runtime_version,
+            execution_round=execution_round
         )
         current_run_status = {
             "state": "running",
@@ -809,22 +816,54 @@ def _release_all_background():
 
 def stop_current_run():
     global current_run_status
+    runtime_snapshot = get_timeline_runtime_snapshot()
+    is_active_task = bool(current_run_thread is not None and current_run_thread.is_alive())
+    stop_code = "stopped" if is_active_task else "no_active_task"
+
     stop_event.set()
     pause_event.clear()
     if current_run_clock is not None:
         current_run_clock.resume()
-    mode = current_run_status.get("mode", "")
-    current_run_status = {
-        "state": "stopping",
-        "mode": mode,
-        "message": "已收到停止指令，正在停止並釋放 GPIO",
-        "server_task_id": current_server_task_id
-    }
-    patch_timeline_runtime(state="stopped")
-    threading.Thread(target=_release_all_background, daemon=True).start()
+    if is_active_task:
+        mode = current_run_status.get("mode", "")
+        current_run_status = {
+            "state": "stopping",
+            "mode": mode,
+            "message": "已收到停止指令，正在停止並釋放 GPIO",
+            "server_task_id": current_server_task_id
+        }
+        patch_timeline_runtime(state="stopped")
+        threading.Thread(target=_release_all_background, daemon=True).start()
+    else:
+        runtime_state = str(runtime_snapshot.get("state", "idle")).strip().lower()
+        if runtime_state == "idle":
+            patch_timeline_runtime(
+                state="stopped",
+                execution_round=0,
+                processed_count=0,
+                events_total=0,
+                server_task_id=""
+            )
+        else:
+            patch_timeline_runtime(state="stopped")
+        current_run_status = {
+            "state": "stopped",
+            "mode": str(runtime_snapshot.get("mode", current_run_status.get("mode", ""))),
+            "message": "目前沒有執行中的工作",
+            "server_task_id": str(runtime_snapshot.get("server_task_id", current_server_task_id))
+        }
+
+    runtime_snapshot = get_timeline_runtime_snapshot()
     return {
-        "status": "ok",
-        "message": "已收到停止指令"
+        "status": "stopped",
+        "code": stop_code,
+        "state": "stopped",
+        "message": "已收到停止指令" if is_active_task else "目前沒有執行中的工作",
+        "execution_round": int(runtime_snapshot.get("execution_round", 0) or 0),
+        "processed_count": int(runtime_snapshot.get("processed_count", 0) or 0),
+        "events_total": int(runtime_snapshot.get("events_total", 0) or 0),
+        "server_task_id": str(runtime_snapshot.get("server_task_id", current_server_task_id)),
+        "timeline_runtime": runtime_snapshot
     }
 
 
@@ -1033,7 +1072,7 @@ def handle_request(data):
         pause_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
-            args=(events, buff_skip_mode),
+            args=(events, buff_skip_mode, max(0, incoming_runtime_version), max(0, incoming_execution_round)),
             daemon=True
         )
         current_run_thread.start()
