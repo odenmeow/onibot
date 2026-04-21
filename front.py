@@ -27,6 +27,7 @@ FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
 ACK_TIMEOUT_MS = 1500
 START_TIMEOUT_MS = 5000
 PROGRESS_STALL_MS = 3000
+HANDSHAKE_ACTION = "status"
 ROUND_TRACE_REASON_LABELS = {
     "randat_disabled": "未啟用 randat（無可用 randat 列）",
     "fallback_no_free_slot": "無可用 idx（候選位置皆被占用）",
@@ -85,6 +86,12 @@ pressed_keys = set()
 listener = None
 
 
+class PiRequestError(Exception):
+    def __init__(self, kind, message):
+        super().__init__(message)
+        self.kind = str(kind or "request_error")
+
+
 def ensure_dirs():
     if not os.path.exists(SAVE_DIR):
         os.makedirs(SAVE_DIR)
@@ -98,6 +105,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
+            "ack_timeout_ms": ACK_TIMEOUT_MS,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -132,6 +140,7 @@ def load_config():
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": normalize_front_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
+            "ack_timeout_ms": int(data.get("ack_timeout_ms", ACK_TIMEOUT_MS)),
             "hint_note_text": str(data.get("hint_note_text", DEFAULT_HINT_NOTE_TEXT)),
             "ui_recent_colors": normalized_recent,
             "ui_layout": {
@@ -150,6 +159,7 @@ def load_config():
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
+            "ack_timeout_ms": ACK_TIMEOUT_MS,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -1259,6 +1269,78 @@ class App:
             return "connection_error"
         return "request_error"
 
+    def _get_ack_timeout_ms(self):
+        raw = self.config.get("ack_timeout_ms", ACK_TIMEOUT_MS)
+        try:
+            value = int(raw)
+        except Exception:
+            value = ACK_TIMEOUT_MS
+        return max(200, value)
+
+    def _build_request_diag_message(self, kind, action_label, timeout_sec, handshake_contract_version=None, detail=None):
+        timeout_ms = int(max(1.0, float(timeout_sec) * 1000.0))
+        lines = [
+            "{}".format(str(kind or "request_error")),
+            "pi_host={}".format(self.config.get("pi_host", DEFAULT_PI_HOST)),
+            "port={}".format(PI_PORT),
+            "action/type={}".format(action_label or "unknown"),
+            "timeout_ms={}".format(timeout_ms)
+        ]
+        if handshake_contract_version:
+            lines.append("handshake_contract_version={}".format(handshake_contract_version))
+        if detail:
+            lines.append("detail={}".format(detail))
+        return "\n".join(lines)
+
+    def _get_handshake_contract_version(self):
+        info = getattr(self, "last_handshake_info", {})
+        if not isinstance(info, dict):
+            return ""
+        return str(info.get("contract_version", "")).strip()
+
+    def _preflight_start_task(self):
+        try:
+            res = self.request_pi({"action": HANDSHAKE_ACTION}, write_response=False, channel="control")
+        except PiRequestError as e:
+            mapped = "connect_failed" if e.kind in {"connection_error", "connection_reset"} else e.kind
+            if mapped != e.kind:
+                raise PiRequestError(
+                    mapped,
+                    self._build_request_diag_message(
+                        kind=mapped,
+                        action_label=HANDSHAKE_ACTION,
+                        timeout_sec=CONTROL_REQUEST_TIMEOUT_SEC,
+                        handshake_contract_version=self._get_handshake_contract_version(),
+                        detail=str(e)
+                    )
+                ) from e
+            raise
+        if not isinstance(res, dict):
+            raise PiRequestError("protocol_reject", "連到錯服務/舊版本：握手回應格式錯誤")
+        service_name = str(res.get("service_name", "")).strip()
+        contract_version = str(res.get("contract_version", "")).strip()
+        supports_start = bool(res.get("supports_start_task", False))
+        supported_actions = res.get("supported_actions", [])
+        if not isinstance(supported_actions, list):
+            supported_actions = []
+        supports_start = supports_start or ("start_task" in [str(x).strip().lower() for x in supported_actions])
+        self.last_handshake_info = {
+            "service_name": service_name,
+            "contract_version": contract_version,
+            "supports_start_task": supports_start,
+            "supported_actions": supported_actions
+        }
+        if not service_name or contract_version != RUNTIME_CONTRACT_VERSION or not supports_start:
+            raise PiRequestError(
+                "protocol_reject",
+                "連到錯服務/舊版本：service_name={} contract_version={} supports_start_task={}".format(
+                    service_name or "unknown",
+                    contract_version or "unknown",
+                    "true" if supports_start else "false"
+                )
+            )
+        return self.last_handshake_info
+
     def _get_virtual_desktop_bounds(self):
         try:
             vx = int(self.root.winfo_vrootx())
@@ -1476,6 +1558,7 @@ class App:
         req_timeout = float(timeout if timeout is not None else (
             STATUS_REQUEST_TIMEOUT_SEC if channel == "status" else CONTROL_REQUEST_TIMEOUT_SEC
         ))
+        timeout_ms = int(max(1.0, req_timeout * 1000.0))
         lock = self.status_request_lock if channel == "status" else self.control_request_lock
         with lock:
             max_attempts = 2 if allow_retry else 1
@@ -1498,24 +1581,24 @@ class App:
                         time.sleep(0.06 if channel == "status" else 0.15)
                         continue
                     kind = self._classify_request_error(last_err)
-                    err_msg = str(last_err)
-                    if kind == "timeout":
-                        if channel == "control" and action in {"start_task", "run_macro", "stop"}:
-                            err_msg = "控制請求逾時：未在 {:.2f} 秒內收到 ACK 回應（action={}）".format(
-                                req_timeout,
-                                action or "unknown"
-                            )
-                        else:
-                            err_msg = "{}（未收到回應）".format(err_msg)
-                    err = "[{}:{}] {}".format(channel, kind, err_msg)
+                    if channel == "control" and action in {"start_task", "run_macro", "stop"}:
+                        if kind == "timeout":
+                            kind = "ack_read_timeout"
+                        elif kind in {"connection_error", "connection_reset"}:
+                            kind = "connect_failed"
+                    err = self._build_request_diag_message(
+                        kind=kind,
+                        action_label=action,
+                        timeout_sec=req_timeout,
+                        handshake_contract_version=self._get_handshake_contract_version(),
+                        detail=str(last_err)
+                    )
                     self._set_channel_error(channel, err)
                     if channel == "control":
                         self.set_connected(False)
                     if success_status:
                         self.set_status(success_status + "（前端連線失敗）")
-                    if kind == "timeout":
-                        raise TimeoutError(err) from last_err
-                    raise
+                    raise PiRequestError(kind, err) from last_err
 
         self._clear_channel_error(channel)
         if channel == "control":
@@ -1523,6 +1606,18 @@ class App:
         status = res.get("status")
         if status in ("error", "busy"):
             self.set_backend_error(self._format_backend_error(res))
+            backend_code = str(res.get("code", "")).strip().lower()
+            if backend_code in {"unknown_action", "exception", "invalid_request", "bad_request"}:
+                raise PiRequestError(
+                    "protocol_reject",
+                    self._build_request_diag_message(
+                        kind="protocol_reject",
+                        action_label=action,
+                        timeout_sec=req_timeout,
+                        handshake_contract_version=self._get_handshake_contract_version(),
+                        detail=self._format_backend_error(res)
+                    )
+                )
         else:
             self.set_backend_error("")
 
@@ -1631,8 +1726,10 @@ class App:
         self.last_runtime_signature = ""
         self.pre_run_timeline_snapshot = []
         self.runtime_working_timeline = []
+        self.wait_ack_snapshot_timeline = []
         self.has_pre_run_snapshot = False
         self.runtime_display_frozen = False
+        self.runtime_wait_ack_active = False
         self.runtime_manual_restore_active = False
         self.runtime_move_gap_logs = []
         self.last_runtime_state = ""
@@ -1652,6 +1749,7 @@ class App:
         self.last_prepared_payload = {}
         self.first_event_progress_watch = {}
         self.task_monitor = {}
+        self.last_handshake_info = {}
         self.json_view_mode_var = tk.StringVar(value="preview")
 
         container = tk.Frame(root)
@@ -2491,13 +2589,17 @@ class App:
                     if state in ("running", "resumed", "paused"):
                         self.runtime_manual_restore_active = False
                         self.runtime_display_frozen = False
+                        self.runtime_wait_ack_active = False
                         if self.runtime_working_timeline:
                             self._show_runtime_view_timeline()
                     elif state in ("stopped", "idle", "finished", "error"):
-                        self.runtime_display_frozen = bool(self.has_pre_run_snapshot and not self.runtime_manual_restore_active)
+                        if self.runtime_wait_ack_active:
+                            self.runtime_display_frozen = True
+                        else:
+                            self.runtime_display_frozen = bool(self.has_pre_run_snapshot and not self.runtime_manual_restore_active)
                         self._reset_task_monitor()
                     else:
-                        self.runtime_display_frozen = False
+                        self.runtime_display_frozen = bool(self.runtime_wait_ack_active)
                     server_task_id = str(self.timeline_runtime_info.get("server_task_id", "")).strip()
                     task_key = "{}:{}".format(run_id, server_task_id) if (run_id > 0 or server_task_id) else ""
                     if state in ("running", "resumed", "paused") and task_key:
@@ -2508,6 +2610,7 @@ class App:
                         and self.has_pre_run_snapshot
                         and prompted_run_id != run_id
                         and bool(getattr(self, "user_stop_requested", False))
+                        and not bool(self.runtime_wait_ack_active)
                         and bool(task_key)
                         and task_key in self.runtime_seen_active_task_keys
                         and task_key not in self.stop_restore_prompted_task_keys
@@ -2576,6 +2679,7 @@ class App:
 
     def _reset_task_monitor(self):
         self.task_monitor = {}
+        self.runtime_wait_ack_active = False
 
     def _arm_task_monitor_wait_ack(self, client_task_id):
         self.task_monitor = {
@@ -2588,6 +2692,19 @@ class App:
             "last_progress_at": None,
             "failed": False
         }
+        self.runtime_wait_ack_active = True
+
+    def _freeze_runtime_for_wait_ack(self, snapshot_events):
+        self.wait_ack_snapshot_timeline = self.copy_events(snapshot_events or [])
+        self.runtime_working_timeline = self.copy_events(snapshot_events or [])
+        self.runtime_display_frozen = True
+        self.runtime_wait_ack_active = True
+        self._show_runtime_view_timeline()
+        self.refresh_tree()
+        try:
+            self.render_runtime_analysis(force=True)
+        except Exception:
+            pass
 
     def _mark_task_monitor_failed(self, phase, elapsed_ms, threshold_ms, last_state=""):
         monitor_obj = getattr(self, "task_monitor", {})
@@ -2629,6 +2746,7 @@ class App:
         monitor["last_progress_at"] = None
         monitor["failed"] = False
         self.task_monitor = monitor
+        self.runtime_wait_ack_active = False
 
     def _monitor_task_status_progress(self, runtime_state, processed_count):
         monitor_obj = getattr(self, "task_monitor", {})
@@ -3624,6 +3742,7 @@ class App:
             self.set_frontend_error("")
             self._reset_first_event_progress_watch()
             self.request_pi({"action": "stop"})
+            self.runtime_wait_ack_active = False
             self.runtime_display_frozen = bool(self.has_pre_run_snapshot)
             if not self.has_pre_run_snapshot:
                 self.runtime_display_frozen = False
@@ -3694,16 +3813,18 @@ class App:
             return
         self.runtime_working_timeline = self.copy_events(prepared_events)
         self.runtime_version += 1
-        self._show_runtime_view_timeline()
 
         backend_events = self._sanitize_events_for_backend(prepared_events)
         payload = self._build_start_task_payload(backend_events)
-        self._arm_task_monitor_wait_ack(payload.get("client_task_id"))
+        ack_timeout_ms = self._get_ack_timeout_ms()
 
         try:
             self.set_frontend_error("")
             self.clear_runtime_highlight()
-            self.refresh_tree()
+            self._freeze_runtime_for_wait_ack(prepared_events)
+            self._preflight_start_task()
+            self._arm_task_monitor_wait_ack(payload.get("client_task_id"))
+
             def do_send(delay_meta):
                 if not self.front_loop_enabled:
                     return
@@ -3711,7 +3832,7 @@ class App:
                     res = self.request_pi(
                         payload,
                         write_response=False,
-                        timeout=max(0.2, ACK_TIMEOUT_MS / 1000.0)
+                        timeout=max(0.2, ack_timeout_ms / 1000.0)
                     )
                     sent_at_monotonic = delay_meta["actual_send_time_monotonic"]
                     first_event_timing = self._extract_first_event_timing(backend_events)
@@ -3730,7 +3851,6 @@ class App:
                     if self._is_contract_version_mismatch(res):
                         self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
-                        self._restore_pre_run_snapshot_after_runtime()
                         self.front_loop_enabled = False
                         self._update_runtime_control_buttons()
                         self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
@@ -3738,7 +3858,6 @@ class App:
                     if res.get("status") in ("error", "busy"):
                         self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
-                        self._restore_pre_run_snapshot_after_runtime()
                         self.front_loop_after_id = self.root.after(
                             300,
                             lambda: self._dispatch_front_loop_once(display_name)
@@ -3756,11 +3875,11 @@ class App:
                     )
                     self._poll_front_loop_round_done(display_name)
                 except Exception as e:
-                    if isinstance(e, TimeoutError):
+                    if isinstance(e, PiRequestError) and e.kind == "ack_read_timeout":
                         self._mark_task_monitor_failed(
                             phase="ACK_TIMEOUT",
-                            elapsed_ms=ACK_TIMEOUT_MS,
-                            threshold_ms=ACK_TIMEOUT_MS,
+                            elapsed_ms=ack_timeout_ms,
+                            threshold_ms=ack_timeout_ms,
                             last_state="submitted"
                         )
                     else:
@@ -3768,7 +3887,7 @@ class App:
                         self.set_frontend_error(str(e))
                     self.front_loop_enabled = False
                     self._update_runtime_control_buttons()
-                    self._restore_pre_run_snapshot_after_runtime()
+                    self.runtime_display_frozen = True
                     self.show_error("重複傳送失敗", str(e))
 
             delay_override = None if self.front_loop_round == 0 else 0.0
@@ -3777,7 +3896,7 @@ class App:
             self.front_loop_enabled = False
             self._update_runtime_control_buttons()
             self.set_frontend_error(str(e))
-            self._restore_pre_run_snapshot_after_runtime()
+            self.runtime_display_frozen = True
             self.show_error("重複傳送失敗", str(e))
 
     def _poll_front_loop_round_done(self, display_name):

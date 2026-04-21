@@ -11,6 +11,7 @@ if "pynput" not in sys.modules:
 
 from front import (
     App,
+    PiRequestError,
     recalculate_runtime_events_by_index,
     allocate_randat_blocks,
     get_buff_cell_visual_state,
@@ -185,7 +186,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.last_runtime_signature = ""
         app.runtime_display_frozen = False
         app.runtime_manual_restore_active = False
+        app.runtime_wait_ack_active = False
         app.runtime_working_timeline = []
+        app.wait_ack_snapshot_timeline = []
         app.user_stop_requested = False
         app.stop_restore_prompted_task_keys = set()
         app.runtime_seen_active_task_keys = set()
@@ -212,13 +215,21 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.frontend_error_main = ""
         app.last_control_error = ""
         app.last_status_error = ""
+        app.last_handshake_info = {}
         app._set_restore_pre_run_button_state = App._set_restore_pre_run_button_state.__get__(app, App)
         app._ensure_runtime_editable = App._ensure_runtime_editable.__get__(app, App)
+        app._freeze_runtime_for_wait_ack = App._freeze_runtime_for_wait_ack.__get__(app, App)
+        app._show_runtime_view_timeline = App._show_runtime_view_timeline.__get__(app, App)
+        app._monitor_after_ack = App._monitor_after_ack.__get__(app, App)
+        app._preflight_start_task = App._preflight_start_task.__get__(app, App)
+        app._get_ack_timeout_ms = App._get_ack_timeout_ms.__get__(app, App)
+        app._build_request_diag_message = App._build_request_diag_message.__get__(app, App)
+        app._get_handshake_contract_version = App._get_handshake_contract_version.__get__(app, App)
         app.stop_pi = App.stop_pi.__get__(app, App)
         app.update_current_labels = lambda: None
         app.set_frontend_error = lambda *_args, **_kwargs: None
         app.set_status = lambda *_args, **_kwargs: None
-        app.config = {"pi_host": "127.0.0.1"}
+        app.config = {"pi_host": "127.0.0.1", "ack_timeout_ms": 1234}
         app.pi_ip_entry = types.SimpleNamespace(get=lambda: "127.0.0.1")
         app.text = types.SimpleNamespace(
             delete=lambda *_args, **_kwargs: None,
@@ -448,6 +459,54 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertTrue(app.runtime_display_frozen)
         self.assertIn("normal", states)
+
+    def test_preflight_rejects_service_without_start_task(self):
+        app = self._new_app()
+        app.request_pi = lambda *_args, **_kwargs: {
+            "status": "ok",
+            "service_name": "wrong-service",
+            "contract_version": "v1",
+            "supports_start_task": False,
+        }
+        with self.assertRaises(PiRequestError) as cm:
+            app._preflight_start_task()
+        self.assertEqual(cm.exception.kind, "protocol_reject")
+
+    def test_preflight_maps_connection_error_to_connect_failed(self):
+        app = self._new_app()
+
+        def _raise(*_args, **_kwargs):
+            raise PiRequestError("connection_error", "socket failed")
+        app.request_pi = _raise
+
+        with self.assertRaises(PiRequestError) as cm:
+            app._preflight_start_task()
+        self.assertEqual(cm.exception.kind, "connect_failed")
+
+    def test_wait_ack_freeze_keeps_snapshot_and_idle_poll_does_not_drift(self):
+        app = self._new_app()
+        snapshot = [{"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
+        app.timeline = [{"type": "press", "button": "x", "at": 9.9, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
+        app._freeze_runtime_for_wait_ack(snapshot)
+        app.request_pi = lambda *_args, **_kwargs: {"timeline_runtime": {"state": "idle", "events": []}}
+
+        app.poll_runtime_status()
+
+        self.assertTrue(app.runtime_display_frozen)
+        self.assertEqual(app.timeline[0]["button"], "space")
+
+    def test_ack_success_unfreezes_and_enters_running(self):
+        app = self._new_app()
+        app.task_monitor = {"phase": "wait_ack", "client_task_id": "ct-1"}
+        app.runtime_wait_ack_active = True
+        app.runtime_display_frozen = True
+        app.request_pi = lambda *_args, **_kwargs: {"timeline_runtime": {"state": "running", "events": []}}
+
+        app._monitor_after_ack({"server_task_id": "srv-1"})
+        app.poll_runtime_status()
+
+        self.assertFalse(app.runtime_wait_ack_active)
+        self.assertFalse(app.runtime_display_frozen)
 
 
 class TimelineWorkflowTests(unittest.TestCase):

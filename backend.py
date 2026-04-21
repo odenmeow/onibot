@@ -736,6 +736,13 @@ def handle_request(data):
             raise ValueError("buff_skip_mode 只能是 pass、walk（或相容 none/compress）")
         return mode, deprecated_alias
 
+    service_meta = {
+        "service_name": "onibot-backend",
+        "contract_version": RUNTIME_CONTRACT_VERSION,
+        "supports_start_task": True,
+        "supported_actions": ["ping", "list_buttons", "status", "hello", "stop", "pause", "resume", "run_macro", "start_task"]
+    }
+
     if action == "ping":
         return {"status": "ok", "message": "pong"}
 
@@ -743,11 +750,16 @@ def handle_request(data):
         return {"status": "ok", "buttons": BUTTONS}
 
     if action == "status":
-        return {
+        payload = {
             "status": "ok",
             "run_status": current_run_status,
             "timeline_runtime": get_timeline_runtime_snapshot()
         }
+        payload.update(service_meta)
+        return payload
+
+    if action == "hello":
+        return {"status": "ok", **service_meta}
 
     if action == "stop":
         return stop_current_run()
