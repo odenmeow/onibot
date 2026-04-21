@@ -4455,13 +4455,46 @@ class App:
         state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
         action = "resume" if state == "paused" else "pause"
         try:
-            self.request_pi({"action": action}, write_response=False)
-            self.set_status("已送出 {} 指令".format("繼續" if action == "resume" else "暫停"))
+            res = self.request_pi({"action": action}, write_response=False)
+            runtime_brief = self._extract_runtime_progress_brief(res)
+            if runtime_brief is not None:
+                round_no, processed_count, events_total = runtime_brief
+                status_prefix = "已繼續" if action == "resume" else "已暫停"
+                self.set_status(
+                    "{}（Round #{}，進度 {}/{}）".format(
+                        status_prefix,
+                        round_no,
+                        processed_count,
+                        events_total
+                    )
+                )
+            else:
+                self.set_status("已送出 {} 指令".format("繼續" if action == "resume" else "暫停"))
         except Exception as e:
             self.set_frontend_error(str(e))
             self.show_error("{}失敗".format("繼續" if action == "resume" else "暫停"), str(e))
         finally:
             self._update_runtime_control_buttons()
+
+    def _extract_runtime_progress_brief(self, payload):
+        if not isinstance(payload, dict):
+            return None
+        round_value = payload.get("execution_round")
+        if round_value is None:
+            return None
+        try:
+            execution_round = int(round_value)
+        except Exception:
+            return None
+        try:
+            processed_count = int(payload.get("processed_count", 0) or 0)
+        except Exception:
+            processed_count = 0
+        try:
+            events_total = int(payload.get("events_total", 0) or 0)
+        except Exception:
+            events_total = 0
+        return execution_round, processed_count, events_total
 
     def _set_front_round_state(self, state):
         self.front_round_state = str(state or "idle").strip().lower()
