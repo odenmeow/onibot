@@ -388,7 +388,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(app.runtime_latest_index, 2)
 
-    def test_update_runtime_accepts_next_round_traces_when_owner_run_id_unknown(self):
+    def test_update_runtime_keeps_local_round_traces_even_if_backend_reports_new_round(self):
         app = self._new_app()
         app.runtime_round_traces = [
             {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"}
@@ -409,10 +409,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         })
 
         self.assertTrue(changed)
-        self.assertEqual(app.runtime_round_traces[0]["execution_round"], 2)
-        self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "B")
-        self.assertEqual(app.runtime_trace_owner, {"run_id": 202, "server_task_id": "srv-round2"})
-        self.assertEqual(app.runtime_trace_status_note, "")
+        self.assertEqual(app.runtime_round_traces[0]["execution_round"], 1)
+        self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "A")
+        self.assertEqual(app.runtime_trace_owner, {"run_id": 0, "server_task_id": "srv-round2"})
 
     def test_render_runtime_analysis_shows_distinct_execution_rounds(self):
         app = self._new_app()
@@ -439,7 +438,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertIn("Execution Round #2", captured["text"])
         self.assertIn("picked A-slot=", captured["text"])
 
-    def test_render_runtime_analysis_hides_prepared_meta_on_key_mismatch(self):
+    def test_render_runtime_analysis_uses_local_traces_without_backend_key_check(self):
         app = self._new_app()
         captured = {"text": ""}
         app.text = types.SimpleNamespace(
@@ -466,8 +465,132 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.render_runtime_analysis(force=True)
 
-        self.assertIn("key 不一致", captured["text"])
-        self.assertNotIn("Final positions:", captured["text"])
+        self.assertNotIn("key 不一致", captured["text"])
+        self.assertIn("Trace diagnosis:", captured["text"])
+        self.assertNotIn("Current round final positions:", captured["text"])
+
+    def test_render_runtime_analysis_shows_previous_round_summary_for_round2(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {
+                "execution_round": 1,
+                "draw_order": 1,
+                "buffGroup": "A",
+                "pickedReason": "random_pick",
+                "picked_slot": 2,
+                "placement": {"picked_slot_a_idx": 2, "base_b_idx_before_offset": 4, "final_b_range": [4, 5]},
+            },
+            {
+                "execution_round": 2,
+                "draw_order": 1,
+                "buffGroup": "B",
+                "pickedReason": "random_pick",
+                "picked_slot": 1,
+                "placement": {"picked_slot_a_idx": 1, "base_b_idx_before_offset": 2, "final_b_range": [2, 3]},
+            },
+        ]
+        app.timeline_runtime_info = {"execution_round": 2}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertTrue(captured["text"].startswith("Previous round final positions (Round #1):"))
+        self.assertIn("A2 -> base B4 -> final B4~5", captured["text"])
+
+    def test_render_runtime_analysis_shows_previous_round_summary_for_latest_round3(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 0, "base_b_idx_before_offset": 0, "final_b_range": [0, 1]}},
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 3, "base_b_idx_before_offset": 6, "final_b_range": [6, 7]}},
+            {"execution_round": 3, "draw_order": 1, "buffGroup": "C", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 5, "base_b_idx_before_offset": 8, "final_b_range": [8, 9]}},
+        ]
+        app.timeline_runtime_info = {"execution_round": 3}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Previous round final positions (Round #2):", captured["text"])
+        self.assertIn("A3 -> base B6 -> final B6~7", captured["text"])
+        self.assertNotIn("Previous round final positions (Round #1):", captured["text"])
+
+    def test_render_runtime_analysis_does_not_show_previous_summary_for_round1(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "placement": {"picked_slot_a_idx": 0, "base_b_idx_before_offset": 0, "final_b_range": [0, 1]}},
+        ]
+        app.timeline_runtime_info = {"execution_round": 1}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertNotIn("Previous round final positions", captured["text"])
+
+    def test_render_runtime_analysis_supports_camel_case_execution_round(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {
+                "executionRound": 1,
+                "drawOrder": 1,
+                "buffGroup": "A",
+                "pickedReason": "random_pick",
+                "placement": {"picked_slot_a_idx": 2, "base_b_idx_before_offset": 4, "final_b_range": [4, 5]},
+            },
+            {
+                "executionRound": 2,
+                "drawOrder": 1,
+                "buffGroup": "B",
+                "pickedReason": "random_pick",
+                "placement": {"picked_slot_a_idx": 1, "base_b_idx_before_offset": 2, "final_b_range": [2, 3]},
+            },
+        ]
+        app.timeline_runtime_info = {"executionRound": 2}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Previous round final positions (Round #1):", captured["text"])
+        self.assertIn("A2 -> base B4 -> final B4~5", captured["text"])
+        self.assertIn("Execution Round #2", captured["text"])
+
+    def test_render_runtime_analysis_emits_trace_diagnosis_when_previous_round_missing(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"},
+        ]
+        app.timeline_runtime_info = {"execution_round": 2}
+        app.runtime_trace_status_note = "⚠ 已拒收後端舊 traces（server_task_id mismatch）"
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Trace diagnosis:", captured["text"])
+        self.assertIn("無法建立 Round #1 摘要", captured["text"])
+        self.assertIn("server_task_id mismatch", app.runtime_trace_diagnostic)
 
     def test_update_runtime_ignores_old_backend_traces_against_prepared_meta(self):
         app = self._new_app()
@@ -497,7 +620,7 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertEqual(app.runtime_round_traces, [])
 
-    def test_update_runtime_rejects_backend_trace_when_runtime_keys_missing(self):
+    def test_update_runtime_ignores_backend_round_traces_and_keeps_local_trace(self):
         app = self._new_app()
         app.runtime_round_traces = [
             {"execution_round": 7, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"}
@@ -528,7 +651,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         })
 
         self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "A")
-        self.assertIn("已拒收後端舊 traces", app.runtime_trace_status_note)
+        self.assertEqual(app.runtime_trace_status_note, "")
 
     def test_recent_ok_green_tag_does_not_override_buff_background(self):
         app = self._new_app()
