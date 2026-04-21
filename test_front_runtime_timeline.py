@@ -328,6 +328,8 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertEqual(working[3].get("buff_group", ""), "2")
         at_values = [float(row.get("at", 0.0)) for row in working]
         self.assertEqual(at_values, sorted(at_values))
+        self.assertAlmostEqual(at_values[2] - at_values[1], 0.2, places=4)
+        self.assertAlmostEqual(at_values[3] - at_values[2], 0.8, places=4)
         self.assertNotEqual(assignments["1"]["landed_index"], assignments["1"]["anchor_index"])
         self.assertEqual(debug.get("apply_order"), ["2", "1"])
         self.assertEqual([item.get("group_id") for item in debug.get("placement_ledger", [])], ["2", "1"])
@@ -631,6 +633,44 @@ class RuntimeDisplayTests(unittest.TestCase):
             ("Trace diagnosis:" in captured["text"]) or ("hint: 目前僅收到 current round traces" in captured["text"])
         )
         self.assertIn("server_task_id mismatch", app.runtime_trace_diagnostic)
+
+    def test_render_runtime_analysis_consistency_only_counts_current_round(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"},
+            {"execution_round": 1, "draw_order": 2, "buffGroup": "B", "pickedReason": "random_pick"},
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "C", "pickedReason": "random_pick"},
+        ]
+        app.timeline_runtime_info = {"execution_round": 2}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Consistency: expected_groups=1 / actual_draws=1", captured["text"])
+        self.assertNotIn("expected_groups=3 / actual_draws=3", captured["text"])
+
+    def test_render_runtime_analysis_current_round_duplicate_group_emits_diagnosis(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"},
+            {"execution_round": 2, "draw_order": 2, "buffGroup": "A", "pickedReason": "random_pick"},
+        ]
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Trace diagnosis:", captured["text"])
+        self.assertIn("current round duplicate traces: A", app.runtime_trace_diagnostic)
 
     def test_update_runtime_ignores_old_backend_traces_against_prepared_meta(self):
         app = self._new_app()
@@ -1127,6 +1167,26 @@ class TimelineWorkflowTests(unittest.TestCase):
         if placement_ledger:
             self.assertIn("final_b_range_slot", placement_ledger[0])
             self.assertIn("final_runtime_row_range", placement_ledger[0])
+            self.assertIn("final_b_range", placement_ledger[0])
+
+    def test_prepare_events_for_send_randat_gate_only_when_rslot_present(self):
+        app = self._new_workflow_app()
+        app.show_warning = lambda *_args, **_kwargs: None
+        app.show_error = lambda *_args, **_kwargs: None
+        app.render_prepared_payload = lambda: None
+        app.render_runtime_analysis = lambda **_kwargs: None
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 0.0, "at_jitter": 0.0, "buff_group": "1", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0},
+            {"type": "press", "button": "space", "at": 0.1, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0},
+            {"type": "press", "button": "space", "at": 0.2, "at_jitter": 0.0, "buff_group": "1", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0},
+        ]
+
+        prepared_without_randat, _ = app.prepare_events_for_send("before_send")
+        self.assertIsNotNone(prepared_without_randat)
+
+        app.timeline.insert(1, {"type": "randat", "button": "", "at": 0.05, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0})
+        prepared_with_randat, _ = app.prepare_events_for_send("before_send")
+        self.assertIsNone(prepared_with_randat)
 
     def test_build_start_task_payload_promotes_execution_round_runtime_fields_to_top_level(self):
         app = self._new_workflow_app()

@@ -759,9 +759,11 @@ def is_slot_excluded_buff_group(value):
 
 
 def allocate_randat_blocks(events, execution_round=1):
-    working = [dict(ev) for ev in events]
+    # A. 建立 Table A（origin copy）
+    table_a = [dict(ev) for ev in events]
+    working = [dict(ev) for ev in table_a]
     rslot = [
-        idx for idx, ev in enumerate(working)
+        idx for idx, ev in enumerate(table_a)
         if str(ev.get("type", "")).strip().lower() == "randat"
     ]
 
@@ -787,7 +789,8 @@ def allocate_randat_blocks(events, execution_round=1):
         }
     }
 
-    for idx, ev in enumerate(working):
+    block_gap_map = {}
+    for idx, ev in enumerate(table_a):
         group = str(ev.get("buff_group", "")).strip()
         if not group:
             continue
@@ -805,10 +808,19 @@ def allocate_randat_blocks(events, execution_round=1):
         blocks[group]["rows_len"] = len(indices)
         blocks[group]["span_len"] = len(indices)
         runtime_debug["b_group_mapper"][group] = list(indices)
+        first = indices[0]
+        last = indices[-1]
+        front_gap = 0.0
+        back_gap = 0.0
+        if first > 0:
+            front_gap = round(_safe_float(table_a[first].get("at", 0.0)) - _safe_float(table_a[first - 1].get("at", 0.0)), 4)
+        if last + 1 < len(table_a):
+            back_gap = round(_safe_float(table_a[last + 1].get("at", 0.0)) - _safe_float(table_a[last].get("at", 0.0)), 4)
+        block_gap_map[group] = {"front_gap": front_gap, "back_gap": back_gap, "first": first, "last": last}
 
     original_at_by_idx = {}
     original_gap_by_pair = {}
-    for idx, ev in enumerate(working):
+    for idx, ev in enumerate(table_a):
         original_at_by_idx[idx] = round(_safe_float(ev.get("at", 0.0)), 4)
         ev["__origin_idx"] = idx
         group = str(ev.get("buff_group", "")).strip()
@@ -818,7 +830,7 @@ def allocate_randat_blocks(events, execution_round=1):
             ev["__runtime_gid"] = "__row_{}".format(idx)
 
     for idx in range(len(working) - 1):
-        gap = round(_safe_float(working[idx + 1].get("at", 0.0)) - _safe_float(working[idx].get("at", 0.0)), 4)
+        gap = round(_safe_float(table_a[idx + 1].get("at", 0.0)) - _safe_float(table_a[idx].get("at", 0.0)), 4)
         original_gap_by_pair[(idx, idx + 1)] = gap
 
     pool = []
@@ -966,7 +978,8 @@ def allocate_randat_blocks(events, execution_round=1):
         indices = list(info.get("indices", []))
         for idx in indices[1:]:
             skeleton_skip.add(int(idx))
-    for source_idx, row in enumerate(working):
+    # B. 產生 Table B skeleton（壓縮版）
+    for source_idx, row in enumerate(table_a):
         if source_idx in skeleton_skip:
             continue
         slot_kind = ""
@@ -984,32 +997,13 @@ def allocate_randat_blocks(events, execution_round=1):
             "buff_group": str(row.get("buff_group", "")).strip(),
             "at": round(_safe_float(row.get("at", 0.0)), 4),
         })
+        runtime_idx = int(len(runtime_debug["table_b_before_insert"]) - 1)
+        runtime_debug["b_to_a_mapper"][str(runtime_idx)] = int(source_idx)
         if slot_kind in ("rslot", "bslot"):
-            runtime_idx = int(len(runtime_debug["table_b_before_insert"]) - 1)
             runtime_debug["linker_to_mix_slot_show"][str(runtime_idx)] = int(source_idx)
-            runtime_debug["b_to_a_mapper"][str(runtime_idx)] = int(source_idx)
 
     if randat_executed and blocks:
-        block_meta = {}
-        for group, info in blocks.items():
-            indices = list(info.get("indices", []))
-            if not indices:
-                continue
-            first = indices[0]
-            last = indices[-1]
-            front_gap = 0.0
-            back_gap = 0.0
-            if first > 0:
-                front_gap = round(_safe_float(working[first].get("at", 0.0)) - _safe_float(working[first - 1].get("at", 0.0)), 4)
-            if last + 1 < len(working):
-                back_gap = round(_safe_float(working[last + 1].get("at", 0.0)) - _safe_float(working[last].get("at", 0.0)), 4)
-            block_meta[group] = {
-                "first": first,
-                "last": last,
-                "front_gap": front_gap,
-                "back_gap": back_gap,
-            }
-
+        # D. 依 slot 由小到大插回整個 block（running_offset）
         apply_order = sorted(
             block_assignments.keys(),
             key=lambda gid: (int(block_assignments[gid]["picked_slot"]), _group_sort_key(gid))
@@ -1058,7 +1052,7 @@ def allocate_randat_blocks(events, execution_round=1):
         runtime_debug["placement_ledger"] = placement_ledger
         runtime_debug["group_final_positions"] = group_final_positions
 
-        reordered = list(working)
+        reordered = list(table_a)
         for group in apply_order:
             rows = [row for row in reordered if str(row.get("__runtime_gid", "")).strip() == str(group)]
             if not rows:
@@ -1090,10 +1084,10 @@ def allocate_randat_blocks(events, execution_round=1):
             prev_origin = int(prev_row.get("__origin_idx", -1))
             cur_origin = int(row.get("__origin_idx", -1))
             gap = original_gap_by_pair.get((prev_origin, cur_origin))
-            if prev_group != cur_group and cur_group in block_meta and cur_origin == int(block_meta[cur_group]["first"]):
-                gap = block_meta[cur_group]["front_gap"]
-            if prev_group != cur_group and prev_group in block_meta and prev_origin == int(block_meta[prev_group]["last"]):
-                gap = block_meta[prev_group]["back_gap"]
+            if prev_group != cur_group and cur_group in block_gap_map and cur_origin == int(block_gap_map[cur_group]["first"]):
+                gap = block_gap_map[cur_group]["front_gap"]
+            if prev_group != cur_group and prev_group in block_gap_map and prev_origin == int(block_gap_map[prev_group]["last"]):
+                gap = block_gap_map[prev_group]["back_gap"]
             if gap is None:
                 gap = round(max(0.0, original_at_by_idx.get(cur_origin, prev_at) - original_at_by_idx.get(prev_origin, prev_at)), 4)
             prev_at = round(prev_at + max(0.0, _safe_float(gap, 0.0)), 4)
@@ -1420,6 +1414,30 @@ class App:
                             middle_group if middle_group else "空白群組"
                         )
                     )
+
+    def validate_randat_gate_rules(self, events):
+        self.validate_buff_group_contiguity(events)
+        seen_numeric_group = []
+        seen_set = set()
+        for idx, ev in enumerate(events):
+            group = str(ev.get("buff_group", "")).strip()
+            if not group or group in seen_set:
+                continue
+            try:
+                value = int(group)
+            except Exception:
+                continue
+            if value <= 0:
+                continue
+            seen_set.add(group)
+            seen_numeric_group.append((value, group, idx))
+        expected = [item[0] for item in sorted(seen_numeric_group, key=lambda item: item[0])]
+        actual = [item[0] for item in seen_numeric_group]
+        if expected != actual:
+            details = ", ".join(["{}(idx {})".format(group, idx) for _val, group, idx in seen_numeric_group])
+            raise ValueError(
+                "數字 buff_group 首次出現需升冪（1,2,3...）；目前順序為 {}。".format(details)
+            )
 
     def update_error_text(self, widget, message):
         widget.config(state="normal")
@@ -2893,14 +2911,9 @@ class App:
         payload["randat_executed"] = bool(payload["rslot_count"] > 0)
         payload["participating_groups"] = list(participating_groups)
         payload["execution_round"] = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(fallback_execution_round)
-        expected_groups = len(payload["participating_groups"])
-        actual_draws = len(payload["draws"])
-        is_consistent = bool(expected_groups == actual_draws)
-        payload["consistency"] = {
-            "expected_groups": expected_groups,
-            "actual_draws": actual_draws,
-            "is_consistent": is_consistent
-        }
+        expected_groups = 0
+        actual_draws = 0
+        is_consistent = True
         if payload["rslot_count"] == 0:
             lines.append("未啟用 randat 抽籤")
             lines.append("-" * 84)
@@ -2918,6 +2931,20 @@ class App:
                 if int(trace.get("execution_round", 0) or 0) == current_round
             ]
             payload["currentRoundTraces"] = copy.deepcopy(current_round_traces)
+            current_groups = [str(trace.get("group_id", "")).strip() for trace in current_round_traces if str(trace.get("group_id", "")).strip()]
+            expected_groups = len(set(current_groups))
+            actual_draws = len(current_round_traces)
+            is_consistent = bool(expected_groups == actual_draws)
+            if len(current_groups) != len(set(current_groups)):
+                duplicate_groups = sorted({gid for gid in current_groups if current_groups.count(gid) > 1})
+                runtime_trace_diagnostic_parts.append(
+                    "current round duplicate traces: {}".format(", ".join(duplicate_groups))
+                )
+            payload["consistency"] = {
+                "expected_groups": expected_groups,
+                "actual_draws": actual_draws,
+                "is_consistent": is_consistent
+            }
             previous_round = current_round - 1
             if previous_round >= 1:
                 previous_round_traces = [
@@ -4919,7 +4946,7 @@ class App:
                 if str(ev.get("type", "")).strip().lower() == "randat"
             )
             if rslot_count > 0:
-                self.validate_buff_group_contiguity(normalized_base_events)
+                self.validate_randat_gate_rules(normalized_base_events)
             self.validate_negative_group_monotonic_by_index(normalized_base_events)
             events = recalculate_runtime_events_by_index(normalized_base_events, offset_sec)
         except Exception as e:
