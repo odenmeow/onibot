@@ -19,7 +19,9 @@ PORT = 5000
 ACTIVE_LOW = True
 DEFAULT_PRESS_TIME = 0.25
 BUFF_SKIP_MODE_WALK = "walk"          # 走過：不按，但保留原時間軸（照等）
-BUFF_SKIP_MODE_COMPRESS = "compress"  # 略過：不按，並壓縮時間軸（不等）
+BUFF_SKIP_MODE_PASS = "pass"          # 略過：不按，並壓縮時間軸（不等）
+BUFF_SKIP_MODE_NONE = "none"          # 相容：等同正常按放
+BUFF_SKIP_MODE_COMPRESS = "compress"  # deprecated: 等同 pass
 RUNTIME_CONTRACT_VERSION = "v1"
 
 BUTTONS = {
@@ -318,7 +320,7 @@ def run_macro(steps):
 def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mode=BUFF_SKIP_MODE_WALK):
     if not isinstance(events, list):
         raise ValueError("events 必須是 list")
-    if buff_skip_mode not in (BUFF_SKIP_MODE_WALK, BUFF_SKIP_MODE_COMPRESS):
+    if buff_skip_mode not in (BUFF_SKIP_MODE_WALK, BUFF_SKIP_MODE_PASS, BUFF_SKIP_MODE_NONE):
         raise ValueError("buff_skip_mode 錯誤: {}".format(buff_skip_mode))
 
     if reset_stop_event:
@@ -406,11 +408,13 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         timeline_cooldown_runtime["next_ready_at"][buff_group] = now_abs + cd
                         timeline_cooldown_runtime["landed_index_by_group"][buff_group] = landed_index
 
-            if skip_by_cooldown:
+            if skip_by_cooldown and buff_skip_mode != BUFF_SKIP_MODE_NONE:
                 compressed_sec = 0.0
-                if buff_skip_mode == BUFF_SKIP_MODE_COMPRESS:
+                if buff_skip_mode == BUFF_SKIP_MODE_PASS:
                     compressed_sec = max(0.0, wait_time)
                     timeline_shift += compressed_sec
+                elif buff_skip_mode == BUFF_SKIP_MODE_WALK and wait_time > 0:
+                    safe_sleep(wait_time)
                 results.append({
                     "index": i,
                     "original_index": ev["original_index"],
@@ -724,9 +728,13 @@ def handle_request(data):
 
     def normalize_buff_skip_mode(raw):
         mode = str(raw or BUFF_SKIP_MODE_WALK).strip().lower()
-        if mode not in (BUFF_SKIP_MODE_WALK, BUFF_SKIP_MODE_COMPRESS):
-            raise ValueError("buff_skip_mode 只能是 walk 或 compress")
-        return mode
+        deprecated_alias = ""
+        if mode == BUFF_SKIP_MODE_COMPRESS:
+            deprecated_alias = BUFF_SKIP_MODE_COMPRESS
+            mode = BUFF_SKIP_MODE_PASS
+        if mode not in (BUFF_SKIP_MODE_WALK, BUFF_SKIP_MODE_PASS, BUFF_SKIP_MODE_NONE):
+            raise ValueError("buff_skip_mode 只能是 pass、walk（或相容 none/compress）")
+        return mode, deprecated_alias
 
     if action == "ping":
         return {"status": "ok", "message": "pong"}
@@ -809,7 +817,7 @@ def handle_request(data):
         events = parse_start_task_timeline(data.get("timeline", []))
         skip_mode_values = [str(row.get("skip_mode", "")).strip().lower() for row in data.get("timeline", []) if isinstance(row, dict)]
         chosen_skip_mode = next((mode for mode in skip_mode_values if mode), BUFF_SKIP_MODE_WALK)
-        buff_skip_mode = normalize_buff_skip_mode(chosen_skip_mode)
+        buff_skip_mode, deprecated_alias = normalize_buff_skip_mode(chosen_skip_mode)
         current_server_task_id = _new_server_task_id()
         stop_event.clear()
         pause_event.clear()
@@ -834,6 +842,7 @@ def handle_request(data):
                 "events_total": len(events)
             },
             "buff_skip_mode": buff_skip_mode,
+            "buff_skip_mode_deprecated_alias": deprecated_alias,
             "message": "已收到 start_task，開始背景執行"
         }
 

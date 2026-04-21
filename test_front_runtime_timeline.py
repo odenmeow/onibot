@@ -157,13 +157,19 @@ class _FakeRoot:
 class RuntimeDisplayTests(unittest.TestCase):
     def setUp(self):
         self._orig_showwarning = sys.modules["front"].messagebox.showwarning
+        self._orig_askyesno = sys.modules["front"].messagebox.askyesno
         self.warning_calls = []
+        self.ask_calls = []
         sys.modules["front"].messagebox.showwarning = (
             lambda title, msg: self.warning_calls.append((title, msg))
+        )
+        sys.modules["front"].messagebox.askyesno = (
+            lambda title, msg: self.ask_calls.append((title, msg)) or False
         )
 
     def tearDown(self):
         sys.modules["front"].messagebox.showwarning = self._orig_showwarning
+        sys.modules["front"].messagebox.askyesno = self._orig_askyesno
 
     def _new_app(self):
         app = App.__new__(App)
@@ -179,8 +185,15 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.last_runtime_signature = ""
         app.runtime_display_frozen = False
         app.runtime_manual_restore_active = False
+        app.runtime_working_timeline = []
+        app.user_stop_requested = False
+        app.stop_restore_prompted_task_keys = set()
+        app.runtime_seen_active_task_keys = set()
         app.pre_run_timeline_snapshot = []
         app.has_pre_run_snapshot = False
+        app.origin_snapshot_before_loop = []
+        app.origin_version = 0
+        app.runtime_version = 0
         app.copy_events = App.copy_events.__get__(app, App)
         app._normalize_replicated_row_flag = App._normalize_replicated_row_flag.__get__(app, App)
         app._sync_replicated_row = App._sync_replicated_row.__get__(app, App)
@@ -196,6 +209,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.offline_mode = False
         app.conn = object()
         app.connected = True
+        app.frontend_error_main = ""
+        app.last_control_error = ""
+        app.last_status_error = ""
         app._set_restore_pre_run_button_state = App._set_restore_pre_run_button_state.__get__(app, App)
         app._ensure_runtime_editable = App._ensure_runtime_editable.__get__(app, App)
         app.stop_pi = App.stop_pi.__get__(app, App)
@@ -353,6 +369,38 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertFalse(app.runtime_display_frozen)
 
+    def test_poll_stopped_without_user_stop_does_not_prompt_restore(self):
+        app = self._new_app()
+        app.has_pre_run_snapshot = True
+        app.user_stop_requested = False
+        payloads = [
+            {"timeline_runtime": {"state": "running", "run_id": 8, "server_task_id": "srv-a", "events": []}},
+            {"timeline_runtime": {"state": "stopped", "run_id": 8, "server_task_id": "srv-a", "events": []}},
+        ]
+        app.request_pi = lambda *_args, **_kwargs: payloads.pop(0)
+
+        app.poll_runtime_status()
+        app.poll_runtime_status()
+
+        self.assertEqual(self.ask_calls, [])
+
+    def test_poll_stopped_after_user_stop_prompts_restore_once(self):
+        app = self._new_app()
+        app.has_pre_run_snapshot = True
+        app.user_stop_requested = True
+        payloads = [
+            {"timeline_runtime": {"state": "running", "run_id": 12, "server_task_id": "srv-z", "events": []}},
+            {"timeline_runtime": {"state": "stopped", "run_id": 12, "server_task_id": "srv-z", "events": []}},
+            {"timeline_runtime": {"state": "stopped", "run_id": 12, "server_task_id": "srv-z", "events": []}},
+        ]
+        app.request_pi = lambda *_args, **_kwargs: payloads.pop(0)
+
+        app.poll_runtime_status()
+        app.poll_runtime_status()
+        app.poll_runtime_status()
+
+        self.assertEqual(len(self.ask_calls), 1)
+
     def test_restore_pre_run_state_restores_snapshot(self):
         app = self._new_app()
         app.timeline = [{"type": "press", "button": "z", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}]
@@ -444,7 +492,7 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.set_frontend_error = lambda *_args, **_kwargs: None
         app.validate_negative_group_monotonic_by_index = App.validate_negative_group_monotonic_by_index.__get__(app, App)
         app.recalculate_timeline_for_runtime = App.recalculate_timeline_for_runtime.__get__(app, App)
-        app.config = {}
+        app.config = {"buff_skip_mode": "pass"}
         return app
 
     def test_auto_negative_group_reuses_minus_one_after_delete(self):
@@ -609,6 +657,21 @@ class TimelineWorkflowTests(unittest.TestCase):
         self.assertEqual(app.timeline_meta["original_events"][0]["at"], 6.12)
         self.assertEqual(refreshed["tree"], 1)
         self.assertEqual(refreshed["preview"], 1)
+
+    def test_prepare_events_multi_round_still_uses_origin_snapshot(self):
+        app = self._new_workflow_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        origin_snapshot = app.copy_events(app.timeline)
+
+        with mock.patch("front.random.uniform", return_value=0.0):
+            round1, _ = app.prepare_events_for_send("before_send_loop", base_events=origin_snapshot)
+            # 模擬 runtime 顯示層被改寫，下一輪仍不可當作 base。
+            round1[0]["at"] = 9.9
+            round2, _ = app.prepare_events_for_send("before_send_loop", base_events=origin_snapshot)
+
+        self.assertEqual(round2[0]["at"], 1.0)
 
     def test_undo_redo_groups_multi_row_change_in_one_step(self):
         app = self._new_workflow_app()
