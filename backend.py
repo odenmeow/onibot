@@ -67,6 +67,7 @@ timeline_runtime = {
     "events": [],
     "last_event": None,
     "round_traces": [],
+    "runtime_diag": {},
     "progress": {
         "current_idx": -1,
         "event_time_ms": 0
@@ -116,6 +117,7 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
         timeline_runtime["events"] = []
         timeline_runtime["last_event"] = None
         timeline_runtime["round_traces"] = []
+        timeline_runtime["runtime_diag"] = {}
         timeline_runtime["progress"] = {
             "current_idx": -1,
             "event_time_ms": _now_ms()
@@ -188,8 +190,30 @@ def get_timeline_runtime_snapshot():
             "events": events,
             "last_event": timeline_runtime.get("last_event"),
             "round_traces": round_traces,
+            "runtime_diag": dict(timeline_runtime.get("runtime_diag", {})),
             "cooldowns": cooldowns
         }
+
+
+def _normalize_round_traces_payload(raw):
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _extract_runtime_diag_from_start_task(data):
+    runtime_meta = data.get("runtime_meta")
+    round_traces = data.get("round_traces")
+    diag = {}
+    normalized_round_traces = []
+    if isinstance(runtime_meta, dict):
+        for key in ("rslot_count", "randat_executed", "picked_reason", "draw_result"):
+            if key in runtime_meta:
+                diag[key] = runtime_meta.get(key)
+        normalized_round_traces = _normalize_round_traces_payload(runtime_meta.get("round_traces"))
+    if not normalized_round_traces:
+        normalized_round_traces = _normalize_round_traces_payload(round_traces)
+    return normalized_round_traces, diag
 
 
 def get_press_level():
@@ -827,6 +851,7 @@ def handle_request(data):
             )
 
         events = parse_start_task_timeline(data.get("timeline", []))
+        incoming_round_traces, incoming_runtime_diag = _extract_runtime_diag_from_start_task(data)
         skip_mode_values = [str(row.get("skip_mode", "")).strip().lower() for row in data.get("timeline", []) if isinstance(row, dict)]
         chosen_skip_mode = next((mode for mode in skip_mode_values if mode), BUFF_SKIP_MODE_WALK)
         buff_skip_mode, deprecated_alias = normalize_buff_skip_mode(chosen_skip_mode)
@@ -839,6 +864,10 @@ def handle_request(data):
             daemon=True
         )
         current_run_thread.start()
+        if incoming_round_traces:
+            patch_timeline_runtime(round_traces=incoming_round_traces)
+        if incoming_runtime_diag:
+            patch_timeline_runtime(runtime_diag=incoming_runtime_diag)
         return {
             "type": "ack",
             "status": "ok",

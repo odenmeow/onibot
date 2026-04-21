@@ -2412,6 +2412,8 @@ class App:
             "runtime_version": int(getattr(self, "runtime_version", 0)),
             "processed_count": runtime.get("processed_count"),
             "events_total": runtime.get("events_total"),
+            "rslot_count": 0,
+            "randat_executed": False,
             "round_traces": []
         }
         lines = []
@@ -2449,6 +2451,7 @@ class App:
                 "self_picked": bool(self_picked),
                 "color": color,
                 "picked_reason": reason,
+                "randat_executed": bool(trace.get("randatExecuted", True)),
                 "dice_plan": {
                     "candidate_idx_list": candidate_list,
                     "free_candidate_idx_list": free_candidate_list,
@@ -2457,6 +2460,11 @@ class App:
                 }
             }
             payload["round_traces"].append(trace_with_group_meta)
+        payload["rslot_count"] = int(sum(1 for trace in payload["round_traces"] if bool(trace.get("randat_executed", True))))
+        payload["randat_executed"] = bool(payload["rslot_count"] > 0)
+        if payload["rslot_count"] == 0:
+            lines.append("未啟用 randat 抽籤")
+            lines.append("-" * 84)
         if grouped_by_round:
             ordered_rounds = sorted(grouped_by_round.keys(), key=lambda x: (999999 if x is None else int(x)))
             for round_no in ordered_rounds:
@@ -2472,10 +2480,11 @@ class App:
                     free_candidate_list = trace.get("freeCandidateIdxList", [])
                     picked_pos = trace.get("pickedCandidatePos")
                     dice_value = trace.get("diceValue")
-                    picked_text = "自己" if self_picked else "idx {}".format(str(picked_slot))
-                    lines.append("- {} -> {} [{}]".format(group_label, picked_text, self._round_trace_reason_label(reason)))
+                    picked_text = "抽中自己 idx={}".format(str(picked_slot)) if self_picked else "抽中 idx {}".format(str(picked_slot))
+                    lines.append("- {} {}".format(group_label, picked_text))
                     lines.append(
-                        "  POOL: candidates={} free={} dice={} pos={}".format(
+                        "  reason={} / candidates={} free={} dice={} pos={}".format(
+                            self._round_trace_reason_label(reason),
                             candidate_list,
                             free_candidate_list,
                             dice_value,
@@ -2483,7 +2492,6 @@ class App:
                         )
                     )
                 lines.append("-" * 84)
-
         self.text.delete("1.0", tk.END)
         if lines:
             summary_text = "\n".join(lines)
@@ -2922,13 +2930,27 @@ class App:
                 "btn": str(ev.get("button", "")).strip().lower(),
                 "skip_mode": skip_mode
             })
-        return {
+        payload = {
             "type": "start_task",
             "contract_version": RUNTIME_CONTRACT_VERSION,
             "client_task_id": self._next_client_task_id(),
             "sent_at_ms": sent_at_ms,
             "timeline": timeline
         }
+        prepared = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
+        runtime_meta = prepared.get("runtime_meta", {})
+        if not isinstance(runtime_meta, dict):
+            runtime_meta = {}
+        if not runtime_meta and prepared:
+            runtime_meta = {
+                "rslot_count": int(prepared.get("rslot_count", 0) or 0),
+                "randat_executed": bool(prepared.get("rslot_count", 0)),
+                "draw_result": copy.deepcopy(prepared.get("block_assignments", {})),
+                "round_traces": copy.deepcopy(prepared.get("round_traces", []))
+            }
+        if runtime_meta:
+            payload["runtime_meta"] = runtime_meta
+        return payload
 
     def _arm_first_event_progress_watch(self, sent_at_monotonic, send_delay_sec, first_event_timing):
         if not first_event_timing:
@@ -4059,6 +4081,7 @@ class App:
             )
 
     def prepare_events_for_send(self, action_reason="before_send", base_events=None, return_backend=False):
+        rslot_count = 0
         try:
             offset_sec = self.get_manual_offset_sec()
             source_events = base_events if isinstance(base_events, list) else self.timeline
@@ -4072,7 +4095,13 @@ class App:
             self.validate_negative_group_monotonic_by_index(normalized_base_events)
             events = recalculate_runtime_events_by_index(normalized_base_events, offset_sec)
         except Exception as e:
-            self.show_error("時間重算失敗", str(e))
+            detail = str(e)
+            if rslot_count > 0:
+                detail = "randat 檢核失敗：{}".format(detail)
+                self.set_frontend_error(detail)
+                self.show_warning("送出已阻擋", detail)
+            else:
+                self.show_error("時間重算失敗", detail)
             return (None, None, "") if return_backend else (None, "")
         unsupported = self.get_unsupported_buttons(events)
         if unsupported:
@@ -4203,6 +4232,12 @@ class App:
             "backend_events": self.copy_events(backend_events),
             "block_assignments": copy.deepcopy(block_assignments),
             "round_traces": copy.deepcopy(round_traces),
+            "runtime_meta": {
+                "rslot_count": int(rslot_count),
+                "randat_executed": bool(rslot_count > 0),
+                "draw_result": copy.deepcopy(block_assignments),
+                "round_traces": copy.deepcopy(round_traces)
+            },
             "resolve_note": resolve_note
         }
         self.render_prepared_payload()
