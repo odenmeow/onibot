@@ -264,7 +264,7 @@ class RuntimeDisplayTests(unittest.TestCase):
             {"type": "randat", "button": "", "at": 1.0, "buff_group": ""},
             {"type": "press", "button": "x", "at": 2.0, "buff_group": "G2"},
         ]
-        _working, assignments, traces = allocate_randat_blocks(events)
+        _working, assignments, traces, _debug = allocate_randat_blocks(events)
         self.assertEqual(len(traces), 2)
         used_slots = set()
         for trace in traces:
@@ -300,7 +300,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         ]
 
         with mock.patch("front.random.randrange", side_effect=[2, 0]):
-            working, assignments, _traces = allocate_randat_blocks(events)
+            working, assignments, _traces, _debug = allocate_randat_blocks(events)
 
         self.assertEqual(working[0].get("buff_group", ""), "")
         self.assertEqual(working[1].get("buff_group", ""), "1")

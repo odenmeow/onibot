@@ -753,6 +753,16 @@ def allocate_randat_blocks(events):
 
     blocks = {}
     bslot = []
+    runtime_debug = {
+        "rslot": list(rslot),
+        "bslot_map": {},
+        "b_group_mapper": {},
+        "mix_slot_show": [],
+        "mix_slot_mapping": {},
+        "mix_slot_mapping_done": [],
+        "table_b_before_insert": []
+    }
+
     for idx, ev in enumerate(working):
         group = str(ev.get("buff_group", "")).strip()
         if not group:
@@ -760,14 +770,15 @@ def allocate_randat_blocks(events):
         if group not in blocks:
             blocks[group] = {"first": idx, "indices": [idx]}
             bslot.append(idx)
+            runtime_debug["bslot_map"][group] = idx
         else:
             blocks[group]["indices"].append(idx)
 
     for group in blocks:
-        first = blocks[group]["first"]
         indices = list(blocks[group]["indices"])
         blocks[group]["rows_len"] = len(indices)
         blocks[group]["span_len"] = len(indices)
+        runtime_debug["b_group_mapper"][group] = list(indices)
 
     original_at_by_idx = {}
     original_gap_by_pair = {}
@@ -777,8 +788,9 @@ def allocate_randat_blocks(events):
         group = str(ev.get("buff_group", "")).strip()
         if group:
             ev["__runtime_gid"] = group
-            continue
-        ev["__runtime_gid"] = "__row_{}".format(idx)
+        else:
+            ev["__runtime_gid"] = "__row_{}".format(idx)
+
     for idx in range(len(working) - 1):
         gap = round(_safe_float(working[idx + 1].get("at", 0.0)) - _safe_float(working[idx].get("at", 0.0)), 4)
         original_gap_by_pair[(idx, idx + 1)] = gap
@@ -790,6 +802,7 @@ def allocate_randat_blocks(events):
             continue
         seen.add(idx)
         pool.append(idx)
+    runtime_debug["mix_slot_show"] = sorted(pool)
 
     block_assignments = {}
     round_traces = []
@@ -834,6 +847,7 @@ def allocate_randat_blocks(events):
                 "round_trace": round_trace
             }
             round_traces.append(round_trace)
+            runtime_debug["mix_slot_mapping"][group] = [src_anchor, True]
 
         for ev in working:
             group = str(ev.get("buff_group", "")).strip()
@@ -847,11 +861,9 @@ def allocate_randat_blocks(events):
                 ev["runtime_group_src_range"] = list(assign["src_range"])
                 ev["runtime_group_dst_range"] = list(assign["dst_range"])
                 ev["runtime_picked_slot"] = assign["picked_slot"]
-            if "__runtime_gid" in ev:
-                del ev["__runtime_gid"]
-            if "__origin_idx" in ev:
-                del ev["__origin_idx"]
-        return working, block_assignments, round_traces
+            ev.pop("__runtime_gid", None)
+            ev.pop("__origin_idx", None)
+        return working, block_assignments, round_traces, runtime_debug
 
     def _group_sort_key(group_id):
         text = str(group_id).strip()
@@ -917,6 +929,98 @@ def allocate_randat_blocks(events):
             "round_trace": round_trace
         }
         round_traces.append(round_trace)
+        runtime_debug["mix_slot_mapping"][group] = [picked_slot, bool(self_picked)]
+
+    skeleton_skip = set()
+    for group, info in blocks.items():
+        indices = list(info.get("indices", []))
+        for idx in indices[1:]:
+            skeleton_skip.add(int(idx))
+    for source_idx, row in enumerate(working):
+        if source_idx in skeleton_skip:
+            continue
+        slot_kind = ""
+        if source_idx in rslot:
+            slot_kind = "rslot"
+        elif source_idx in bslot:
+            slot_kind = "bslot"
+        runtime_debug["table_b_before_insert"].append({
+            "runtime_idx": len(runtime_debug["table_b_before_insert"]),
+            "source_idx": int(source_idx),
+            "slot_kind": slot_kind,
+            "type": str(row.get("type", "")).strip().lower(),
+            "button": str(row.get("button", "")).strip().lower(),
+            "buff_group": str(row.get("buff_group", "")).strip(),
+            "at": round(_safe_float(row.get("at", 0.0)), 4),
+        })
+
+    if randat_executed and blocks:
+        block_meta = {}
+        for group, info in blocks.items():
+            indices = list(info.get("indices", []))
+            if not indices:
+                continue
+            first = indices[0]
+            last = indices[-1]
+            front_gap = 0.0
+            back_gap = 0.0
+            if first > 0:
+                front_gap = round(_safe_float(working[first].get("at", 0.0)) - _safe_float(working[first - 1].get("at", 0.0)), 4)
+            if last + 1 < len(working):
+                back_gap = round(_safe_float(working[last + 1].get("at", 0.0)) - _safe_float(working[last].get("at", 0.0)), 4)
+            block_meta[group] = {
+                "first": first,
+                "last": last,
+                "front_gap": front_gap,
+                "back_gap": back_gap,
+            }
+
+        reorder_order = sorted(
+            block_assignments.keys(),
+            key=lambda gid: (int(block_assignments[gid]["picked_slot"]), _group_sort_key(gid))
+        )
+        reordered = list(working)
+        for group in reorder_order:
+            rows = [row for row in reordered if str(row.get("__runtime_gid", "")).strip() == str(group)]
+            if not rows:
+                continue
+            reordered = [row for row in reordered if str(row.get("__runtime_gid", "")).strip() != str(group)]
+            target_origin = int(block_assignments[group]["picked_slot"])
+            insert_at = None
+            for pos, row in enumerate(reordered):
+                if int(row.get("__origin_idx", -1)) == target_origin:
+                    insert_at = pos
+                    break
+            if insert_at is None:
+                insert_at = len(reordered)
+            reordered[insert_at:insert_at] = rows
+            runtime_debug["mix_slot_mapping_done"].append(str(group))
+
+        first_at = 0.0
+        if reordered:
+            first_origin = int(reordered[0].get("__origin_idx", 0))
+            first_at = original_at_by_idx.get(first_origin, 0.0)
+        prev_at = round(first_at, 4)
+        for idx, row in enumerate(reordered):
+            if idx == 0:
+                row["at"] = prev_at
+                continue
+            prev_row = reordered[idx - 1]
+            prev_group = str(prev_row.get("__runtime_gid", "")).strip()
+            cur_group = str(row.get("__runtime_gid", "")).strip()
+            prev_origin = int(prev_row.get("__origin_idx", -1))
+            cur_origin = int(row.get("__origin_idx", -1))
+            gap = original_gap_by_pair.get((prev_origin, cur_origin))
+            if prev_group != cur_group and cur_group in block_meta and cur_origin == int(block_meta[cur_group]["first"]):
+                gap = block_meta[cur_group]["front_gap"]
+            if prev_group != cur_group and prev_group in block_meta and prev_origin == int(block_meta[prev_group]["last"]):
+                gap = block_meta[prev_group]["back_gap"]
+            if gap is None:
+                gap = round(max(0.0, original_at_by_idx.get(cur_origin, prev_at) - original_at_by_idx.get(prev_origin, prev_at)), 4)
+            prev_at = round(prev_at + max(0.0, _safe_float(gap, 0.0)), 4)
+            row["at"] = prev_at
+
+        working = reordered
 
     if randat_executed and blocks:
         block_meta = {}
@@ -1003,11 +1107,9 @@ def allocate_randat_blocks(events):
             ev["runtime_group_src_range"] = list(assign["src_range"])
             ev["runtime_group_dst_range"] = list(assign["dst_range"])
             ev["runtime_picked_slot"] = assign["picked_slot"]
-        if "__runtime_gid" in ev:
-            del ev["__runtime_gid"]
-        if "__origin_idx" in ev:
-            del ev["__origin_idx"]
-    return working, block_assignments, round_traces
+        ev.pop("__runtime_gid", None)
+        ev.pop("__origin_idx", None)
+    return working, block_assignments, round_traces, runtime_debug
 
 
 def get_buff_cell_visual_state(is_candidate, is_applied, is_running, is_focus):
@@ -1632,6 +1734,9 @@ class App:
 
     def mark_timeline_dirty(self):
         self.current_loaded_from_saved = False
+        self.loop_preview_pending = False
+        self.loop_preview_cached_payload = None
+        self.loop_preview_origin_snapshot = []
         self.update_current_labels()
         self.clear_runtime_highlight()
         self.refresh_tree()
@@ -1842,6 +1947,9 @@ class App:
         self.pending_runtime_version = 0
         self.current_round_runtime_version = 0
         self.next_round_prepared_cache = None
+        self.loop_preview_pending = False
+        self.loop_preview_cached_payload = None
+        self.loop_preview_origin_snapshot = []
         self.origin_snapshot_before_loop = []
         self.origin_version = 0
         self.runtime_version = 0
@@ -2516,8 +2624,23 @@ class App:
                 "expected_groups": 0,
                 "actual_draws": 0,
                 "is_consistent": True
-            }
+            },
+            "table_b_preview": [],
+            "mix_slot_show": [],
+            "mix_slot_mapping": {},
+            "mix_slot_mapping_done": [],
+            "bslot_map": {},
+            "b_group_mapper": {}
         }
+        prepared_payload = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
+        prepared_runtime_meta = prepared_payload.get("runtime_meta", {})
+        if isinstance(prepared_runtime_meta, dict):
+            payload["table_b_preview"] = copy.deepcopy(prepared_runtime_meta.get("table_b_preview", []))
+            payload["mix_slot_show"] = copy.deepcopy(prepared_runtime_meta.get("mix_slot_show", []))
+            payload["mix_slot_mapping"] = copy.deepcopy(prepared_runtime_meta.get("mix_slot_mapping", {}))
+            payload["mix_slot_mapping_done"] = copy.deepcopy(prepared_runtime_meta.get("mix_slot_mapping_done", []))
+            payload["bslot_map"] = copy.deepcopy(prepared_runtime_meta.get("bslot_map", {}))
+            payload["b_group_mapper"] = copy.deepcopy(prepared_runtime_meta.get("b_group_mapper", {}))
         lines = []
         warning_lines = []
         status_note = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
@@ -2845,6 +2968,7 @@ class App:
         loop_button = getattr(self, "loop_button", None)
         if loop_button is not None:
             loop_button.config(state=("disabled" if is_active else "normal"))
+            loop_button.config(text=("確認送出" if bool(getattr(self, "loop_preview_pending", False)) else "重複執行"))
 
         pause_resume_button = getattr(self, "pause_resume_button", None)
         if pause_resume_button is not None:
@@ -4048,6 +4172,9 @@ class App:
         self.front_inflight_client_task_id = ""
         self.pending_runtime_version = 0
         self.next_round_prepared_cache = None
+        self.loop_preview_pending = False
+        self.loop_preview_cached_payload = None
+        self.loop_preview_origin_snapshot = []
         self._set_front_round_state("idle")
 
     def _schedule_next_round_dispatch(self, display_name):
@@ -4063,8 +4190,42 @@ class App:
         if self.front_loop_enabled:
             self.show_warning("提醒", "前端重複送出已在執行中")
             return
+        if not bool(getattr(self, "loop_preview_pending", False)):
+            preview_origin = self.copy_events(self.timeline)
+            runtime_display_events, backend_events, resolve_note = self.prepare_events_for_send(
+                action_reason="before_send_loop_preview",
+                base_events=preview_origin,
+                return_backend=True
+            )
+            if runtime_display_events is None:
+                self.loop_preview_pending = False
+                self.loop_preview_cached_payload = None
+                self.loop_preview_origin_snapshot = []
+                self._update_runtime_control_buttons()
+                return
+            self.loop_preview_pending = True
+            self.loop_preview_origin_snapshot = self.copy_events(preview_origin)
+            self.loop_preview_cached_payload = {
+                "runtime_display_events": self.copy_events(runtime_display_events),
+                "backend_events": self.copy_events(backend_events),
+                "resolve_note": str(resolve_note or "").strip()
+            }
+            self.runtime_working_timeline = self.copy_events(runtime_display_events)
+            self.render_runtime_analysis(force=True)
+            self._update_runtime_control_buttons()
+            self.set_status("已產生 Table B 預覽與抽籤結果；請再按一次「確認送出」")
+            return
+
+        if not isinstance(self.loop_preview_cached_payload, dict):
+            self.loop_preview_pending = False
+            self._update_runtime_control_buttons()
+            self.show_warning("提醒", "預覽快取不存在，請重新按一次重複執行")
+            return
+
         self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
-        self.origin_snapshot_before_loop = self.copy_events(self.timeline)
+        self.origin_snapshot_before_loop = self.copy_events(
+            self.loop_preview_origin_snapshot if self.loop_preview_origin_snapshot else self.timeline
+        )
         self.origin_version += 1
         self.runtime_version = 0
         self.user_stop_requested = False
@@ -4089,7 +4250,10 @@ class App:
         self.front_inflight_client_task_id = ""
         self.pending_runtime_version = 0
         self.current_round_runtime_version = 0
-        self.next_round_prepared_cache = None
+        self.next_round_prepared_cache = copy.deepcopy(self.loop_preview_cached_payload)
+        self.loop_preview_cached_payload = None
+        self.loop_preview_pending = False
+        self.loop_preview_origin_snapshot = []
         self._set_front_round_state("preparing")
         self._update_runtime_control_buttons()
         self.set_status("已啟用前端重複送出：{}".format(display_name))
@@ -4367,7 +4531,7 @@ class App:
                     ev["buff_cycle_sec"] = chosen_cycle
                     ev["buff_jitter_sec"] = chosen_jitter
 
-        events, block_assignments, round_traces = allocate_randat_blocks(events)
+        events, block_assignments, round_traces, randat_debug = allocate_randat_blocks(events)
         self.runtime_round_traces = copy.deepcopy(round_traces)
         self.runtime_trace_status_note = ""
         self.runtime_working_timeline = self.copy_events(events)
@@ -4434,7 +4598,13 @@ class App:
                 "rslot_count": int(rslot_count),
                 "randat_executed": bool(rslot_count > 0),
                 "draw_result": copy.deepcopy(block_assignments),
-                "round_traces": copy.deepcopy(round_traces)
+                "round_traces": copy.deepcopy(round_traces),
+                "table_b_preview": copy.deepcopy(randat_debug.get("table_b_before_insert", [])),
+                "mix_slot_show": copy.deepcopy(randat_debug.get("mix_slot_show", [])),
+                "mix_slot_mapping": copy.deepcopy(randat_debug.get("mix_slot_mapping", {})),
+                "mix_slot_mapping_done": copy.deepcopy(randat_debug.get("mix_slot_mapping_done", [])),
+                "bslot_map": copy.deepcopy(randat_debug.get("bslot_map", {})),
+                "b_group_mapper": copy.deepcopy(randat_debug.get("b_group_mapper", {}))
             },
             "resolve_note": resolve_note
         }
