@@ -362,6 +362,116 @@ def recalculate_runtime_events_by_index(events, anchor_gap_sec):
     return events
 
 
+def move_rows_with_ab_gap_compensation(events, selected_indexes, direction):
+    direction_text = str(direction or "").strip().lower()
+    if direction_text not in {"up", "down"}:
+        raise ValueError("direction 只能是 up/down")
+    if not isinstance(events, list):
+        raise ValueError("events 必須是 list")
+    if not selected_indexes:
+        return events, [], {}
+
+    selected_sorted = sorted(set(int(i) for i in selected_indexes))
+    count = len(events)
+    if count <= 1:
+        return events, selected_sorted, {}
+    if direction_text == "up" and selected_sorted[0] <= 0:
+        return events, selected_sorted, {}
+    if direction_text == "down" and selected_sorted[-1] >= count - 1:
+        return events, selected_sorted, {}
+
+    head = selected_sorted[0]
+    tail = selected_sorted[-1]
+
+    def _gap_a(rows, h):
+        if h <= 0:
+            return None
+        return round(_safe_float(rows[h].get("at", 0.0)) - _safe_float(rows[h - 1].get("at", 0.0)), 4)
+
+    def _gap_b(rows, t):
+        if t >= len(rows) - 1:
+            return None
+        return round(_safe_float(rows[t + 1].get("at", 0.0)) - _safe_float(rows[t].get("at", 0.0)), 4)
+
+    gap_a_before = _gap_a(events, head)
+    gap_b_before = _gap_b(events, tail)
+
+    if direction_text == "up":
+        for idx in selected_sorted:
+            events[idx - 1], events[idx] = events[idx], events[idx - 1]
+        moved_indexes = [idx - 1 for idx in selected_sorted]
+    else:
+        for idx in sorted(selected_sorted, reverse=True):
+            events[idx + 1], events[idx] = events[idx], events[idx + 1]
+        moved_indexes = [idx + 1 for idx in selected_sorted]
+
+    new_head = min(moved_indexes)
+    new_tail = max(moved_indexes)
+    gap_a_after = _gap_a(events, new_head)
+    gap_b_after = _gap_b(events, new_tail)
+
+    preserve_target = None
+    if gap_a_before is None and gap_b_before is None:
+        preserve_target = None
+    elif gap_a_before is None:
+        preserve_target = "B"
+    elif gap_b_before is None:
+        preserve_target = "A"
+    else:
+        preserve_target = "A" if gap_a_before <= gap_b_before else "B"
+
+    requested_compensation = 0.0
+    if preserve_target == "A" and gap_a_before is not None and gap_a_after is not None:
+        requested_compensation = round(gap_a_before - gap_a_after, 4)
+    elif preserve_target == "B" and gap_b_before is not None and gap_b_after is not None:
+        requested_compensation = round(gap_b_after - gap_b_before, 4)
+
+    block_head_at = _safe_float(events[new_head].get("at", 0.0))
+    block_tail_at = _safe_float(events[new_tail].get("at", 0.0))
+    min_shift = -10**9
+    max_shift = 10**9
+    if new_head > 0:
+        prev_at = _safe_float(events[new_head - 1].get("at", 0.0))
+        min_shift = max(min_shift, prev_at - block_head_at)
+    if new_tail < len(events) - 1:
+        next_at = _safe_float(events[new_tail + 1].get("at", 0.0))
+        max_shift = min(max_shift, next_at - block_tail_at)
+    applied_compensation = min(max(requested_compensation, min_shift), max_shift)
+    applied_compensation = round(applied_compensation, 4)
+
+    if abs(applied_compensation) > 0.0001:
+        for idx in moved_indexes:
+            shifted = max(0.0, _safe_float(events[idx].get("at", 0.0)) + applied_compensation)
+            events[idx]["at"] = round(shifted, 2)
+
+    gap_a_final = _gap_a(events, new_head)
+    gap_b_final = _gap_b(events, new_tail)
+    preserved = False
+    if preserve_target == "A" and gap_a_before is not None and gap_a_final is not None:
+        preserved = abs(gap_a_before - gap_a_final) <= 0.0001
+    elif preserve_target == "B" and gap_b_before is not None and gap_b_final is not None:
+        preserved = abs(gap_b_before - gap_b_final) <= 0.0001
+
+    move_meta = {
+        "direction": direction_text,
+        "selected_before": selected_sorted,
+        "selected_after": moved_indexes,
+        "range_before": [head, tail],
+        "range_after": [new_head, new_tail],
+        "gap_a_before": gap_a_before,
+        "gap_b_before": gap_b_before,
+        "gap_a_after_swap": gap_a_after,
+        "gap_b_after_swap": gap_b_after,
+        "gap_a_final": gap_a_final,
+        "gap_b_final": gap_b_final,
+        "preserve_target": preserve_target,
+        "preserved": bool(preserved),
+        "compensation_requested": round(requested_compensation, 4),
+        "compensation_applied": round(applied_compensation, 4),
+    }
+    return events, moved_indexes, move_meta
+
+
 def send_to_pi(payload, pi_host, timeout=8):
     raw_payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
@@ -1514,6 +1624,7 @@ class App:
         self.has_pre_run_snapshot = False
         self.runtime_display_frozen = False
         self.runtime_manual_restore_active = False
+        self.runtime_move_gap_logs = []
         self.tree_row_color_tags = set()
         self.last_tree_copy_payload = ""
         self.timeline_histories = {}
@@ -2158,9 +2269,28 @@ class App:
             "state": runtime.get("state"),
             "processed_count": runtime.get("processed_count"),
             "events_total": runtime.get("events_total"),
-            "round_traces": []
+            "round_traces": [],
+            "move_gap_logs": list(getattr(self, "runtime_move_gap_logs", []) or [])[-20:]
         }
         lines = []
+        if payload["move_gap_logs"]:
+            lines.append("move | range(before->after) | keep(A/B) | preserved | compensation(req->applied)")
+            lines.append("-" * 84)
+            for item in payload["move_gap_logs"]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    "{:>4} | {} -> {} | {:>7} | {:>9} | {:+.4f} -> {:+.4f}".format(
+                        str(item.get("direction", "")),
+                        item.get("range_before", []),
+                        item.get("range_after", []),
+                        str(item.get("preserve_target", "-")),
+                        str(bool(item.get("preserved", False))).lower(),
+                        _safe_float(item.get("compensation_requested", 0.0)),
+                        _safe_float(item.get("compensation_applied", 0.0))
+                    )
+                )
+            lines.append("")
         lines.append("round | group_id | src_range -> dst_range | picked_slot | self_picked | color")
         lines.append("-" * 84)
         for trace in traces:
@@ -2345,6 +2475,7 @@ class App:
         self.runtime_recent_skipped_indices = []
         self.runtime_latest_index = None
         self.last_runtime_signature = ""
+        self.runtime_move_gap_logs = []
         self._reset_first_event_progress_watch()
         self._reset_task_monitor()
 
@@ -4145,27 +4276,45 @@ class App:
         if selected[0] == 0:
             return
         before = self._begin_timeline_change()
-        for idx in selected:
-            self.timeline[idx - 1], self.timeline[idx] = self.timeline[idx], self.timeline[idx - 1]
+        self.timeline, moved_indexes, move_meta = move_rows_with_ab_gap_compensation(
+            self.timeline,
+            selected,
+            "up"
+        )
         self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
-        self.tree.selection_set([str(i - 1) for i in selected])
+        self.tree.selection_set([str(i) for i in moved_indexes])
+        if move_meta:
+            if not isinstance(self.runtime_move_gap_logs, list):
+                self.runtime_move_gap_logs = []
+            self.runtime_move_gap_logs.append(move_meta)
+            self.runtime_move_gap_logs = self.runtime_move_gap_logs[-100:]
+        self.render_runtime_analysis(force=True)
 
     def move_selected_down(self):
         if not self._ensure_runtime_editable():
             return
-        selected = sorted(self.get_selected_indexes(), reverse=True)
+        selected = sorted(self.get_selected_indexes())
         if not selected:
             self.show_warning("提醒", "請先選取列")
             return
-        if selected[0] == len(self.timeline) - 1:
+        if selected[-1] == len(self.timeline) - 1:
             return
         before = self._begin_timeline_change()
-        for idx in selected:
-            self.timeline[idx + 1], self.timeline[idx] = self.timeline[idx], self.timeline[idx + 1]
+        self.timeline, moved_indexes, move_meta = move_rows_with_ab_gap_compensation(
+            self.timeline,
+            selected,
+            "down"
+        )
         self._finalize_timeline_change(before)
         self.mark_timeline_dirty()
-        self.tree.selection_set([str(i + 1) for i in sorted(selected)])
+        self.tree.selection_set([str(i) for i in moved_indexes])
+        if move_meta:
+            if not isinstance(self.runtime_move_gap_logs, list):
+                self.runtime_move_gap_logs = []
+            self.runtime_move_gap_logs.append(move_meta)
+            self.runtime_move_gap_logs = self.runtime_move_gap_logs[-100:]
+        self.render_runtime_analysis(force=True)
 
     def swap_selected_at(self):
         if not self._ensure_runtime_editable():
