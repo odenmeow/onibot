@@ -17,6 +17,7 @@ DEFAULT_PI_HOST = "192.168.100.140"
 PI_PORT = 5000
 RUNTIME_CONTRACT_VERSION = "v1"
 BUFF_SKIP_MODE_WALK = "walk"
+BUFF_SKIP_MODE_PASS = "pass"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 RUNTIME_POLL_INTERVAL_MS = 300
@@ -95,7 +96,7 @@ def load_config():
             "pi_host": DEFAULT_PI_HOST,
             "send_delay_sec": 1.0,
             "last_selected_name": "",
-            "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
+            "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
@@ -129,7 +130,7 @@ def load_config():
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
             "last_selected_name": data.get("last_selected_name", ""),
-            "buff_skip_mode": data.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS),
+            "buff_skip_mode": normalize_front_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
             "hint_note_text": str(data.get("hint_note_text", DEFAULT_HINT_NOTE_TEXT)),
             "ui_recent_colors": normalized_recent,
@@ -147,7 +148,7 @@ def load_config():
             "pi_host": DEFAULT_PI_HOST,
             "send_delay_sec": 1.0,
             "last_selected_name": "",
-            "buff_skip_mode": BUFF_SKIP_MODE_COMPRESS,
+            "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
@@ -557,6 +558,15 @@ def _safe_float(value, default=0.0):
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def normalize_front_skip_mode(raw_mode):
+    mode = str(raw_mode or "").strip().lower()
+    if mode == BUFF_SKIP_MODE_COMPRESS:
+        return BUFF_SKIP_MODE_PASS
+    if mode in (BUFF_SKIP_MODE_PASS, BUFF_SKIP_MODE_WALK, "none"):
+        return mode
+    return BUFF_SKIP_MODE_PASS
 
 
 DEFAULT_PR_SEGMENTS = [
@@ -1627,12 +1637,18 @@ class App:
         self.runtime_move_gap_logs = []
         self.last_runtime_state = ""
         self.stop_restore_prompted_run_id = -1
+        self.user_stop_requested = False
+        self.stop_restore_prompted_task_keys = set()
+        self.runtime_seen_active_task_keys = set()
         self.tree_row_color_tags = set()
         self.last_tree_copy_payload = ""
         self.timeline_histories = {}
         self.front_loop_enabled = False
         self.front_loop_after_id = None
         self.front_loop_round = 0
+        self.origin_snapshot_before_loop = []
+        self.origin_version = 0
+        self.runtime_version = 0
         self.last_prepared_payload = {}
         self.first_event_progress_watch = {}
         self.task_monitor = {}
@@ -1719,13 +1735,13 @@ class App:
         buff_mode_row = tk.Frame(info)
         buff_mode_row.pack(fill="x", padx=8, pady=(0, 5))
         tk.Label(buff_mode_row, text="buff 略過模式：").pack(side="left")
-        self.buff_skip_mode_var = tk.StringVar(value=self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS))
+        self.buff_skip_mode_var = tk.StringVar(value=normalize_front_skip_mode(self.config.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)))
         self.buff_skip_mode_combo = ttk.Combobox(
             buff_mode_row,
             state="readonly",
             width=32,
             values=[
-                "略過(不等不按，壓縮時間軸)",
+                "略過 pass (不等不按，壓縮時間軸)",
                 "走過(等但不按，保留時間軸)"
             ]
         )
@@ -2224,6 +2240,8 @@ class App:
         return {
             "current_name": self.current_name,
             "pi_host": self.config["pi_host"],
+            "origin_version": int(getattr(self, "origin_version", 0)),
+            "runtime_version": int(getattr(self, "runtime_version", 0)),
             "request_preview": self._build_start_task_payload(sanitized),
             "simultaneous_groups": build_overlap_summary(self.timeline)
         }
@@ -2279,6 +2297,8 @@ class App:
         payload = {
             "run_id": runtime.get("run_id"),
             "state": runtime.get("state"),
+            "origin_version": int(getattr(self, "origin_version", 0)),
+            "runtime_version": int(getattr(self, "runtime_version", 0)),
             "processed_count": runtime.get("processed_count"),
             "events_total": runtime.get("events_total"),
             "round_traces": [],
@@ -2478,13 +2498,22 @@ class App:
                         self._reset_task_monitor()
                     else:
                         self.runtime_display_frozen = False
+                    server_task_id = str(self.timeline_runtime_info.get("server_task_id", "")).strip()
+                    task_key = "{}:{}".format(run_id, server_task_id) if (run_id > 0 or server_task_id) else ""
+                    if state in ("running", "resumed", "paused") and task_key:
+                        self.runtime_seen_active_task_keys.add(task_key)
                     prompted_run_id = getattr(self, "stop_restore_prompted_run_id", -1)
                     if (
                         state == "stopped"
                         and self.has_pre_run_snapshot
                         and prompted_run_id != run_id
+                        and bool(getattr(self, "user_stop_requested", False))
+                        and bool(task_key)
+                        and task_key in self.runtime_seen_active_task_keys
+                        and task_key not in self.stop_restore_prompted_task_keys
                     ):
                         self.stop_restore_prompted_run_id = run_id
+                        self.stop_restore_prompted_task_keys.add(task_key)
                         try:
                             restore_yes = bool(messagebox.askyesno("已停止", "是否恢復 Origin（執行前快照）？"))
                         except Exception:
@@ -2709,13 +2738,14 @@ class App:
 
     def _build_start_task_payload(self, backend_events):
         sent_at_ms = int(time.time() * 1000)
-        skip_mode = self.config.get("buff_skip_mode", BUFF_SKIP_MODE_COMPRESS)
+        default_skip_mode = normalize_front_skip_mode(self.config.get("buff_skip_mode", BUFF_SKIP_MODE_PASS))
         timeline = []
         for idx, ev in enumerate(backend_events or []):
             try:
                 at_ms = int(round(max(0.0, float(ev.get("at", 0.0))) * 1000.0))
             except Exception:
                 at_ms = 0
+            skip_mode = normalize_front_skip_mode(ev.get("skip_mode", default_skip_mode))
             timeline.append({
                 "idx": int(idx),
                 "at_ms": at_ms,
@@ -3578,6 +3608,7 @@ class App:
 
     def stop_pi(self):
         try:
+            self.user_stop_requested = True
             self.front_loop_enabled = False
             after_id = getattr(self, "front_loop_after_id", None)
             if after_id:
@@ -3623,6 +3654,10 @@ class App:
             self.show_warning("提醒", "前端重複送出已在執行中")
             return
         self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
+        self.origin_snapshot_before_loop = self.copy_events(self.timeline)
+        self.origin_version += 1
+        self.runtime_version = 0
+        self.user_stop_requested = False
         self.has_pre_run_snapshot = True
         self.runtime_manual_restore_active = False
         self.runtime_display_frozen = False
@@ -3649,12 +3684,16 @@ class App:
         if not self.front_loop_enabled:
             return
 
-        prepared_events, resolve_note = self.prepare_events_for_send(action_reason="before_send_loop")
+        prepared_events, resolve_note = self.prepare_events_for_send(
+            action_reason="before_send_loop",
+            base_events=self.origin_snapshot_before_loop
+        )
         if prepared_events is None:
             self.front_loop_enabled = False
             self._update_runtime_control_buttons()
             return
         self.runtime_working_timeline = self.copy_events(prepared_events)
+        self.runtime_version += 1
         self._show_runtime_view_timeline()
 
         backend_events = self._sanitize_events_for_backend(prepared_events)
@@ -3769,18 +3808,19 @@ class App:
                 lambda: self._poll_front_loop_round_done(display_name)
             )
 
-    def prepare_events_for_send(self, action_reason="before_send"):
+    def prepare_events_for_send(self, action_reason="before_send", base_events=None):
         try:
             offset_sec = self.get_manual_offset_sec()
-            base_events = [self.normalize_event_schema(ev) for ev in self.timeline]
+            source_events = base_events if isinstance(base_events, list) else self.timeline
+            normalized_base_events = [self.normalize_event_schema(ev) for ev in source_events]
             rslot_count = sum(
-                1 for ev in base_events
+                1 for ev in normalized_base_events
                 if str(ev.get("type", "")).strip().lower() == "randat"
             )
             if rslot_count > 0:
-                self.validate_buff_group_contiguity(base_events)
-            self.validate_negative_group_monotonic_by_index(base_events)
-            events = recalculate_runtime_events_by_index(base_events, offset_sec)
+                self.validate_buff_group_contiguity(normalized_base_events)
+            self.validate_negative_group_monotonic_by_index(normalized_base_events)
+            events = recalculate_runtime_events_by_index(normalized_base_events, offset_sec)
         except Exception as e:
             self.show_error("時間重算失敗", str(e))
             return None, ""
@@ -3874,6 +3914,7 @@ class App:
             ev["buff_cycle_sec"] = round(rolled_cycle, 4)
             ev["buff_jitter_sec"] = round(jitter, 4)
             ev["at_random_sec"] = 0.0
+            ev["skip_mode"] = normalize_front_skip_mode(ev.get("skip_mode", self.config.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)))
         for idx, ev in enumerate(events):
             ev["runtime_source_index"] = idx
         events = [ev for ev in events if str(ev.get("type", "")).strip().lower() in ("press", "release")]
@@ -3893,6 +3934,8 @@ class App:
         resolve_note = "{}；{}".format(resolve_note, random_note) if resolve_note else random_note
         self.last_prepared_payload = {
             "action_reason": action_reason,
+            "origin_version": int(getattr(self, "origin_version", 0)),
+            "runtime_version": int(getattr(self, "runtime_version", 0)) + 1,
             "rslot_count": int(rslot_count),
             "prepared_events": self.copy_events(events),
             "block_assignments": copy.deepcopy(block_assignments),
@@ -3907,7 +3950,7 @@ class App:
         if label.startswith("走過"):
             mode = BUFF_SKIP_MODE_WALK
         else:
-            mode = BUFF_SKIP_MODE_COMPRESS
+            mode = BUFF_SKIP_MODE_PASS
         self.buff_skip_mode_var.set(mode)
         self.config["buff_skip_mode"] = mode
         save_config(self.config)

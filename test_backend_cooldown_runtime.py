@@ -124,6 +124,93 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
 
         self.assertEqual(results[0]["original_index"], 7)
 
+    def test_skip_mode_pass_compresses_timeline_without_wait(self):
+        runtime = {"next_ready_at": {}}
+        events = [
+            {"type": "press", "button": "f", "at": 0.0, "buff_group": "1", "buff_cycle_sec": 9.0, "buff_jitter_sec": 0.0},
+            {"type": "press", "button": "f", "at": 0.5, "buff_group": "1", "buff_cycle_sec": 9.0, "buff_jitter_sec": 0.0},
+        ]
+        orig_monotonic = backend.time.monotonic
+        orig_sleep = backend.safe_sleep
+        orig_press = backend.press_only
+        orig_release = backend.release_only
+        try:
+            tick = {"t": 0.0}
+            waits = []
+            backend.time.monotonic = lambda: tick.__setitem__("t", tick["t"] + 0.001) or tick["t"]
+            backend.safe_sleep = lambda sec: waits.append(sec)
+            backend.press_only = lambda *_args, **_kwargs: None
+            backend.release_only = lambda *_args, **_kwargs: None
+            results = backend.run_timeline(events, buff_runtime=runtime, buff_skip_mode=backend.BUFF_SKIP_MODE_PASS)
+        finally:
+            backend.time.monotonic = orig_monotonic
+            backend.safe_sleep = orig_sleep
+            backend.press_only = orig_press
+            backend.release_only = orig_release
+
+        self.assertEqual(results[1]["status"], "skipped_by_cooldown")
+        self.assertEqual(len(waits), 0)
+
+    def test_skip_mode_walk_keeps_wait_for_skipped_row(self):
+        runtime = {"next_ready_at": {}}
+        events = [
+            {"type": "press", "button": "f", "at": 0.0, "buff_group": "1", "buff_cycle_sec": 9.0, "buff_jitter_sec": 0.0},
+            {"type": "press", "button": "f", "at": 0.5, "buff_group": "1", "buff_cycle_sec": 9.0, "buff_jitter_sec": 0.0},
+        ]
+        orig_monotonic = backend.time.monotonic
+        orig_sleep = backend.safe_sleep
+        orig_press = backend.press_only
+        orig_release = backend.release_only
+        try:
+            tick = {"t": 0.0}
+            waits = []
+            backend.time.monotonic = lambda: tick.__setitem__("t", tick["t"] + 0.001) or tick["t"]
+            backend.safe_sleep = lambda sec: waits.append(sec)
+            backend.press_only = lambda *_args, **_kwargs: None
+            backend.release_only = lambda *_args, **_kwargs: None
+            results = backend.run_timeline(events, buff_runtime=runtime, buff_skip_mode=backend.BUFF_SKIP_MODE_WALK)
+        finally:
+            backend.time.monotonic = orig_monotonic
+            backend.safe_sleep = orig_sleep
+            backend.press_only = orig_press
+            backend.release_only = orig_release
+
+        self.assertEqual(results[1]["status"], "skipped_by_cooldown")
+        self.assertGreater(waits[0], 0.0)
+
+    def test_handle_request_maps_legacy_compress_to_pass(self):
+        orig_thread = backend.threading.Thread
+        orig_current_run_thread = backend.current_run_thread
+        try:
+            backend.current_run_thread = None
+
+            class _FakeThread:
+                def __init__(self, target=None, args=(), daemon=None):
+                    self.target = target
+                    self.args = args
+                    self.daemon = daemon
+
+                def start(self):
+                    return None
+
+                def is_alive(self):
+                    return False
+
+            backend.threading.Thread = _FakeThread
+            res = backend.handle_request({
+                "type": "start_task",
+                "contract_version": backend.RUNTIME_CONTRACT_VERSION,
+                "client_task_id": "ct-1",
+                "timeline": [{"idx": 0, "at_ms": 0, "action": "press", "btn": "f", "skip_mode": "compress"}]
+            })
+        finally:
+            backend.threading.Thread = orig_thread
+            backend.current_run_thread = orig_current_run_thread
+
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["buff_skip_mode"], backend.BUFF_SKIP_MODE_PASS)
+        self.assertEqual(res["buff_skip_mode_deprecated_alias"], "compress")
+
 
 if __name__ == "__main__":
     unittest.main()
