@@ -107,6 +107,7 @@ def load_config():
         return {
             "pi_host": DEFAULT_PI_HOST,
             "send_delay_sec": 1.0,
+            "auto_switch_runtime_on_loop_start": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
@@ -142,6 +143,7 @@ def load_config():
         return {
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
+            "auto_switch_runtime_on_loop_start": bool(data.get("auto_switch_runtime_on_loop_start", True)),
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": normalize_front_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
@@ -161,6 +163,7 @@ def load_config():
         return {
             "pi_host": DEFAULT_PI_HOST,
             "send_delay_sec": 1.0,
+            "auto_switch_runtime_on_loop_start": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
@@ -4215,6 +4218,19 @@ class App:
         self._set_front_round_state("preparing_next")
         self._dispatch_front_loop_once(display_name)
 
+    def _auto_switch_runtime_view_on_loop_start(self):
+        cfg = self.config if isinstance(getattr(self, "config", None), dict) else {}
+        if not bool(cfg.get("auto_switch_runtime_on_loop_start", True)):
+            return
+        mode_var = getattr(self, "json_view_mode_var", None)
+        if mode_var is None:
+            return
+        mode = str(mode_var.get() or "").strip().lower()
+        if mode == "runtime":
+            return
+        mode_var.set("runtime")
+        self.on_json_mode_change()
+
     def send_timeline_loop(self):
         if not self.timeline:
             self.show_warning("提醒", "請先錄製並分析，或載入已保存項目")
@@ -4222,6 +4238,7 @@ class App:
         if self.front_loop_enabled:
             self.show_warning("提醒", "前端重複送出已在執行中")
             return
+        self._auto_switch_runtime_view_on_loop_start()
         if not bool(getattr(self, "loop_preview_pending", False)):
             preview_origin = self.copy_events(self.timeline)
             runtime_display_events, backend_events, resolve_note = self.prepare_events_for_send(

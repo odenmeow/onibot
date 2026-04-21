@@ -156,6 +156,17 @@ class _FakeRoot:
         return "after-id"
 
 
+class _FakeStringVar:
+    def __init__(self, value=""):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = value
+
+
 class RuntimeDisplayTests(unittest.TestCase):
     def setUp(self):
         self._orig_showwarning = sys.modules["front"].messagebox.showwarning
@@ -567,6 +578,33 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertFalse(app.runtime_wait_ack_active)
         self.assertFalse(app.runtime_display_frozen)
+
+    def test_loop_start_auto_switches_json_mode_to_runtime_and_renders(self):
+        app = self._new_app()
+        app.send_timeline_loop = App.send_timeline_loop.__get__(app, App)
+        app.on_json_mode_change = App.on_json_mode_change.__get__(app, App)
+        app._auto_switch_runtime_view_on_loop_start = App._auto_switch_runtime_view_on_loop_start.__get__(app, App)
+        app.timeline = [{"type": "press", "button": "space", "at": 1.0}]
+        app.loop_preview_pending = False
+        app.front_loop_enabled = False
+        app.loop_preview_cached_payload = None
+        app.loop_preview_origin_snapshot = []
+        app.show_warning = lambda *_args, **_kwargs: None
+        app._update_runtime_control_buttons = lambda: None
+        app.config["auto_switch_runtime_on_loop_start"] = True
+        app.json_view_mode_var = _FakeStringVar("preview")
+        render_calls = {"runtime": 0}
+        app.render_runtime_analysis = lambda force=False: render_calls.__setitem__("runtime", render_calls["runtime"] + 1)
+        app.prepare_events_for_send = lambda **_kwargs: (
+            [{"type": "press", "button": "space", "at": 1.0}],
+            [{"type": "press", "button": "space", "at": 1.0}],
+            ""
+        )
+
+        app.send_timeline_loop()
+
+        self.assertEqual(app.json_view_mode_var.get(), "runtime")
+        self.assertGreaterEqual(render_calls["runtime"], 1)
 
 
 class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
