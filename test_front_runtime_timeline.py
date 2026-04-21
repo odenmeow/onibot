@@ -212,11 +212,17 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.origin_snapshot_before_loop = []
         app.origin_version = 0
         app.runtime_version = 0
+        app.last_prepared_payload = {}
+        app.front_inflight_client_task_id = ""
         app.copy_events = App.copy_events.__get__(app, App)
         app._normalize_replicated_row_flag = App._normalize_replicated_row_flag.__get__(app, App)
         app._sync_replicated_row = App._sync_replicated_row.__get__(app, App)
         app.update_runtime_from_status = App.update_runtime_from_status.__get__(app, App)
         app.render_runtime_analysis = App.render_runtime_analysis.__get__(app, App)
+        app._build_runtime_consistency_key = App._build_runtime_consistency_key.__get__(app, App)
+        app._consistency_key_from_runtime_meta = App._consistency_key_from_runtime_meta.__get__(app, App)
+        app._consistency_key_from_runtime_status = App._consistency_key_from_runtime_status.__get__(app, App)
+        app._is_runtime_key_compatible = App._is_runtime_key_compatible.__get__(app, App)
         app.refresh_tree = App.refresh_tree.__get__(app, App)
         app.poll_runtime_status = App.poll_runtime_status.__get__(app, App)
         app.restore_pre_run_state = App.restore_pre_run_state.__get__(app, App)
@@ -432,6 +438,64 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertIn("Execution Round #1", captured["text"])
         self.assertIn("Execution Round #2", captured["text"])
         self.assertIn("picked A-slot=", captured["text"])
+
+    def test_render_runtime_analysis_hides_prepared_meta_on_key_mismatch(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "picked_slot": 0}
+        ]
+        app.timeline_runtime_info = {"run_id": 10, "server_task_id": "srv-old", "execution_round": 2}
+        app.last_prepared_payload = {
+            "runtime_version": 3,
+            "execution_round": 3,
+            "runtime_meta": {
+                "run_id": 99,
+                "server_task_id": "srv-new",
+                "runtime_version": 3,
+                "execution_round": 3,
+                "apply_order": ["A"],
+                "group_final_positions": {"A": {"picked_slot_a_idx": 0, "base_b_idx_before_offset": 0, "final_b_range": [0, 1]}}
+            }
+        }
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("key 不一致", captured["text"])
+        self.assertNotIn("Final positions:", captured["text"])
+
+    def test_update_runtime_ignores_old_backend_traces_against_prepared_meta(self):
+        app = self._new_app()
+        app.last_prepared_payload = {
+            "runtime_version": 3,
+            "execution_round": 3,
+            "runtime_meta": {
+                "server_task_id": "srv-new",
+                "runtime_version": 3,
+                "execution_round": 3
+            }
+        }
+
+        app.update_runtime_from_status({
+            "timeline_runtime": {
+                "state": "running",
+                "run_id": 20,
+                "server_task_id": "srv-old",
+                "runtime_version": 2,
+                "execution_round": 2,
+                "round_traces": [
+                    {"execution_round": 2, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick"}
+                ],
+                "events": []
+            }
+        })
+
+        self.assertEqual(app.runtime_round_traces, [])
 
     def test_recent_ok_green_tag_does_not_override_buff_background(self):
         app = self._new_app()
