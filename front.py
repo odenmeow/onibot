@@ -4880,7 +4880,29 @@ class App:
             events,
             execution_round=execution_round
         )
-        self.runtime_round_traces = copy.deepcopy(round_traces)
+        existing_round_traces = list(self.runtime_round_traces) if isinstance(self.runtime_round_traces, list) else []
+        merged_round_traces = []
+        for item in existing_round_traces:
+            if not isinstance(item, dict):
+                continue
+            try:
+                item_round = int(item.get("execution_round", item.get("executionRound", 0)) or 0)
+            except Exception:
+                item_round = 0
+            if item_round == int(execution_round):
+                continue
+            merged_round_traces.append(copy.deepcopy(item))
+        for item in round_traces:
+            if not isinstance(item, dict):
+                continue
+            merged_round_traces.append(copy.deepcopy(item))
+        merged_round_traces.sort(
+            key=lambda item: (
+                int(item.get("execution_round", item.get("executionRound", 0)) or 0),
+                int(item.get("draw_order", item.get("drawOrder", item.get("round", 999999))) or 999999)
+            )
+        )
+        self.runtime_round_traces = merged_round_traces
         self.runtime_trace_status_note = ""
         self.runtime_working_timeline = self.copy_events(events)
         if hasattr(self, "render_runtime_analysis"):
