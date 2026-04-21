@@ -653,6 +653,60 @@ def allocate_randat_blocks(events):
     round_traces = []
     randat_executed = bool(rslot)
 
+    if not randat_executed:
+        for round_idx, group in enumerate(sorted(blocks.keys()), start=1):
+            src_anchor = int(blocks[group]["first"])
+            src_range = [src_anchor, src_anchor + blocks[group]["span_len"] - 1]
+            round_trace = {
+                "round": round_idx,
+                "buffGroup": group,
+                "group_id": group,
+                "anchorIdx": src_anchor,
+                "candidateIdxList": [],
+                "freeCandidateIdxList": [],
+                "pickedCandidatePos": None,
+                "diceValue": None,
+                "pickedIdx": src_anchor,
+                "picked_slot": src_anchor,
+                "src_range": src_range,
+                "dst_range": list(src_range),
+                "randatExecuted": False,
+                "result": "kept",
+                "pickedReason": "randat_disabled",
+                "reason": "randat_disabled",
+                "self_picked": True,
+                "color": "light_yellow"
+            }
+            block_assignments[group] = {
+                "group": group,
+                "anchor_index": src_anchor,
+                "landed_index": src_anchor,
+                "occupies_original": True,
+                "src_range": src_range,
+                "dst_range": list(src_range),
+                "picked_slot": src_anchor,
+                "self_picked": True,
+                "color": "light_yellow",
+                "round_trace": round_trace
+            }
+            round_traces.append(round_trace)
+
+        for ev in working:
+            group = str(ev.get("buff_group", "")).strip()
+            if group in block_assignments:
+                assign = block_assignments[group]
+                ev["runtime_landed_index"] = assign["landed_index"]
+                ev["runtime_anchor_index"] = assign["anchor_index"]
+                ev["runtime_occupies_original"] = 1
+                ev["runtime_self_picked"] = 1
+                ev["runtime_group_color"] = assign["color"]
+                ev["runtime_group_src_range"] = list(assign["src_range"])
+                ev["runtime_group_dst_range"] = list(assign["dst_range"])
+                ev["runtime_picked_slot"] = assign["picked_slot"]
+            if "__runtime_gid" in ev:
+                del ev["__runtime_gid"]
+        return working, block_assignments, round_traces
+
     def _group_sort_key(group_id):
         text = str(group_id).strip()
         try:
@@ -972,6 +1026,31 @@ class App:
                 prev_at = cur_at
 
             i = end
+
+    def validate_buff_group_contiguity(self, events):
+        first_last = {}
+        for idx, ev in enumerate(events):
+            group = str(ev.get("buff_group", "")).strip()
+            if not group:
+                continue
+            if group not in first_last:
+                first_last[group] = [idx, idx]
+            else:
+                first_last[group][1] = idx
+
+        for group, (start, end) in first_last.items():
+            for idx in range(start, end + 1):
+                middle_group = str(events[idx].get("buff_group", "")).strip()
+                if middle_group != group:
+                    raise ValueError(
+                        "buff_group {} 必須連續，idx {} 到 idx {} 之間不可夾其他列（idx {} 為 {}）。".format(
+                            group,
+                            start,
+                            end,
+                            idx,
+                            middle_group if middle_group else "空白群組"
+                        )
+                    )
 
     def update_error_text(self, widget, message):
         widget.config(state="normal")
@@ -3580,6 +3659,12 @@ class App:
         try:
             offset_sec = self.get_manual_offset_sec()
             base_events = [self.normalize_event_schema(ev) for ev in self.timeline]
+            rslot_count = sum(
+                1 for ev in base_events
+                if str(ev.get("type", "")).strip().lower() == "randat"
+            )
+            if rslot_count > 0:
+                self.validate_buff_group_contiguity(base_events)
             self.validate_negative_group_monotonic_by_index(base_events)
             events = recalculate_runtime_events_by_index(base_events, offset_sec)
         except Exception as e:
@@ -3694,6 +3779,7 @@ class App:
         resolve_note = "{}；{}".format(resolve_note, random_note) if resolve_note else random_note
         self.last_prepared_payload = {
             "action_reason": action_reason,
+            "rslot_count": int(rslot_count),
             "prepared_events": self.copy_events(events),
             "block_assignments": copy.deepcopy(block_assignments),
             "round_traces": copy.deepcopy(round_traces),
