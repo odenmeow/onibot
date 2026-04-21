@@ -2790,9 +2790,10 @@ class App:
         owner_server_task_id = str(owner.get("server_task_id", "")).strip() if isinstance(owner, dict) else ""
         allow_backend_round_traces = bool(backend_round_traces)
         if allow_backend_round_traces and (owner_run_id > 0 or owner_server_task_id):
-            if owner_run_id > 0 and run_id > 0 and owner_run_id != run_id:
-                allow_backend_round_traces = False
-            if owner_server_task_id and server_task_id and owner_server_task_id != server_task_id:
+            if owner_server_task_id and server_task_id:
+                if owner_server_task_id != server_task_id:
+                    allow_backend_round_traces = False
+            elif owner_run_id > 0 and run_id > 0 and owner_run_id != run_id:
                 allow_backend_round_traces = False
         if allow_backend_round_traces:
             round_traces = backend_round_traces
@@ -3083,10 +3084,8 @@ class App:
         monitor["failed"] = False
         self.task_monitor = monitor
         self.runtime_wait_ack_active = False
-        owner = getattr(self, "runtime_trace_owner", {})
-        owner_run_id = int(owner.get("run_id", 0) or 0) if isinstance(owner, dict) else 0
         self.runtime_trace_owner = {
-            "run_id": owner_run_id,
+            "run_id": 0,
             "server_task_id": server_task_id
         }
         self.runtime_trace_status_note = ""
@@ -4334,7 +4333,7 @@ class App:
         self.pending_runtime_version = int(self.runtime_version) + 1
         self.runtime_working_timeline = self.copy_events(runtime_display_events)
         self.runtime_trace_owner = {
-            "run_id": int(self.timeline_runtime_info.get("run_id", 0) or 0),
+            "run_id": 0,
             "server_task_id": ""
         }
         self._set_front_round_state("waiting_ack")

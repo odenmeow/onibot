@@ -194,6 +194,8 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.timeline_runtime_by_index = {}
         app.timeline_runtime_info = {"events": []}
         app.runtime_round_traces = []
+        app.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
+        app.runtime_trace_status_note = ""
         app.runtime_latest_index = None
         app.last_runtime_signature = ""
         app.runtime_display_frozen = False
@@ -374,6 +376,32 @@ class RuntimeDisplayTests(unittest.TestCase):
         })
         self.assertTrue(changed)
         self.assertEqual(app.runtime_latest_index, 2)
+
+    def test_update_runtime_accepts_next_round_traces_when_owner_run_id_unknown(self):
+        app = self._new_app()
+        app.runtime_round_traces = [
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"}
+        ]
+        app.runtime_trace_owner = {"run_id": 0, "server_task_id": "srv-round2"}
+        app.runtime_trace_status_note = "已抽籤但送出失敗"
+
+        changed = app.update_runtime_from_status({
+            "timeline_runtime": {
+                "state": "running",
+                "run_id": 202,
+                "server_task_id": "srv-round2",
+                "round_traces": [
+                    {"execution_round": 2, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick"}
+                ],
+                "events": [{"original_index": 0, "status": "ok"}]
+            }
+        })
+
+        self.assertTrue(changed)
+        self.assertEqual(app.runtime_round_traces[0]["execution_round"], 2)
+        self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "B")
+        self.assertEqual(app.runtime_trace_owner, {"run_id": 202, "server_task_id": "srv-round2"})
+        self.assertEqual(app.runtime_trace_status_note, "")
 
     def test_recent_ok_green_tag_does_not_override_buff_background(self):
         app = self._new_app()
