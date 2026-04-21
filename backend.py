@@ -109,7 +109,7 @@ def make_error_response(code, message, phase, diag=None, status="error", server_
     }
 
 
-def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_id=""):
+def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_id="", runtime_version=0, execution_round=0):
     with runtime_lock:
         timeline_runtime["run_id"] += 1
         timeline_runtime["server_task_id"] = str(server_task_id or "")
@@ -122,8 +122,8 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
         timeline_runtime["last_event"] = None
         timeline_runtime["round_traces"] = []
         timeline_runtime["runtime_diag"] = {}
-        timeline_runtime["runtime_version"] = 0
-        timeline_runtime["execution_round"] = 0
+        timeline_runtime["runtime_version"] = int(runtime_version or 0)
+        timeline_runtime["execution_round"] = int(execution_round or 0)
         timeline_runtime["progress"] = {
             "current_idx": -1,
             "event_time_ms": _now_ms(),
@@ -609,7 +609,12 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
     return results
 
 
-def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
+def run_timeline_background(
+    events,
+    buff_skip_mode=BUFF_SKIP_MODE_WALK,
+    runtime_version=0,
+    execution_round=0
+):
     global current_run_status, current_run_clock
     try:
         pause_event.clear()
@@ -619,7 +624,9 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
             "running",
             events_total=len(events),
             loop_count=1,
-            server_task_id=current_server_task_id
+            server_task_id=current_server_task_id,
+            runtime_version=runtime_version,
+            execution_round=execution_round
         )
         current_run_status = {
             "state": "running",
@@ -1065,7 +1072,7 @@ def handle_request(data):
         pause_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
-            args=(events, buff_skip_mode),
+            args=(events, buff_skip_mode, max(0, incoming_runtime_version), max(0, incoming_execution_round)),
             daemon=True
         )
         current_run_thread.start()
