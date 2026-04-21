@@ -1043,7 +1043,9 @@ def allocate_randat_blocks(events, execution_round=1):
                 "offset_after": offset_after,
                 "final_b_idx_after_offset": final_b_idx_after_offset,
                 "block_len": int(block_len),
+                "final_b_range_slot": [final_b_idx_after_offset, final_b_end],
                 "final_b_range": [final_b_idx_after_offset, final_b_end],
+                "final_runtime_row_range": [],
                 "color_mode": ("yellow" if bool(assign.get("self_picked", False)) else "blue")
             }
             placement_ledger.append(entry)
@@ -1098,6 +1100,28 @@ def allocate_randat_blocks(events, execution_round=1):
             row["at"] = prev_at
 
         working = reordered
+        for group, assign in block_assignments.items():
+            runtime_positions = [
+                pos for pos, row in enumerate(working)
+                if str(row.get("__runtime_gid", "")).strip() == str(group)
+            ]
+            if runtime_positions:
+                runtime_row_range = [int(runtime_positions[0]), int(runtime_positions[-1])]
+            else:
+                runtime_row_range = []
+            round_trace = assign.get("round_trace")
+            if isinstance(round_trace, dict):
+                placement = round_trace.get("placement", {})
+                if isinstance(placement, dict):
+                    placement["final_runtime_row_range"] = list(runtime_row_range)
+                    round_trace["placement"] = placement
+            group_info = group_final_positions.get(str(group))
+            if isinstance(group_info, dict):
+                group_info["final_runtime_row_range"] = list(runtime_row_range)
+            for entry in placement_ledger:
+                if str(entry.get("group_id", "")).strip() == str(group):
+                    entry["final_runtime_row_range"] = list(runtime_row_range)
+                    break
 
     if working:
         first_at_before_shift = round(_safe_float(working[0].get("at", 0.0)), 4)
@@ -2752,6 +2776,16 @@ class App:
         }
         lines = []
         warning_lines = []
+        def _format_index_range(value, fallback_value=None):
+            data = value
+            if (not isinstance(data, list) or len(data) < 2) and fallback_value is not None:
+                data = fallback_value
+            if isinstance(data, list) and len(data) >= 2:
+                return "{}~{}".format(data[0], data[1])
+            if data in (None, ""):
+                return "?"
+            return str(data)
+
         prepared_payload = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
         prepared_runtime_meta = prepared_payload.get("runtime_meta", {})
         prepared_key_fallback = self._build_runtime_consistency_key(
@@ -2904,17 +2938,21 @@ class App:
                             placement = {}
                         picked_a = placement.get("picked_slot_a_idx", trace.get("picked_slot", -1))
                         base_b = placement.get("base_b_idx_before_offset", -1)
-                        final_range = placement.get("final_b_range", [])
-                        if isinstance(final_range, list) and len(final_range) >= 2:
-                            final_b_text = "{}~{}".format(final_range[0], final_range[1])
-                        else:
-                            final_b_text = str(placement.get("final_b_idx_after_offset", -1))
+                        final_slot_text = _format_index_range(
+                            placement.get("final_b_range_slot"),
+                            fallback_value=placement.get("final_b_range")
+                        )
+                        final_row_text = _format_index_range(
+                            placement.get("final_runtime_row_range"),
+                            fallback_value=placement.get("final_b_range")
+                        )
                         lines.append(
-                            "  {}: A{} -> base B{} -> final B{}".format(
+                            "  {}: A{} -> base B{} -> final slot B{} -> final row idx {}".format(
                                 group_label,
                                 picked_a,
                                 base_b,
-                                final_b_text
+                                final_slot_text,
+                                final_row_text
                             )
                         )
                     lines.append("-" * 84)
@@ -2943,20 +2981,23 @@ class App:
                         placement = {}
                     picked_a = placement.get("picked_slot_a_idx", picked_slot)
                     base_b = placement.get("base_b_idx_before_offset", -1)
-                    final_range = placement.get("final_b_range", [])
-                    if isinstance(final_range, list) and len(final_range) >= 2:
-                        final_b_text = "{}~{}".format(final_range[0], final_range[1])
-                    else:
-                        final_b = placement.get("final_b_idx_after_offset", -1)
-                        final_b_text = "{}".format(final_b)
+                    final_slot_text = _format_index_range(
+                        placement.get("final_b_range_slot"),
+                        fallback_value=placement.get("final_b_range")
+                    )
+                    final_row_text = _format_index_range(
+                        placement.get("final_runtime_row_range"),
+                        fallback_value=placement.get("final_b_range")
+                    )
                     lines.append(
-                        "Draw {}/{}（群組抽籤次序）: {} -> picked A-slot={}, base B={}, final B={}".format(
+                        "Draw {}/{}（群組抽籤次序）: {} -> picked A-slot={}, base B={}, final slot B={}, final row idx={}".format(
                             draw_order,
                             total_groups,
                             group_label,
                             picked_a,
                             base_b,
-                            final_b_text
+                            final_slot_text,
+                            final_row_text
                         )
                     )
                     lines.append("  reason={}".format(self._round_trace_reason_label(reason)))
@@ -2973,12 +3014,15 @@ class App:
                             continue
                         a_slot = info.get("picked_slot_a_idx", -1)
                         base_b = info.get("base_b_idx_before_offset", -1)
-                        b_range = info.get("final_b_range", [])
-                        if isinstance(b_range, list) and len(b_range) >= 2:
-                            range_text = "{}~{}".format(b_range[0], b_range[1])
-                        else:
-                            range_text = str(info.get("final_b_idx_after_offset", -1))
-                        lines.append("  group{}: A{} -> base B{} -> final B{}".format(group_id, a_slot, base_b, range_text))
+                        range_text = _format_index_range(
+                            info.get("final_b_range_slot"),
+                            fallback_value=info.get("final_b_range")
+                        )
+                        row_range_text = _format_index_range(
+                            info.get("final_runtime_row_range"),
+                            fallback_value=info.get("final_b_range")
+                        )
+                        lines.append("  group{}: A{} -> base B{} -> final slot B{} -> final row idx {}".format(group_id, a_slot, base_b, range_text, row_range_text))
                 lines.append(
                     "Consistency: expected_groups={} / actual_draws={}".format(
                         expected_groups,
