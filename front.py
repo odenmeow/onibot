@@ -4439,13 +4439,22 @@ class App:
 
             self.set_frontend_error("")
             self._reset_first_event_progress_watch()
-            self.request_pi({"action": "stop"})
+            res = self.request_pi({"action": "stop"})
+            if isinstance(res, dict):
+                stop_runtime = res.get("timeline_runtime")
+                if isinstance(stop_runtime, dict):
+                    self.update_runtime_from_status({"timeline_runtime": stop_runtime})
             self.runtime_wait_ack_active = False
             self.runtime_display_frozen = bool(self.has_pre_run_snapshot)
             if not self.has_pre_run_snapshot:
                 self.runtime_display_frozen = False
             self._set_restore_pre_run_button_state()
-            self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
+            runtime_brief = self._extract_runtime_progress_brief(res)
+            if runtime_brief is not None:
+                round_no, processed_count, events_total = runtime_brief
+                self.set_status("已終止 Round #{}（{}/{}）".format(round_no, processed_count, events_total))
+            else:
+                self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
             self._update_runtime_control_buttons()
         except Exception as e:
             self.set_frontend_error(str(e))
