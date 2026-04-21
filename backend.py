@@ -42,6 +42,7 @@ BUTTONS = {
 }
 
 stop_event = threading.Event()
+pause_event = threading.Event()
 run_lock = threading.Lock()
 runtime_lock = threading.Lock()
 
@@ -56,14 +57,18 @@ current_run_status = {
 timeline_runtime = {
     "run_id": 0,
     "server_task_id": "",
-    "state": "idle",   # idle / running / stopping / stopped / error / done
+    "state": "idle",   # idle / running / paused / resumed / stopped / finished / error
     "mode": "",
     "loop_count": 0,
     "events_total": 0,
     "processed_count": 0,
     "events": [],
     "last_event": None,
-    "round_traces": []
+    "round_traces": [],
+    "progress": {
+        "current_idx": -1,
+        "event_time_ms": 0
+    }
 }
 timeline_cooldown_runtime = {
     "next_ready_at": {},
@@ -109,15 +114,28 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
         timeline_runtime["events"] = []
         timeline_runtime["last_event"] = None
         timeline_runtime["round_traces"] = []
+        timeline_runtime["progress"] = {
+            "current_idx": -1,
+            "event_time_ms": _now_ms()
+        }
         timeline_cooldown_runtime["next_ready_at"] = {}
         timeline_cooldown_runtime["landed_index_by_group"] = {}
 
 
 def append_timeline_runtime_event(event_payload):
+    try:
+        current_idx = int(event_payload.get("original_index"))
+    except Exception:
+        current_idx = -1
+    event_time_ms = _now_ms()
     with runtime_lock:
         timeline_runtime["events"].append(event_payload)
         timeline_runtime["processed_count"] = len(timeline_runtime["events"])
         timeline_runtime["last_event"] = event_payload
+        timeline_runtime["progress"] = {
+            "current_idx": current_idx,
+            "event_time_ms": event_time_ms
+        }
 
 
 def patch_timeline_runtime(**kwargs):
@@ -164,6 +182,7 @@ def get_timeline_runtime_snapshot():
             "loop_count": int(timeline_runtime.get("loop_count", 0)),
             "events_total": int(timeline_runtime.get("events_total", 0)),
             "processed_count": int(timeline_runtime.get("processed_count", 0)),
+            "progress": dict(timeline_runtime.get("progress", {})),
             "events": events,
             "last_event": timeline_runtime.get("last_event"),
             "round_traces": round_traces,
@@ -217,14 +236,33 @@ def release_only(name):
     print("[release] {} GPIO{}".format(name, pin))
 
 
-def safe_sleep(seconds, check_interval=0.01):
-    seconds = max(0.0, float(seconds))
-    end_time = time.monotonic() + seconds
-    while time.monotonic() < end_time:
+def _wait_if_paused():
+    paused_once = False
+    while pause_event.is_set():
         if stop_event.is_set():
             raise InterruptedError("執行已被停止")
-        remain = end_time - time.monotonic()
-        time.sleep(min(check_interval, max(0.0, remain)))
+        paused_once = True
+        patch_timeline_runtime(state="paused")
+        time.sleep(0.05)
+    if stop_event.is_set():
+        raise InterruptedError("執行已被停止")
+    if paused_once:
+        patch_timeline_runtime(state="resumed")
+    return paused_once
+
+
+def safe_sleep(seconds, check_interval=0.01):
+    remaining = max(0.0, float(seconds))
+    while remaining > 0.0:
+        _wait_if_paused()
+        if stop_event.is_set():
+            raise InterruptedError("執行已被停止")
+        chunk = min(check_interval, remaining)
+        tick = time.monotonic()
+        time.sleep(chunk)
+        elapsed = max(0.0, time.monotonic() - tick)
+        if not pause_event.is_set():
+            remaining -= elapsed
 
 
 def press_button(name, duration=DEFAULT_PRESS_TIME):
@@ -333,6 +371,9 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
         emitted_round_trace_groups = set()
 
         for i, ev in enumerate(normalized):
+            resumed = _wait_if_paused()
+            if resumed:
+                patch_timeline_runtime(state="running")
             if stop_event.is_set():
                 raise InterruptedError("執行已被停止")
 
@@ -439,6 +480,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
     global current_run_status
     try:
+        pause_event.clear()
         set_timeline_runtime(
             "timeline",
             "running",
@@ -454,7 +496,7 @@ def run_timeline_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
         }
         run_timeline(events, buff_skip_mode=buff_skip_mode)
         release_all()
-        patch_timeline_runtime(state="done")
+        patch_timeline_runtime(state="finished")
         current_run_status = {
             "state": "idle",
             "mode": "timeline",
@@ -487,6 +529,7 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
     buff_runtime = {"next_ready_at": {}}
     try:
         stop_event.clear()
+        pause_event.clear()
         while not stop_event.is_set():
             loop_count += 1
             set_timeline_runtime(
@@ -508,7 +551,7 @@ def run_timeline_loop_background(events, buff_skip_mode=BUFF_SKIP_MODE_WALK):
                 buff_runtime=buff_runtime,
                 buff_skip_mode=buff_skip_mode
             )
-            patch_timeline_runtime(state="done", loop_count=loop_count)
+            patch_timeline_runtime(state="finished", loop_count=loop_count)
             release_all()
 
         patch_timeline_runtime(state="stopped", loop_count=loop_count)
@@ -626,6 +669,7 @@ def _release_all_background():
 def stop_current_run():
     global current_run_status
     stop_event.set()
+    pause_event.clear()
     mode = current_run_status.get("mode", "")
     current_run_status = {
         "state": "stopping",
@@ -633,12 +677,44 @@ def stop_current_run():
         "message": "已收到停止指令，正在停止並釋放 GPIO",
         "server_task_id": current_server_task_id
     }
-    patch_timeline_runtime(state="stopping")
+    patch_timeline_runtime(state="stopped")
     threading.Thread(target=_release_all_background, daemon=True).start()
     return {
         "status": "ok",
         "message": "已收到停止指令"
     }
+
+
+def pause_current_run():
+    global current_run_status
+    if current_run_thread is None or not current_run_thread.is_alive():
+        return {"status": "error", "message": "目前沒有執行中的工作"}
+    pause_event.set()
+    mode = current_run_status.get("mode", "")
+    current_run_status = {
+        "state": "paused",
+        "mode": mode,
+        "message": "已暫停",
+        "server_task_id": current_server_task_id
+    }
+    patch_timeline_runtime(state="paused")
+    return {"status": "ok", "state": "paused", "message": "已暫停"}
+
+
+def resume_current_run():
+    global current_run_status
+    if current_run_thread is None or not current_run_thread.is_alive():
+        return {"status": "error", "message": "目前沒有可繼續的工作"}
+    pause_event.clear()
+    mode = current_run_status.get("mode", "")
+    current_run_status = {
+        "state": "resumed",
+        "mode": mode,
+        "message": "已繼續",
+        "server_task_id": current_server_task_id
+    }
+    patch_timeline_runtime(state="resumed")
+    return {"status": "ok", "state": "resumed", "message": "已繼續"}
 
 
 def handle_request(data):
@@ -667,6 +743,10 @@ def handle_request(data):
 
     if action == "stop":
         return stop_current_run()
+    if action == "pause":
+        return pause_current_run()
+    if action == "resume":
+        return resume_current_run()
 
     if action == "run_macro":
         if current_run_thread is not None and current_run_thread.is_alive():
@@ -681,6 +761,7 @@ def handle_request(data):
 
         steps = data.get("steps", [])
         stop_event.clear()
+        pause_event.clear()
         current_run_thread = threading.Thread(
             target=run_macro_background,
             args=(steps,),
@@ -731,6 +812,7 @@ def handle_request(data):
         buff_skip_mode = normalize_buff_skip_mode(chosen_skip_mode)
         current_server_task_id = _new_server_task_id()
         stop_event.clear()
+        pause_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
             args=(events, buff_skip_mode),

@@ -1625,6 +1625,8 @@ class App:
         self.runtime_display_frozen = False
         self.runtime_manual_restore_active = False
         self.runtime_move_gap_logs = []
+        self.last_runtime_state = ""
+        self.stop_restore_prompted_run_id = -1
         self.tree_row_color_tags = set()
         self.last_tree_copy_payload = ""
         self.timeline_histories = {}
@@ -1654,8 +1656,8 @@ class App:
         btn_specs = [
             ("重新分析", self.analyze, "#fff4b3"),
             ("開始錄製", self.toggle_record, "#9be58b"),
-            ("送出執行", self.send_timeline, "#c8f7c5"),
             ("重複執行", self.send_timeline_loop, "#b7f0ad"),
+            ("暫停", self.pause_runtime, "#ffd98c"),
             ("停止", self.stop_pi, "#ff8c69"),
         ]
         btn_count = len(btn_specs)
@@ -1665,6 +1667,9 @@ class App:
             row=0, column=0, columnspan=btn_count, sticky="we", padx=8, pady=(6, 2)
         )
         self.record_button = None
+        self.loop_button = None
+        self.pause_resume_button = None
+        self.stop_button = None
         for idx, (txt, cmd, color) in enumerate(btn_specs):
             kwargs = {"text": txt, "command": cmd, "width": 10}
             if color:
@@ -1673,6 +1678,13 @@ class App:
             btn.grid(row=1, column=idx, padx=4, pady=(2, 8))
             if idx == 1:
                 self.record_button = btn
+            elif txt == "重複執行":
+                self.loop_button = btn
+            elif txt == "暫停":
+                self.pause_resume_button = btn
+            elif txt == "停止":
+                self.stop_button = btn
+        self._update_runtime_control_buttons()
 
         self.current_script_var = tk.StringVar(value="【目前腳本：未命名 / 未儲存】")
         tk.Label(
@@ -2367,7 +2379,16 @@ class App:
         runtime_by_index = {}
         recent_ok = []
         recent_skipped = []
+        progress = runtime.get("progress", {})
         latest_idx = None
+        progress_from_backend = True
+        try:
+            latest_idx = int(progress.get("current_idx"))
+            if latest_idx < 0:
+                latest_idx = None
+        except Exception:
+            latest_idx = None
+            progress_from_backend = False
         for ev in events:
             if not isinstance(ev, dict):
                 continue
@@ -2376,7 +2397,8 @@ class App:
             except Exception:
                 continue
             runtime_by_index[idx] = ev
-            latest_idx = idx
+            if not progress_from_backend:
+                latest_idx = idx
 
         for ev in reversed(events):
             if not isinstance(ev, dict):
@@ -2409,6 +2431,7 @@ class App:
             {
                 "run_id": runtime.get("run_id"),
                 "state": runtime.get("state"),
+                "progress": progress,
                 "processed_count": runtime.get("processed_count"),
                 "last_event": runtime.get("last_event"),
                 "round_trace_count": len(round_traces),
@@ -2439,26 +2462,40 @@ class App:
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
                     state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+                    run_id = int(self.timeline_runtime_info.get("run_id", 0) or 0)
                     self._check_first_event_progress_timeout(state)
                     self._monitor_task_status_progress(
                         state,
                         self.timeline_runtime_info.get("processed_count", 0)
                     )
-                    if state == "running":
+                    if state in ("running", "resumed", "paused"):
                         self.runtime_manual_restore_active = False
                         self.runtime_display_frozen = False
                         if self.runtime_working_timeline:
                             self._show_runtime_view_timeline()
-                    elif state in ("stopped", "idle"):
-                        if self.has_pre_run_snapshot and not self.runtime_manual_restore_active:
-                            self._restore_pre_run_snapshot_after_runtime()
-                        self.runtime_display_frozen = False
+                    elif state in ("stopped", "idle", "finished", "error"):
+                        self.runtime_display_frozen = bool(self.has_pre_run_snapshot and not self.runtime_manual_restore_active)
                         self._reset_task_monitor()
                     else:
                         self.runtime_display_frozen = False
+                    prompted_run_id = getattr(self, "stop_restore_prompted_run_id", -1)
+                    if (
+                        state == "stopped"
+                        and self.has_pre_run_snapshot
+                        and prompted_run_id != run_id
+                    ):
+                        self.stop_restore_prompted_run_id = run_id
+                        try:
+                            restore_yes = bool(messagebox.askyesno("已停止", "是否恢復 Origin（執行前快照）？"))
+                        except Exception:
+                            restore_yes = False
+                        if restore_yes:
+                            self._restore_pre_run_snapshot_after_runtime()
+                    self.last_runtime_state = state
+                    self._update_runtime_control_buttons()
                     if changed:
                         self.render_runtime_analysis()
-                        if state == "running":
+                        if state in ("running", "resumed", "paused"):
                             self.refresh_tree()
                             self.focus_latest_runtime_row()
         except Exception as e:
@@ -2478,6 +2515,32 @@ class App:
         self.runtime_move_gap_logs = []
         self._reset_first_event_progress_watch()
         self._reset_task_monitor()
+        self._update_runtime_control_buttons()
+
+    def _update_runtime_control_buttons(self):
+        runtime_info = getattr(self, "timeline_runtime_info", {})
+        if not isinstance(runtime_info, dict):
+            runtime_info = {}
+        state = str(runtime_info.get("state", "")).strip().lower()
+        active_states = {"running", "paused", "resumed"}
+        is_active = state in active_states or bool(getattr(self, "front_loop_enabled", False))
+
+        loop_button = getattr(self, "loop_button", None)
+        if loop_button is not None:
+            loop_button.config(state=("disabled" if is_active else "normal"))
+
+        pause_resume_button = getattr(self, "pause_resume_button", None)
+        if pause_resume_button is not None:
+            if state == "paused":
+                pause_resume_button.config(text="繼續", state="normal")
+            elif state in {"running", "resumed"}:
+                pause_resume_button.config(text="暫停", state="normal")
+            else:
+                pause_resume_button.config(text="暫停", state="disabled")
+
+        stop_button = getattr(self, "stop_button", None)
+        if stop_button is not None:
+            stop_button.config(state=("normal" if is_active else "disabled"))
 
     def _reset_first_event_progress_watch(self):
         self.first_event_progress_watch = {}
@@ -2554,7 +2617,7 @@ class App:
 
         if phase == "wait_running":
             started = float(monitor.get("phase_started_at", now))
-            if state == "running":
+            if state in {"running", "resumed", "paused"}:
                 monitor["phase"] = "watch_progress"
                 monitor["phase_started_at"] = now
                 monitor["last_progress_at"] = now
@@ -2573,7 +2636,7 @@ class App:
             self.task_monitor = monitor
             return
 
-        if state in {"done", "stopped", "idle", "error"}:
+        if state in {"finished", "stopped", "idle", "error"}:
             self._reset_task_monitor()
             return
 
@@ -2693,7 +2756,7 @@ class App:
             return
 
         state = str(runtime_state or "").strip().lower()
-        if state in {"stopped", "idle", "error"}:
+        if state in {"stopped", "idle", "error", "finished"}:
             return
 
         processed_count_raw = self.timeline_runtime_info.get("processed_count", 0)
@@ -2805,6 +2868,7 @@ class App:
         cooldown_by_row = self._runtime_cooldown_by_row()
         runtime_landing = self._runtime_landing_map()
         runtime_state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+        runtime_active = runtime_state in {"running", "paused", "resumed"}
         runtime_ok_rank = {
             idx: rank + 1
             for rank, idx in enumerate(self.runtime_recent_ok_indices[:3])
@@ -2833,7 +2897,7 @@ class App:
             at_value = "{:.2f}".format(float(ev["at"]))
             buff_cycle_value = ev.get("buff_cycle_sec", 0.0)
             buff_cycle_display = buff_cycle_value
-            if runtime_state == "running":
+            if runtime_active:
                 base_cycle = _safe_float(ev.get("runtime_buff_cycle_base", buff_cycle_value))
                 applied_cycle = _safe_float(ev.get("runtime_buff_cycle_applied", buff_cycle_value))
                 if base_cycle > 0.0 and abs(applied_cycle - base_cycle) > 1e-9:
@@ -2846,7 +2910,7 @@ class App:
                 at_value = "-"
             is_candidate = False
             is_applied = False
-            if runtime_state != "running":
+            if not runtime_active:
                 is_candidate = bool(original_buff_group)
             else:
                 if original_buff_group:
@@ -2862,7 +2926,7 @@ class App:
                     else:
                         is_candidate = self_picked
                         is_applied = bool(landing) and not self_picked
-            is_running = runtime_state == "running" and i == self.runtime_latest_index
+            is_running = runtime_state in {"running", "resumed"} and i == self.runtime_latest_index
             is_focus = i == self.runtime_latest_index
             tags.extend(get_buff_cell_visual_state(
                 is_candidate=is_candidate,
@@ -2892,7 +2956,7 @@ class App:
 
     def _is_runtime_readonly(self):
         state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
-        return state == "running" or bool(self.runtime_display_frozen)
+        return state in {"running", "paused", "resumed"} or bool(self.runtime_display_frozen)
 
     def _ensure_runtime_editable(self):
         if not self.has_pre_run_snapshot and self.runtime_display_frozen:
@@ -3529,118 +3593,27 @@ class App:
             self.set_frontend_error("")
             self._reset_first_event_progress_watch()
             self.request_pi({"action": "stop"})
-            self._restore_pre_run_snapshot_after_runtime()
+            self.runtime_display_frozen = bool(self.has_pre_run_snapshot)
+            if not self.has_pre_run_snapshot:
+                self.runtime_display_frozen = False
+            self._set_restore_pre_run_button_state()
             self.set_status("已停止 Pi：{}".format(self.config["pi_host"]))
+            self._update_runtime_control_buttons()
         except Exception as e:
             self.set_frontend_error(str(e))
             self.show_error("停止失敗", str(e))
 
-    def send_timeline(self):
-        if not self.timeline:
-            self.show_warning("提醒", "請先錄製並分析，或載入已保存項目")
-            return
-        self.front_loop_enabled = False
-        if self.front_loop_after_id:
-            try:
-                self.root.after_cancel(self.front_loop_after_id)
-            except Exception:
-                pass
-            self.front_loop_after_id = None
-        self.pre_run_timeline_snapshot = self.copy_events(self.timeline)
-        self.has_pre_run_snapshot = True
-        self.runtime_manual_restore_active = False
-        self.runtime_display_frozen = False
-        self._set_restore_pre_run_button_state()
-
-        self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
+    def pause_runtime(self):
+        state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
+        action = "resume" if state == "paused" else "pause"
         try:
-            self.config["send_delay_sec"] = self.parse_send_delay_sec()
-        except ValueError as e:
-            self.set_frontend_error(str(e))
-            self.show_warning("提醒", str(e))
-            return
-        save_config(self.config)
-        self.update_current_labels()
-
-        prepared_events, resolve_note = self.prepare_events_for_send(action_reason="before_send")
-        if prepared_events is None:
-            return
-        self.runtime_working_timeline = self.copy_events(prepared_events)
-        self._show_runtime_view_timeline()
-
-        backend_events = self._sanitize_events_for_backend(prepared_events)
-        payload = self._build_start_task_payload(backend_events)
-        self._arm_task_monitor_wait_ack(payload.get("client_task_id"))
-
-        display_name = self.current_name if self.current_name else "未命名資料"
-
-        try:
-            self.set_frontend_error("")
-            self.clear_runtime_highlight()
-            self.refresh_tree()
-            def do_send(delay_meta):
-                try:
-                    res = self.request_pi(
-                        payload,
-                        write_response=False,
-                        timeout=max(0.2, ACK_TIMEOUT_MS / 1000.0)
-                    )
-                    sent_at_monotonic = delay_meta["actual_send_time_monotonic"]
-                    first_event_timing = self._extract_first_event_timing(backend_events)
-                    self.write_text({
-                        "sending_name": display_name,
-                        "pi_host": self.config["pi_host"],
-                        "send_delay_sec": delay_meta["send_delay_sec"],
-                        "scheduled_send_time_monotonic": delay_meta["scheduled_send_time_monotonic"],
-                        "actual_send_time_monotonic": delay_meta["actual_send_time_monotonic"],
-                        "send_error_ms": delay_meta["send_error_ms"],
-                        "sent_at_monotonic": sent_at_monotonic,
-                        "first_event_at": first_event_timing["first_event_at"] if first_event_timing else None,
-                        "request": payload,
-                        "response": res
-                    })
-
-                    if res.get("status") == "stopped":
-                        self._reset_task_monitor()
-                        self._reset_first_event_progress_watch()
-                        self._restore_pre_run_snapshot_after_runtime()
-                        self.set_status("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
-                    elif self._is_contract_version_mismatch(res):
-                        self._reset_task_monitor()
-                        self._reset_first_event_progress_watch()
-                        self._restore_pre_run_snapshot_after_runtime()
-                        self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
-                    elif res.get("status") in ("error", "busy"):
-                        self._reset_task_monitor()
-                        self._reset_first_event_progress_watch()
-                        self._restore_pre_run_snapshot_after_runtime()
-                        self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
-                    else:
-                        self._monitor_after_ack(res)
-                        self._arm_first_event_progress_watch(sent_at_monotonic, delay_meta["send_delay_sec"], first_event_timing)
-                        suffix = ""
-                        if resolve_note:
-                            suffix = "（{}）".format(resolve_note)
-                        self.set_status("已送出：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
-                except Exception as e:
-                    if isinstance(e, TimeoutError):
-                        self._mark_task_monitor_failed(
-                            phase="ACK_TIMEOUT",
-                            elapsed_ms=ACK_TIMEOUT_MS,
-                            threshold_ms=ACK_TIMEOUT_MS,
-                            last_state="submitted"
-                        )
-                    else:
-                        self._reset_task_monitor()
-                        self.set_frontend_error(str(e))
-                    self._restore_pre_run_snapshot_after_runtime()
-                    self.show_error("傳送失敗", str(e))
-
-            self.apply_send_delay_if_needed(do_send)
+            self.request_pi({"action": action}, write_response=False)
+            self.set_status("已送出 {} 指令".format("繼續" if action == "resume" else "暫停"))
         except Exception as e:
             self.set_frontend_error(str(e))
-            self._restore_pre_run_snapshot_after_runtime()
-            self.show_error("傳送失敗", str(e))
+            self.show_error("{}失敗".format("繼續" if action == "resume" else "暫停"), str(e))
+        finally:
+            self._update_runtime_control_buttons()
 
     def send_timeline_loop(self):
         if not self.timeline:
@@ -3668,6 +3641,7 @@ class App:
         display_name = self.current_name if self.current_name else "未命名資料"
         self.front_loop_enabled = True
         self.front_loop_round = 0
+        self._update_runtime_control_buttons()
         self.set_status("已啟用前端重複送出：{}".format(display_name))
         self._dispatch_front_loop_once(display_name)
 
@@ -3678,6 +3652,7 @@ class App:
         prepared_events, resolve_note = self.prepare_events_for_send(action_reason="before_send_loop")
         if prepared_events is None:
             self.front_loop_enabled = False
+            self._update_runtime_control_buttons()
             return
         self.runtime_working_timeline = self.copy_events(prepared_events)
         self._show_runtime_view_timeline()
@@ -3718,6 +3693,7 @@ class App:
                         self._reset_first_event_progress_watch()
                         self._restore_pre_run_snapshot_after_runtime()
                         self.front_loop_enabled = False
+                        self._update_runtime_control_buttons()
                         self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
                         return
                     if res.get("status") in ("error", "busy"):
@@ -3752,6 +3728,7 @@ class App:
                         self._reset_task_monitor()
                         self.set_frontend_error(str(e))
                     self.front_loop_enabled = False
+                    self._update_runtime_control_buttons()
                     self._restore_pre_run_snapshot_after_runtime()
                     self.show_error("重複傳送失敗", str(e))
 
@@ -3759,6 +3736,7 @@ class App:
             self.apply_send_delay_if_needed(do_send, delay_override=delay_override)
         except Exception as e:
             self.front_loop_enabled = False
+            self._update_runtime_control_buttons()
             self.set_frontend_error(str(e))
             self._restore_pre_run_snapshot_after_runtime()
             self.show_error("重複傳送失敗", str(e))
@@ -3770,11 +3748,16 @@ class App:
             status_response = self.request_pi({"action": "status"}, write_response=False, channel="status")
             runtime = status_response.get("timeline_runtime", {})
             state = str(runtime.get("state", "")).strip().lower()
-            if state == "running":
+            if state in ("running", "paused", "resumed"):
                 self.front_loop_after_id = self.root.after(
                     250,
                     lambda: self._poll_front_loop_round_done(display_name)
                 )
+                return
+            if state in ("stopped", "error"):
+                self.front_loop_enabled = False
+                self.front_loop_after_id = None
+                self._update_runtime_control_buttons()
                 return
             self.front_loop_after_id = self.root.after(
                 80,
