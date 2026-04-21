@@ -766,7 +766,26 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.timeline_meta = {"original_events": [], "latest_saved_events": []}
         app.current_name = "demo"
         app.current_loaded_from_saved = True
+        app.timeline_runtime_info = {"events": []}
+        app.timeline_runtime_by_index = {}
+        app.runtime_round_traces = []
+        app.runtime_trace_status_note = ""
+        app.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
+        app.runtime_recent_ok_indices = []
+        app.runtime_recent_skipped_indices = []
+        app.runtime_latest_index = None
+        app.last_runtime_signature = ""
+        app.runtime_move_gap_logs = []
+        app.first_event_progress_watch = {}
+        app.task_monitor = {}
+        app.runtime_wait_ack_active = False
+        app.loop_preview_pending = False
+        app.loop_preview_cached_payload = None
+        app.loop_preview_origin_snapshot = []
+        app.runtime_working_timeline = []
+        app.front_loop_enabled = False
         app.runtime_display_frozen = False
+        app.runtime_manual_restore_active = False
         app.has_pre_run_snapshot = False
         app.root = types.SimpleNamespace()
         app.name_entry = types.SimpleNamespace(get=lambda: "demo", delete=lambda *_: None, insert=lambda *_: None)
@@ -783,6 +802,9 @@ class TimelineWorkflowTests(unittest.TestCase):
         app._begin_timeline_change = App._begin_timeline_change.__get__(app, App)
         app._finalize_timeline_change = App._finalize_timeline_change.__get__(app, App)
         app._reset_timeline_history = App._reset_timeline_history.__get__(app, App)
+        app._reset_first_event_progress_watch = App._reset_first_event_progress_watch.__get__(app, App)
+        app._reset_task_monitor = App._reset_task_monitor.__get__(app, App)
+        app.clear_runtime_highlight = App.clear_runtime_highlight.__get__(app, App)
         app.undo_timeline = App.undo_timeline.__get__(app, App)
         app.redo_timeline = App.redo_timeline.__get__(app, App)
         app._ensure_runtime_editable = lambda: True
@@ -797,6 +819,7 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.mark_timeline_dirty = lambda: None
         app.refresh_saved_list = lambda: None
         app.select_saved_name = lambda _name: None
+        app._update_runtime_control_buttons = lambda: None
         app.set_status = lambda *_args, **_kwargs: None
         app.set_frontend_error = lambda *_args, **_kwargs: None
         app.validate_negative_group_monotonic_by_index = App.validate_negative_group_monotonic_by_index.__get__(app, App)
@@ -925,6 +948,46 @@ class TimelineWorkflowTests(unittest.TestCase):
             app.load_selected_timeline()
 
         self.assertEqual(app.timeline_meta["original_events"][0]["at"], 9.0)
+
+    def test_load_selected_timeline_resets_runtime_related_state(self):
+        app = self._new_workflow_app()
+        app.get_selected_saved_name = lambda: "legacy"
+        app.load_selected_timeline = App.load_selected_timeline.__get__(app, App)
+        app.normalize_meta = App.normalize_meta.__get__(app, App)
+        app.new_meta = App.new_meta.__get__(app, App)
+        app._is_script_switch_for_load = lambda _name: False
+        app.timeline_runtime_info = {"events": [{"idx": 1}]}
+        app.runtime_round_traces = [{"anchorIdx": 1}]
+        app.loop_preview_pending = True
+        app.loop_preview_cached_payload = {"runtime_display_events": [{"at": 1.0}]}
+        app.loop_preview_origin_snapshot = [{"at": 1.0}]
+        app.runtime_working_timeline = [{"at": 5.0}]
+        app.runtime_display_frozen = True
+        app.runtime_manual_restore_active = True
+
+        refreshed = {"tree": 0, "preview": 0}
+        app.refresh_tree = lambda: refreshed.__setitem__("tree", refreshed["tree"] + 1)
+        app.refresh_preview = lambda: refreshed.__setitem__("preview", refreshed["preview"] + 1)
+        statuses = []
+        app.set_status = lambda msg: statuses.append(msg)
+
+        loaded_event = {"type": "press", "button": "space", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        with mock.patch("front.load_named_timeline", return_value={"name": "legacy", "events": [loaded_event], "_meta": {}}), \
+             mock.patch("front.save_config"):
+            app.load_selected_timeline()
+
+        self.assertEqual(app.timeline_runtime_info, {"events": []})
+        self.assertEqual(app.runtime_round_traces, [])
+        self.assertFalse(app.loop_preview_pending)
+        self.assertIsNone(app.loop_preview_cached_payload)
+        self.assertEqual(app.loop_preview_origin_snapshot, [])
+        self.assertEqual(app.runtime_working_timeline, [])
+        self.assertFalse(app.runtime_display_frozen)
+        self.assertFalse(app.runtime_manual_restore_active)
+        self.assertEqual(refreshed["tree"], 1)
+        self.assertEqual(refreshed["preview"], 1)
+        self.assertTrue(statuses)
+        self.assertIn("Runtime 已清空", statuses[-1])
 
     def test_analyze_without_new_events_only_latest_saved_shows_clear_status(self):
         app = self._new_workflow_app()
