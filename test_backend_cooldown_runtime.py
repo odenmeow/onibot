@@ -314,6 +314,40 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
         self.assertEqual(timeline_runtime["runtime_version"], 5)
         self.assertEqual(timeline_runtime["execution_round"], 5)
 
+    def test_start_task_uses_runtime_meta_execution_round_when_top_level_missing(self):
+        orig_thread = backend.threading.Thread
+        orig_current_run_thread = backend.current_run_thread
+        try:
+            backend.current_run_thread = None
+
+            class _FakeThread:
+                def __init__(self, target=None, args=(), daemon=None):
+                    self.target = target
+                    self.args = args
+                    self.daemon = daemon
+
+                def start(self):
+                    return None
+
+                def is_alive(self):
+                    return False
+
+            backend.threading.Thread = _FakeThread
+            backend.handle_request({
+                "type": "start_task",
+                "contract_version": backend.RUNTIME_CONTRACT_VERSION,
+                "client_task_id": "ct-3",
+                "runtime_meta": {"execution_round": 1},
+                "timeline": [{"idx": 0, "at_ms": 0, "action": "press", "btn": "f", "skip_mode": "pass"}]
+            })
+        finally:
+            backend.threading.Thread = orig_thread
+            backend.current_run_thread = orig_current_run_thread
+
+        status = backend.handle_request({"action": "status"})
+        timeline_runtime = status["timeline_runtime"]
+        self.assertEqual(timeline_runtime["execution_round"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
