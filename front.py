@@ -2339,7 +2339,11 @@ class App:
         self.write_text(payload or {"prepared": "尚無資料"})
 
     def _build_preview_payload(self):
-        sanitized = self._sanitize_events_for_backend(self.timeline)
+        backend_events = [
+            ev for ev in (self.timeline or [])
+            if isinstance(ev, dict) and str(ev.get("type", "")).strip().lower() in ("press", "release")
+        ]
+        sanitized = self._sanitize_events_for_backend(backend_events)
         return {
             "current_name": self.current_name,
             "pi_host": self.config["pi_host"],
@@ -3651,21 +3655,21 @@ class App:
             self.show_warning("提醒", "目前沒有 timeline 資料")
             return
 
-        prepared_events, _ = self.prepare_events_for_send(action_reason="calculate_offset_only")
-        if prepared_events is None:
+        runtime_display_events, _, _ = self.prepare_events_for_send(action_reason="calculate_offset_only")
+        if runtime_display_events is None:
             return
-        for ev in prepared_events:
+        for ev in runtime_display_events:
             if self._is_negative_buff_group(ev.get("buff_group", "")):
                 ev["buff_group"] = ""
         before = self._begin_timeline_change()
-        self.runtime_working_timeline = self.copy_events(prepared_events)
-        self.timeline = self.copy_events(prepared_events)
+        self.runtime_working_timeline = self.copy_events(runtime_display_events)
+        self.timeline = self.copy_events(runtime_display_events)
         self._finalize_timeline_change(before)
         self.current_loaded_from_saved = False
         self.update_current_labels()
         self.refresh_tree()
         self.refresh_preview()
-        self.set_status("已糾正複製體並更新 table（尚未保存，共 {} 筆）".format(len(prepared_events)))
+        self.set_status("已糾正複製體並更新 table（尚未保存，共 {} 筆）".format(len(runtime_display_events)))
 
     def apply_offset_from_selected(self):
         if not self._ensure_runtime_editable():
@@ -3829,32 +3833,33 @@ class App:
 
         self._set_front_round_state("preparing")
         cached = self.next_round_prepared_cache if isinstance(self.next_round_prepared_cache, dict) else None
-        if cached and isinstance(cached.get("events"), list):
-            prepared_events = self.copy_events(cached.get("events", []))
+        if cached and isinstance(cached.get("runtime_display_events"), list):
+            runtime_display_events = self.copy_events(cached.get("runtime_display_events", []))
+            backend_events = self.copy_events(cached.get("backend_events", []))
             resolve_note = str(cached.get("resolve_note", "")).strip()
             self.next_round_prepared_cache = None
         else:
-            prepared_events, resolve_note = self.prepare_events_for_send(
+            runtime_display_events, backend_events, resolve_note = self.prepare_events_for_send(
                 action_reason="before_send_loop",
                 base_events=self.origin_snapshot_before_loop
             )
-        if prepared_events is None:
+        if runtime_display_events is None:
             self._mark_loop_terminal()
             self._update_runtime_control_buttons()
             return
         self.pending_runtime_version = int(self.runtime_version) + 1
-        self.runtime_working_timeline = self.copy_events(prepared_events)
+        self.runtime_working_timeline = self.copy_events(runtime_display_events)
         self._set_front_round_state("waiting_ack")
 
-        backend_events = self._sanitize_events_for_backend(prepared_events)
-        payload = self._build_start_task_payload(backend_events)
+        sanitized_backend_events = self._sanitize_events_for_backend(backend_events)
+        payload = self._build_start_task_payload(sanitized_backend_events)
         self.front_inflight_client_task_id = str(payload.get("client_task_id", "")).strip()
         ack_timeout_ms = self._get_ack_timeout_ms()
 
         try:
             self.set_frontend_error("")
             self.clear_runtime_highlight()
-            self._freeze_runtime_for_wait_ack(prepared_events)
+            self._freeze_runtime_for_wait_ack(runtime_display_events)
             self._preflight_start_task()
             self._arm_task_monitor_wait_ack(payload.get("client_task_id"))
 
@@ -3918,13 +3923,14 @@ class App:
                         "前端重複送出中：{} 第 {} 輪{}".format(display_name, self.front_loop_round, suffix)
                     )
                     if self.next_round_prepared_cache is None:
-                        next_events, next_note = self.prepare_events_for_send(
+                        next_runtime_display_events, next_backend_events, next_note = self.prepare_events_for_send(
                             action_reason="before_send_loop_prefetch",
                             base_events=self.origin_snapshot_before_loop
                         )
-                        if next_events is not None:
+                        if next_runtime_display_events is not None:
                             self.next_round_prepared_cache = {
-                                "events": self.copy_events(next_events),
+                                "runtime_display_events": self.copy_events(next_runtime_display_events),
+                                "backend_events": self.copy_events(next_backend_events),
                                 "resolve_note": next_note
                             }
                     self._poll_front_loop_round_done(display_name)
@@ -4005,7 +4011,7 @@ class App:
             events = recalculate_runtime_events_by_index(normalized_base_events, offset_sec)
         except Exception as e:
             self.show_error("時間重算失敗", str(e))
-            return None, ""
+            return None, None, ""
         unsupported = self.get_unsupported_buttons(events)
         if unsupported:
             msg = (
@@ -4015,7 +4021,7 @@ class App:
             self.set_frontend_error(msg)
             self.show_warning("送出前檢查", msg)
             self.refresh_tree()
-            return None, ""
+            return None, None, ""
         group_configs = {}
         for idx, ev in enumerate(events):
             group_name = ev.get("buff_group", "").strip()
@@ -4059,11 +4065,11 @@ class App:
                     initialvalue="1"
                 )
                 if ans is None:
-                    return None, ""
+                    return None, None, ""
                 ans = ans.strip()
                 if ans not in option_map:
                     self.show_error("輸入錯誤", "選項不存在：{}".format(ans))
-                    return None, ""
+                    return None, None, ""
                 chosen_cycle, chosen_jitter = option_map[ans]
                 resolved_groups.append(str(group_name))
 
@@ -4097,10 +4103,14 @@ class App:
             ev["buff_jitter_sec"] = round(jitter, 4)
             ev["at_random_sec"] = 0.0
             ev["skip_mode"] = normalize_front_skip_mode(ev.get("skip_mode", self.config.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)))
-        for idx, ev in enumerate(events):
+        runtime_display_events = self.copy_events(events)
+        for idx, ev in enumerate(runtime_display_events):
             ev["runtime_source_index"] = idx
-        events = [ev for ev in events if str(ev.get("type", "")).strip().lower() in ("press", "release")]
-        for ev in events:
+        backend_events = [
+            ev for ev in self.copy_events(runtime_display_events)
+            if str(ev.get("type", "")).strip().lower() in ("press", "release")
+        ]
+        for ev in backend_events:
             group = str(ev.get("buff_group", "")).strip()
             if group in trace_by_group:
                 trace = trace_by_group[group]
@@ -4119,13 +4129,14 @@ class App:
             "origin_version": int(getattr(self, "origin_version", 0)),
             "runtime_version": int(getattr(self, "pending_runtime_version", 0) or (int(getattr(self, "runtime_version", 0)) + 1)),
             "rslot_count": int(rslot_count),
-            "prepared_events": self.copy_events(events),
+            "runtime_display_events": self.copy_events(runtime_display_events),
+            "backend_events": self.copy_events(backend_events),
             "block_assignments": copy.deepcopy(block_assignments),
             "round_traces": copy.deepcopy(round_traces),
             "resolve_note": resolve_note
         }
         self.render_prepared_payload()
-        return events, resolve_note
+        return runtime_display_events, backend_events, resolve_note
 
     def on_buff_skip_mode_change(self, _event=None):
         label = self.buff_skip_mode_combo.get().strip()
