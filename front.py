@@ -1720,6 +1720,8 @@ class App:
         self.timeline_runtime_info = {"events": []}
         self.timeline_runtime_by_index = {}
         self.runtime_round_traces = []
+        self.runtime_trace_status_note = ""
+        self.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
         self.runtime_recent_ok_indices = []
         self.runtime_recent_skipped_indices = []
         self.runtime_latest_index = None
@@ -2399,8 +2401,10 @@ class App:
         mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
         if not force and mode != "runtime":
             return
-        runtime = self.timeline_runtime_info if isinstance(self.timeline_runtime_info, dict) else {}
-        traces = self.runtime_round_traces if isinstance(self.runtime_round_traces, list) else []
+        runtime_info = getattr(self, "timeline_runtime_info", {})
+        runtime = runtime_info if isinstance(runtime_info, dict) else {}
+        runtime_traces = getattr(self, "runtime_round_traces", [])
+        traces = runtime_traces if isinstance(runtime_traces, list) else []
         payload = {
             "run_id": runtime.get("run_id"),
             "state": runtime.get("state"),
@@ -2411,22 +2415,24 @@ class App:
             "round_traces": []
         }
         lines = []
-        lines.append("POOL / group -> picked idx (itself?)")
-        lines.append("-" * 84)
+        status_note = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
+        if status_note:
+            lines.append("狀態：{}".format(status_note))
+            lines.append("-" * 84)
+        grouped_by_round = {}
         for trace in traces:
             if not isinstance(trace, dict):
                 continue
             round_no = trace.get("round")
+            round_key = int(round_no) if isinstance(round_no, int) else round_no
+            grouped_by_round.setdefault(round_key, []).append(trace)
             group_meta = self._runtime_trace_group_meta(trace)
             group = group_meta["group"]
             group_label = group_meta["group_label"]
-            idx = trace.get("pickedIdx")
-            anchor_idx = trace.get("anchorIdx")
             candidate_list = trace.get("candidateIdxList", [])
             free_candidate_list = trace.get("freeCandidateIdxList", [])
             picked_pos = trace.get("pickedCandidatePos")
             dice_value = trace.get("diceValue")
-            result = str(trace.get("result", "")).strip().lower()
             reason = trace.get("pickedReason", trace.get("reason"))
             src_range = trace.get("src_range", [])
             dst_range = trace.get("dst_range", [])
@@ -2451,24 +2457,32 @@ class App:
                 }
             }
             payload["round_traces"].append(trace_with_group_meta)
-            lines.append(
-                "POOL(r{} g{}): candidates={} free={} dice={} pos={}".format(
-                    str(round_no),
-                    group,
-                    candidate_list,
-                    free_candidate_list,
-                    dice_value,
-                    picked_pos
-                )
-            )
-            lines.append(
-                "group {} -> picked {} (itself? {}) [{}]".format(
-                    group_label,
-                    str(picked_slot),
-                    str(self_picked).lower(),
-                    self._round_trace_reason_label(reason)
-                )
-            )
+        if grouped_by_round:
+            ordered_rounds = sorted(grouped_by_round.keys(), key=lambda x: (999999 if x is None else int(x)))
+            for round_no in ordered_rounds:
+                round_text = str(round_no) if round_no is not None else "?"
+                lines.append("Round {} 預計".format(round_text))
+                for trace in grouped_by_round.get(round_no, []):
+                    group_meta = self._runtime_trace_group_meta(trace)
+                    group_label = group_meta["group_label"]
+                    picked_slot = trace.get("picked_slot", trace.get("pickedIdx"))
+                    self_picked = bool(trace.get("self_picked", False))
+                    reason = trace.get("pickedReason", trace.get("reason"))
+                    candidate_list = trace.get("candidateIdxList", [])
+                    free_candidate_list = trace.get("freeCandidateIdxList", [])
+                    picked_pos = trace.get("pickedCandidatePos")
+                    dice_value = trace.get("diceValue")
+                    picked_text = "自己" if self_picked else "idx {}".format(str(picked_slot))
+                    lines.append("- {} -> {} [{}]".format(group_label, picked_text, self._round_trace_reason_label(reason)))
+                    lines.append(
+                        "  POOL: candidates={} free={} dice={} pos={}".format(
+                            candidate_list,
+                            free_candidate_list,
+                            dice_value,
+                            picked_pos
+                        )
+                    )
+                lines.append("-" * 84)
 
         self.text.delete("1.0", tk.END)
         if lines:
@@ -2489,11 +2503,33 @@ class App:
         round_traces = runtime.get("round_traces", [])
         if not isinstance(round_traces, list):
             round_traces = []
+        backend_round_traces = [item for item in round_traces if isinstance(item, dict)]
+        run_id = int(runtime.get("run_id", 0) or 0)
+        server_task_id = str(runtime.get("server_task_id", "")).strip()
+        owner = getattr(self, "runtime_trace_owner", {})
+        owner_run_id = int(owner.get("run_id", 0) or 0) if isinstance(owner, dict) else 0
+        owner_server_task_id = str(owner.get("server_task_id", "")).strip() if isinstance(owner, dict) else ""
+        allow_backend_round_traces = bool(backend_round_traces)
+        if allow_backend_round_traces and (owner_run_id > 0 or owner_server_task_id):
+            if owner_run_id > 0 and run_id > 0 and owner_run_id != run_id:
+                allow_backend_round_traces = False
+            if owner_server_task_id and server_task_id and owner_server_task_id != server_task_id:
+                allow_backend_round_traces = False
+        if allow_backend_round_traces:
+            round_traces = backend_round_traces
+            self.runtime_trace_owner = {
+                "run_id": run_id,
+                "server_task_id": server_task_id
+            }
+            self.runtime_trace_status_note = ""
+        elif isinstance(self.runtime_round_traces, list) and self.runtime_round_traces:
+            round_traces = list(self.runtime_round_traces)
         runtime_state = str(runtime.get("state", "")).strip().lower()
+        front_round_state = str(getattr(self, "front_round_state", "")).strip().lower()
         if (
             runtime_state == "idle"
             and not round_traces
-            and self.front_round_state in {"waiting_ack", "running", "round_done", "preparing_next"}
+            and front_round_state in {"waiting_ack", "running", "round_done", "preparing_next"}
             and isinstance(self.runtime_round_traces, list)
             and self.runtime_round_traces
         ):
@@ -2641,10 +2677,13 @@ class App:
         finally:
             self.root.after(RUNTIME_POLL_INTERVAL_MS, self.poll_runtime_status)
 
-    def clear_runtime_highlight(self):
+    def clear_runtime_highlight(self, preserve_round_traces=False):
         self.timeline_runtime_info = {"events": []}
         self.timeline_runtime_by_index = {}
-        self.runtime_round_traces = []
+        if not preserve_round_traces:
+            self.runtime_round_traces = []
+            self.runtime_trace_status_note = ""
+            self.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
         self.runtime_recent_ok_indices = []
         self.runtime_recent_skipped_indices = []
         self.runtime_latest_index = None
@@ -2752,6 +2791,13 @@ class App:
         monitor["failed"] = False
         self.task_monitor = monitor
         self.runtime_wait_ack_active = False
+        owner = getattr(self, "runtime_trace_owner", {})
+        owner_run_id = int(owner.get("run_id", 0) or 0) if isinstance(owner, dict) else 0
+        self.runtime_trace_owner = {
+            "run_id": owner_run_id,
+            "server_task_id": server_task_id
+        }
+        self.runtime_trace_status_note = ""
 
     def _monitor_task_status_progress(self, runtime_state, processed_count):
         monitor_obj = getattr(self, "task_monitor", {})
@@ -3655,7 +3701,11 @@ class App:
             self.show_warning("提醒", "目前沒有 timeline 資料")
             return
 
-        runtime_display_events, _, _ = self.prepare_events_for_send(action_reason="calculate_offset_only")
+        prepared = self.prepare_events_for_send(action_reason="calculate_offset_only")
+        if isinstance(prepared, tuple):
+            runtime_display_events = prepared[0] if len(prepared) >= 1 else None
+        else:
+            runtime_display_events = None
         if runtime_display_events is None:
             return
         for ev in runtime_display_events:
@@ -3841,7 +3891,8 @@ class App:
         else:
             runtime_display_events, backend_events, resolve_note = self.prepare_events_for_send(
                 action_reason="before_send_loop",
-                base_events=self.origin_snapshot_before_loop
+                base_events=self.origin_snapshot_before_loop,
+                return_backend=True
             )
         if runtime_display_events is None:
             self._mark_loop_terminal()
@@ -3849,6 +3900,10 @@ class App:
             return
         self.pending_runtime_version = int(self.runtime_version) + 1
         self.runtime_working_timeline = self.copy_events(runtime_display_events)
+        self.runtime_trace_owner = {
+            "run_id": int(self.timeline_runtime_info.get("run_id", 0) or 0),
+            "server_task_id": ""
+        }
         self._set_front_round_state("waiting_ack")
 
         sanitized_backend_events = self._sanitize_events_for_backend(backend_events)
@@ -3858,7 +3913,7 @@ class App:
 
         try:
             self.set_frontend_error("")
-            self.clear_runtime_highlight()
+            self.clear_runtime_highlight(preserve_round_traces=True)
             self._freeze_runtime_for_wait_ack(runtime_display_events)
             self._preflight_start_task()
             self._arm_task_monitor_wait_ack(payload.get("client_task_id"))
@@ -3906,6 +3961,8 @@ class App:
                         self._mark_loop_terminal()
                         self.runtime_wait_ack_active = False
                         self.runtime_display_frozen = True
+                        self.runtime_trace_status_note = "已抽籤但送出失敗"
+                        self.render_runtime_analysis(force=True)
                         self._update_runtime_control_buttons()
                         return
                     self.runtime_version = int(self.pending_runtime_version or self.runtime_version)
@@ -3925,7 +3982,8 @@ class App:
                     if self.next_round_prepared_cache is None:
                         next_runtime_display_events, next_backend_events, next_note = self.prepare_events_for_send(
                             action_reason="before_send_loop_prefetch",
-                            base_events=self.origin_snapshot_before_loop
+                            base_events=self.origin_snapshot_before_loop,
+                            return_backend=True
                         )
                         if next_runtime_display_events is not None:
                             self.next_round_prepared_cache = {
@@ -3948,6 +4006,8 @@ class App:
                     self._mark_loop_terminal()
                     self._update_runtime_control_buttons()
                     self.runtime_display_frozen = True
+                    self.runtime_trace_status_note = "已抽籤但送出失敗（ACK timeout / 連線失敗）"
+                    self.render_runtime_analysis(force=True)
                     self.show_error("重複傳送失敗", str(e))
 
             delay_override = None if self.front_loop_round == 0 else 0.0
@@ -3957,6 +4017,8 @@ class App:
             self._update_runtime_control_buttons()
             self.set_frontend_error(str(e))
             self.runtime_display_frozen = True
+            self.runtime_trace_status_note = "已抽籤但送出失敗（前置檢查失敗）"
+            self.render_runtime_analysis(force=True)
             self.show_error("重複傳送失敗", str(e))
 
     def _poll_front_loop_round_done(self, display_name):
@@ -3996,7 +4058,7 @@ class App:
                 lambda: self._poll_front_loop_round_done(display_name)
             )
 
-    def prepare_events_for_send(self, action_reason="before_send", base_events=None):
+    def prepare_events_for_send(self, action_reason="before_send", base_events=None, return_backend=False):
         try:
             offset_sec = self.get_manual_offset_sec()
             source_events = base_events if isinstance(base_events, list) else self.timeline
@@ -4011,7 +4073,7 @@ class App:
             events = recalculate_runtime_events_by_index(normalized_base_events, offset_sec)
         except Exception as e:
             self.show_error("時間重算失敗", str(e))
-            return None, None, ""
+            return (None, None, "") if return_backend else (None, "")
         unsupported = self.get_unsupported_buttons(events)
         if unsupported:
             msg = (
@@ -4021,7 +4083,7 @@ class App:
             self.set_frontend_error(msg)
             self.show_warning("送出前檢查", msg)
             self.refresh_tree()
-            return None, None, ""
+            return (None, None, "") if return_backend else (None, "")
         group_configs = {}
         for idx, ev in enumerate(events):
             group_name = ev.get("buff_group", "").strip()
@@ -4065,11 +4127,11 @@ class App:
                     initialvalue="1"
                 )
                 if ans is None:
-                    return None, None, ""
+                    return (None, None, "") if return_backend else (None, "")
                 ans = ans.strip()
                 if ans not in option_map:
                     self.show_error("輸入錯誤", "選項不存在：{}".format(ans))
-                    return None, None, ""
+                    return (None, None, "") if return_backend else (None, "")
                 chosen_cycle, chosen_jitter = option_map[ans]
                 resolved_groups.append(str(group_name))
 
@@ -4079,6 +4141,14 @@ class App:
                     ev["buff_jitter_sec"] = chosen_jitter
 
         events, block_assignments, round_traces = allocate_randat_blocks(events)
+        self.runtime_round_traces = copy.deepcopy(round_traces)
+        self.runtime_trace_status_note = ""
+        self.runtime_working_timeline = self.copy_events(events)
+        if hasattr(self, "render_runtime_analysis"):
+            try:
+                self.render_runtime_analysis(force=True)
+            except Exception:
+                pass
         trace_by_group = {
             str(item.get("buffGroup", "")).strip(): dict(item)
             for item in round_traces
@@ -4136,7 +4206,9 @@ class App:
             "resolve_note": resolve_note
         }
         self.render_prepared_payload()
-        return runtime_display_events, backend_events, resolve_note
+        if return_backend:
+            return runtime_display_events, backend_events, resolve_note
+        return runtime_display_events, resolve_note
 
     def on_buff_skip_mode_change(self, _event=None):
         label = self.buff_skip_mode_combo.get().strip()
