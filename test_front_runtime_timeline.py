@@ -540,6 +540,58 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertNotIn("Previous round final positions", captured["text"])
 
+    def test_render_runtime_analysis_supports_camel_case_execution_round(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {
+                "executionRound": 1,
+                "drawOrder": 1,
+                "buffGroup": "A",
+                "pickedReason": "random_pick",
+                "placement": {"picked_slot_a_idx": 2, "base_b_idx_before_offset": 4, "final_b_range": [4, 5]},
+            },
+            {
+                "executionRound": 2,
+                "drawOrder": 1,
+                "buffGroup": "B",
+                "pickedReason": "random_pick",
+                "placement": {"picked_slot_a_idx": 1, "base_b_idx_before_offset": 2, "final_b_range": [2, 3]},
+            },
+        ]
+        app.timeline_runtime_info = {"executionRound": 2}
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Previous round final positions (Round #1):", captured["text"])
+        self.assertIn("A2 -> base B4 -> final B4~5", captured["text"])
+        self.assertIn("Execution Round #2", captured["text"])
+
+    def test_render_runtime_analysis_emits_trace_diagnosis_when_previous_round_missing(self):
+        app = self._new_app()
+        captured = {"text": ""}
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.runtime_round_traces = [
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"},
+        ]
+        app.timeline_runtime_info = {"execution_round": 2}
+        app.runtime_trace_status_note = "⚠ 已拒收後端舊 traces（server_task_id mismatch）"
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Trace diagnosis:", captured["text"])
+        self.assertIn("無法建立 Round #1 摘要", captured["text"])
+        self.assertIn("server_task_id mismatch", app.runtime_trace_diagnostic)
+
     def test_update_runtime_ignores_old_backend_traces_against_prepared_meta(self):
         app = self._new_app()
         app.last_prepared_payload = {
