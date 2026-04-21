@@ -2760,7 +2760,12 @@ class App:
         )
         prepared_consistency_key = self._consistency_key_from_runtime_meta(prepared_runtime_meta, fallback=prepared_key_fallback)
         trace_consistency_key = self._consistency_key_from_runtime_status(runtime, traces=traces)
-        trace_meta_match = self._is_runtime_key_compatible(trace_consistency_key, prepared_consistency_key)
+        backend_runtime_round_traces = runtime.get("round_traces", []) if isinstance(runtime, dict) else []
+        has_backend_round_traces = bool(
+            isinstance(backend_runtime_round_traces, list)
+            and any(isinstance(item, dict) for item in backend_runtime_round_traces)
+        )
+        trace_meta_match = True if not has_backend_round_traces else self._is_runtime_key_compatible(trace_consistency_key, prepared_consistency_key)
         payload["consistency"]["trace_key"] = copy.deepcopy(trace_consistency_key)
         payload["consistency"]["prepared_key"] = copy.deepcopy(prepared_consistency_key)
         payload["consistency"]["trace_meta_match"] = bool(trace_meta_match)
@@ -3028,72 +3033,8 @@ class App:
         events = runtime.get("events", [])
         if not isinstance(events, list):
             events = []
-        runtime_round_traces = runtime.get("round_traces", [])
-        if not isinstance(runtime_round_traces, list):
-            runtime_round_traces = []
-        backend_round_traces = [item for item in runtime_round_traces if isinstance(item, dict)]
-        round_traces = []
-        run_id = int(runtime.get("run_id", 0) or 0)
-        server_task_id = str(runtime.get("server_task_id", "")).strip()
-        owner = getattr(self, "runtime_trace_owner", {})
-        owner_run_id = int(owner.get("run_id", 0) or 0) if isinstance(owner, dict) else 0
-        owner_server_task_id = str(owner.get("server_task_id", "")).strip() if isinstance(owner, dict) else ""
-        allow_backend_round_traces = bool(backend_round_traces)
-        backend_trace_key = self._consistency_key_from_runtime_status(runtime, traces=backend_round_traces)
-        prepared_payload = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
-        prepared_runtime_meta = prepared_payload.get("runtime_meta", {})
-        prepared_trace_key = self._consistency_key_from_runtime_meta(
-            prepared_runtime_meta,
-            fallback=self._build_runtime_consistency_key(
-                run_id=0,
-                server_task_id=getattr(self, "front_inflight_client_task_id", ""),
-                runtime_version=prepared_payload.get("runtime_version", 0),
-                execution_round=prepared_payload.get("execution_round", 0)
-            )
-        )
-        if allow_backend_round_traces and (owner_run_id > 0 or owner_server_task_id):
-            if owner_server_task_id and server_task_id:
-                if owner_server_task_id != server_task_id:
-                    allow_backend_round_traces = False
-            elif owner_run_id > 0 and run_id > 0 and owner_run_id != run_id:
-                allow_backend_round_traces = False
-        prepared_task_id = str(prepared_trace_key.get("server_task_id", "")).strip()
-        prepared_runtime_version = int(prepared_trace_key.get("runtime_version", 0) or 0)
-        prepared_execution_round = int(prepared_trace_key.get("execution_round", 0) or 0)
-        backend_runtime_version = int(backend_trace_key.get("runtime_version", 0) or 0)
-        backend_execution_round = int(backend_trace_key.get("execution_round", 0) or 0)
-        rejection_reasons = []
-        if allow_backend_round_traces and prepared_task_id and server_task_id and prepared_task_id != server_task_id:
-            rejection_reasons.append("server_task_id mismatch")
-            allow_backend_round_traces = False
-        if allow_backend_round_traces and prepared_runtime_version > 0 and backend_runtime_version <= 0:
-            rejection_reasons.append("runtime_version missing")
-            allow_backend_round_traces = False
-        if allow_backend_round_traces and prepared_runtime_version > 0 and backend_runtime_version > 0 and prepared_runtime_version != backend_runtime_version:
-            rejection_reasons.append("runtime_version mismatch")
-            allow_backend_round_traces = False
-        if allow_backend_round_traces and prepared_execution_round > 0 and backend_execution_round <= 0:
-            rejection_reasons.append("execution_round missing")
-            allow_backend_round_traces = False
-        if allow_backend_round_traces and prepared_execution_round > 0 and backend_execution_round > 0 and prepared_execution_round != backend_execution_round:
-            rejection_reasons.append("execution_round mismatch")
-            allow_backend_round_traces = False
-        if allow_backend_round_traces and not self._is_runtime_key_compatible(backend_trace_key, prepared_trace_key):
-            rejection_reasons.append("consistency_key mismatch")
-            allow_backend_round_traces = False
-        if allow_backend_round_traces:
-            round_traces = backend_round_traces
-            self.runtime_trace_owner = {
-                "run_id": run_id,
-                "server_task_id": server_task_id
-            }
-            self.runtime_trace_status_note = ""
-        elif backend_round_traces and rejection_reasons:
-            if isinstance(self.runtime_round_traces, list) and self.runtime_round_traces:
-                round_traces = list(self.runtime_round_traces)
-            self.runtime_trace_status_note = "⚠ 已拒收後端舊 traces（{}）".format(", ".join(rejection_reasons))
-        elif isinstance(self.runtime_round_traces, list) and self.runtime_round_traces:
-            round_traces = list(self.runtime_round_traces)
+        round_traces = list(self.runtime_round_traces) if isinstance(self.runtime_round_traces, list) else []
+        self.runtime_trace_status_note = ""
         runtime_state = str(runtime.get("state", "")).strip().lower()
         front_round_state = str(getattr(self, "front_round_state", "")).strip().lower()
         if (
@@ -3569,8 +3510,7 @@ class App:
             runtime_meta = {
                 "rslot_count": int(prepared.get("rslot_count", 0) or 0),
                 "randat_executed": bool(prepared.get("rslot_count", 0)),
-                "draw_result": copy.deepcopy(prepared.get("block_assignments", {})),
-                "round_traces": copy.deepcopy(prepared.get("round_traces", []))
+                "draw_result": copy.deepcopy(prepared.get("block_assignments", {}))
             }
         if runtime_meta:
             payload["runtime_meta"] = runtime_meta
@@ -5010,7 +4950,6 @@ class App:
                 "rslot_count": int(rslot_count),
                 "randat_executed": bool(rslot_count > 0),
                 "draw_result": copy.deepcopy(block_assignments),
-                "round_traces": copy.deepcopy(round_traces),
                 "table_b_preview": copy.deepcopy(randat_debug.get("table_b_before_insert", [])),
                 "mix_slot_show": copy.deepcopy(randat_debug.get("mix_slot_show", [])),
                 "mix_slot_mapping": copy.deepcopy(randat_debug.get("mix_slot_mapping", {})),

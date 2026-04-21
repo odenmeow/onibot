@@ -388,7 +388,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(app.runtime_latest_index, 2)
 
-    def test_update_runtime_accepts_next_round_traces_when_owner_run_id_unknown(self):
+    def test_update_runtime_keeps_local_round_traces_even_if_backend_reports_new_round(self):
         app = self._new_app()
         app.runtime_round_traces = [
             {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"}
@@ -409,10 +409,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         })
 
         self.assertTrue(changed)
-        self.assertEqual(app.runtime_round_traces[0]["execution_round"], 2)
-        self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "B")
-        self.assertEqual(app.runtime_trace_owner, {"run_id": 202, "server_task_id": "srv-round2"})
-        self.assertEqual(app.runtime_trace_status_note, "")
+        self.assertEqual(app.runtime_round_traces[0]["execution_round"], 1)
+        self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "A")
+        self.assertEqual(app.runtime_trace_owner, {"run_id": 0, "server_task_id": "srv-round2"})
 
     def test_render_runtime_analysis_shows_distinct_execution_rounds(self):
         app = self._new_app()
@@ -439,7 +438,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertIn("Execution Round #2", captured["text"])
         self.assertIn("picked A-slot=", captured["text"])
 
-    def test_render_runtime_analysis_hides_prepared_meta_on_key_mismatch(self):
+    def test_render_runtime_analysis_uses_local_traces_without_backend_key_check(self):
         app = self._new_app()
         captured = {"text": ""}
         app.text = types.SimpleNamespace(
@@ -466,7 +465,8 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.render_runtime_analysis(force=True)
 
-        self.assertIn("key 不一致", captured["text"])
+        self.assertNotIn("key 不一致", captured["text"])
+        self.assertIn("Trace diagnosis:", captured["text"])
         self.assertNotIn("Current round final positions:", captured["text"])
 
     def test_render_runtime_analysis_shows_previous_round_summary_for_round2(self):
@@ -620,7 +620,7 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertEqual(app.runtime_round_traces, [])
 
-    def test_update_runtime_rejects_backend_trace_when_runtime_keys_missing(self):
+    def test_update_runtime_ignores_backend_round_traces_and_keeps_local_trace(self):
         app = self._new_app()
         app.runtime_round_traces = [
             {"execution_round": 7, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"}
@@ -651,7 +651,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         })
 
         self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "A")
-        self.assertIn("已拒收後端舊 traces", app.runtime_trace_status_note)
+        self.assertEqual(app.runtime_trace_status_note, "")
 
     def test_recent_ok_green_tag_does_not_override_buff_background(self):
         app = self._new_app()
