@@ -403,6 +403,30 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertEqual(app.runtime_trace_owner, {"run_id": 202, "server_task_id": "srv-round2"})
         self.assertEqual(app.runtime_trace_status_note, "")
 
+    def test_render_runtime_analysis_shows_distinct_execution_rounds(self):
+        app = self._new_app()
+        captured = {"text": ""}
+
+        app.text = types.SimpleNamespace(
+            delete=lambda *_args, **_kwargs: captured.__setitem__("text", ""),
+            insert=lambda *_args, **_kwargs: captured.__setitem__("text", captured["text"] + (_args[1] if len(_args) > 1 else ""))
+        )
+        app.json_view_mode_var = types.SimpleNamespace(get=lambda: "runtime")
+        app.timeline = [
+            {"type": "press", "button": "a", "buff_group": "A"},
+            {"type": "press", "button": "b", "buff_group": "B"},
+        ]
+        app.runtime_round_traces = [
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "picked_slot": 0},
+            {"execution_round": 2, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick", "picked_slot": 1},
+        ]
+        app.runtime_version = 2
+
+        app.render_runtime_analysis(force=True)
+
+        self.assertIn("Execution Round #1", captured["text"])
+        self.assertIn("Execution Round #2", captured["text"])
+
     def test_recent_ok_green_tag_does_not_override_buff_background(self):
         app = self._new_app()
         app.timeline = [

@@ -757,7 +757,7 @@ def is_slot_excluded_buff_group(value):
         return False
 
 
-def allocate_randat_blocks(events):
+def allocate_randat_blocks(events, execution_round=1):
     working = [dict(ev) for ev in events]
     rslot = [
         idx for idx, ev in enumerate(working)
@@ -828,7 +828,11 @@ def allocate_randat_blocks(events):
 
     block_assignments = {}
     round_traces = []
-    execution_round = 1
+    try:
+        execution_round = int(execution_round or 1)
+    except Exception:
+        execution_round = 1
+    execution_round = max(1, execution_round)
     randat_executed = bool(rslot)
 
     if not randat_executed:
@@ -2626,11 +2630,24 @@ class App:
             lines.append("-" * 84)
         grouped_by_execution_round = {}
         participating_groups = []
+        fallback_execution_round = int(payload.get("runtime_version", 0) or 0)
+        if fallback_execution_round <= 0:
+            fallback_execution_round = int(runtime.get("execution_round", 0) or 0)
+        if fallback_execution_round <= 0:
+            fallback_execution_round = 1
         for trace in traces:
             if not isinstance(trace, dict):
                 continue
             draw_order = trace.get("draw_order", trace.get("round"))
-            execution_round = int(trace.get("execution_round", 1) or 1)
+            execution_round_raw = trace.get("execution_round")
+            if execution_round_raw is None:
+                execution_round = fallback_execution_round
+            else:
+                try:
+                    execution_round = int(execution_round_raw or fallback_execution_round)
+                except Exception:
+                    execution_round = fallback_execution_round
+            execution_round = max(1, execution_round)
             grouped_by_execution_round.setdefault(execution_round, []).append(trace)
             group_meta = self._runtime_trace_group_meta(trace)
             group = group_meta["group"]
@@ -2677,7 +2694,7 @@ class App:
         payload["rslot_count"] = int(sum(1 for trace in payload["round_traces"] if bool(trace.get("randat_executed", True))))
         payload["randat_executed"] = bool(payload["rslot_count"] > 0)
         payload["participating_groups"] = list(participating_groups)
-        payload["execution_round"] = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(runtime.get("execution_round", 0) or 0)
+        payload["execution_round"] = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(fallback_execution_round)
         expected_groups = len(payload["participating_groups"])
         actual_draws = len(payload["draws"])
         is_consistent = bool(expected_groups == actual_draws)
@@ -2694,7 +2711,7 @@ class App:
             for execution_round in ordered_rounds:
                 execution_traces = grouped_by_execution_round.get(execution_round, [])
                 total_groups = len(execution_traces)
-                lines.append("Execution Round #{}（groups={}）".format(execution_round, total_groups))
+                lines.append("Execution Round #{}（送出輪次，groups={}）".format(execution_round, total_groups))
                 ordered_draws = sorted(
                     execution_traces,
                     key=lambda item: int(item.get("draw_order", item.get("round", 999999)) or 999999)
@@ -2707,7 +2724,7 @@ class App:
                     self_picked = bool(trace.get("self_picked", False))
                     reason = trace.get("pickedReason", trace.get("reason"))
                     picked_text = "self" if self_picked else "idx {}".format(str(picked_slot))
-                    lines.append("Draw {}/{}: {} -> picked {}".format(draw_order, total_groups, group_label, picked_text))
+                    lines.append("Draw {}/{}（群組抽籤次序）: {} -> picked {}".format(draw_order, total_groups, group_label, picked_text))
                     lines.append("  reason={}".format(self._round_trace_reason_label(reason)))
                 lines.append(
                     "Consistency: expected_groups={} / actual_draws={}".format(
@@ -4284,6 +4301,7 @@ class App:
             return
 
         self._set_front_round_state("preparing")
+        self.pending_runtime_version = int(self.runtime_version) + 1
         cached = self.next_round_prepared_cache if isinstance(self.next_round_prepared_cache, dict) else None
         if cached and isinstance(cached.get("runtime_display_events"), list):
             runtime_display_events = self.copy_events(cached.get("runtime_display_events", []))
@@ -4300,7 +4318,6 @@ class App:
             self._mark_loop_terminal()
             self._update_runtime_control_buttons()
             return
-        self.pending_runtime_version = int(self.runtime_version) + 1
         self.runtime_working_timeline = self.copy_events(runtime_display_events)
         self.runtime_trace_owner = {
             "run_id": 0,
@@ -4549,7 +4566,16 @@ class App:
                     ev["buff_cycle_sec"] = chosen_cycle
                     ev["buff_jitter_sec"] = chosen_jitter
 
-        events, block_assignments, round_traces, randat_debug = allocate_randat_blocks(events)
+        execution_round = int(getattr(self, "pending_runtime_version", 0) or 0)
+        if execution_round <= 0:
+            execution_round = int(getattr(self, "front_loop_round", 0) or 0) + 1
+        if execution_round <= 0:
+            execution_round = int(getattr(self, "runtime_version", 0) or 0) + 1
+
+        events, block_assignments, round_traces, randat_debug = allocate_randat_blocks(
+            events,
+            execution_round=execution_round
+        )
         self.runtime_round_traces = copy.deepcopy(round_traces)
         self.runtime_trace_status_note = ""
         self.runtime_working_timeline = self.copy_events(events)
@@ -4607,12 +4633,14 @@ class App:
             "action_reason": action_reason,
             "origin_version": int(getattr(self, "origin_version", 0)),
             "runtime_version": int(getattr(self, "pending_runtime_version", 0) or (int(getattr(self, "runtime_version", 0)) + 1)),
+            "execution_round": int(execution_round),
             "rslot_count": int(rslot_count),
             "runtime_display_events": self.copy_events(runtime_display_events),
             "backend_events": self.copy_events(backend_events),
             "block_assignments": copy.deepcopy(block_assignments),
             "round_traces": copy.deepcopy(round_traces),
             "runtime_meta": {
+                "execution_round": int(execution_round),
                 "rslot_count": int(rslot_count),
                 "randat_executed": bool(rslot_count > 0),
                 "draw_result": copy.deepcopy(block_assignments),
