@@ -68,6 +68,8 @@ timeline_runtime = {
     "last_event": None,
     "round_traces": [],
     "runtime_diag": {},
+    "runtime_version": 0,
+    "execution_round": 0,
     "progress": {
         "current_idx": -1,
         "event_time_ms": 0,
@@ -119,6 +121,8 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
         timeline_runtime["last_event"] = None
         timeline_runtime["round_traces"] = []
         timeline_runtime["runtime_diag"] = {}
+        timeline_runtime["runtime_version"] = 0
+        timeline_runtime["execution_round"] = 0
         timeline_runtime["progress"] = {
             "current_idx": -1,
             "event_time_ms": _now_ms(),
@@ -213,8 +217,20 @@ def get_timeline_runtime_snapshot():
             "last_event": timeline_runtime.get("last_event"),
             "round_traces": round_traces,
             "runtime_diag": dict(timeline_runtime.get("runtime_diag", {})),
+            "runtime_version": int(timeline_runtime.get("runtime_version", 0)),
+            "execution_round": int(timeline_runtime.get("execution_round", 0)),
             "cooldowns": cooldowns
         }
+
+
+def reset_runtime_state():
+    set_timeline_runtime(
+        mode="",
+        state="idle",
+        events_total=0,
+        loop_count=0,
+        server_task_id=""
+    )
 
 
 def _normalize_round_traces_payload(raw):
@@ -806,7 +822,7 @@ def handle_request(data):
         "service_name": "onibot-backend",
         "contract_version": RUNTIME_CONTRACT_VERSION,
         "supports_start_task": True,
-        "supported_actions": ["ping", "list_buttons", "status", "hello", "stop", "pause", "resume", "run_macro", "start_task"]
+        "supported_actions": ["ping", "list_buttons", "status", "hello", "stop", "pause", "resume", "run_macro", "start_task", "reset_runtime"]
     }
 
     if action == "ping":
@@ -833,6 +849,30 @@ def handle_request(data):
         return pause_current_run()
     if action == "resume":
         return resume_current_run()
+    if action == "reset_runtime":
+        if current_run_thread is not None and current_run_thread.is_alive():
+            return make_error_response(
+                code="busy",
+                message="Pi 目前已有執行中的工作",
+                phase="reset_runtime",
+                status="busy",
+                server_task_id=current_server_task_id,
+                diag={"last_state": str(current_run_status.get("state", "")), "elapsed_ms": 0, "threshold_ms": 0}
+            )
+        reset_runtime_state()
+        current_run_status = {
+            "state": "idle",
+            "mode": "",
+            "message": "runtime 已重置",
+            "server_task_id": ""
+        }
+        current_server_task_id = ""
+        return {
+            "status": "ok",
+            "state": "idle",
+            "message": "runtime 已重置",
+            "timeline_runtime": get_timeline_runtime_snapshot()
+        }
 
     if action == "run_macro":
         if current_run_thread is not None and current_run_thread.is_alive():
@@ -894,6 +934,16 @@ def handle_request(data):
 
         events = parse_start_task_timeline(data.get("timeline", []))
         incoming_round_traces, incoming_runtime_diag = _extract_runtime_diag_from_start_task(data)
+        incoming_runtime_version = data.get("runtime_version", 0)
+        incoming_execution_round = data.get("execution_round", 0)
+        try:
+            incoming_runtime_version = int(incoming_runtime_version or 0)
+        except Exception:
+            incoming_runtime_version = 0
+        try:
+            incoming_execution_round = int(incoming_execution_round or 0)
+        except Exception:
+            incoming_execution_round = 0
         skip_mode_values = [str(row.get("skip_mode", "")).strip().lower() for row in data.get("timeline", []) if isinstance(row, dict)]
         chosen_skip_mode = next((mode for mode in skip_mode_values if mode), BUFF_SKIP_MODE_WALK)
         buff_skip_mode, deprecated_alias = normalize_buff_skip_mode(chosen_skip_mode)
@@ -910,6 +960,11 @@ def handle_request(data):
             patch_timeline_runtime(round_traces=incoming_round_traces)
         if incoming_runtime_diag:
             patch_timeline_runtime(runtime_diag=incoming_runtime_diag)
+        patch_timeline_runtime(
+            runtime_version=max(0, incoming_runtime_version),
+            execution_round=max(0, incoming_execution_round)
+        )
+        runtime_snapshot = get_timeline_runtime_snapshot()
         return {
             "type": "ack",
             "status": "ok",
@@ -920,6 +975,7 @@ def handle_request(data):
                 "status": "running",
                 "mode": "timeline"
             },
+            "timeline_runtime": runtime_snapshot,
             "progress": {
                 "processed_count": 0,
                 "events_total": len(events)

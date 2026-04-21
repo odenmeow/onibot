@@ -24,6 +24,9 @@ import backend
 
 
 class BackendCooldownRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        backend.reset_runtime_state()
+
     def test_runtime_snapshot_progress_contains_prediction_fields(self):
         backend.set_timeline_runtime("timeline", "running", events_total=2, loop_count=1, server_task_id="srv-1")
         backend.update_timeline_runtime_progress_prediction(
@@ -224,6 +227,42 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["buff_skip_mode"], backend.BUFF_SKIP_MODE_PASS)
         self.assertEqual(res["buff_skip_mode_deprecated_alias"], "compress")
+
+    def test_status_timeline_runtime_includes_runtime_version_and_execution_round(self):
+        orig_thread = backend.threading.Thread
+        orig_current_run_thread = backend.current_run_thread
+        try:
+            backend.current_run_thread = None
+
+            class _FakeThread:
+                def __init__(self, target=None, args=(), daemon=None):
+                    self.target = target
+                    self.args = args
+                    self.daemon = daemon
+
+                def start(self):
+                    return None
+
+                def is_alive(self):
+                    return False
+
+            backend.threading.Thread = _FakeThread
+            backend.handle_request({
+                "type": "start_task",
+                "contract_version": backend.RUNTIME_CONTRACT_VERSION,
+                "client_task_id": "ct-2",
+                "runtime_version": 5,
+                "execution_round": 5,
+                "timeline": [{"idx": 0, "at_ms": 0, "action": "press", "btn": "f", "skip_mode": "pass"}]
+            })
+        finally:
+            backend.threading.Thread = orig_thread
+            backend.current_run_thread = orig_current_run_thread
+
+        status = backend.handle_request({"action": "status"})
+        timeline_runtime = status["timeline_runtime"]
+        self.assertEqual(timeline_runtime["runtime_version"], 5)
+        self.assertEqual(timeline_runtime["execution_round"], 5)
 
 
 if __name__ == "__main__":

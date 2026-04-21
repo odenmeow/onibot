@@ -497,6 +497,39 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertEqual(app.runtime_round_traces, [])
 
+    def test_update_runtime_rejects_backend_trace_when_runtime_keys_missing(self):
+        app = self._new_app()
+        app.runtime_round_traces = [
+            {"execution_round": 7, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick"}
+        ]
+        app.last_prepared_payload = {
+            "runtime_version": 7,
+            "execution_round": 7,
+            "runtime_meta": {
+                "server_task_id": "srv-7",
+                "runtime_version": 7,
+                "execution_round": 7
+            }
+        }
+        app.runtime_trace_status_note = ""
+
+        app.update_runtime_from_status({
+            "timeline_runtime": {
+                "state": "running",
+                "run_id": 42,
+                "server_task_id": "srv-7",
+                "runtime_version": 0,
+                "execution_round": 0,
+                "round_traces": [
+                    {"execution_round": 1, "draw_order": 1, "buffGroup": "B", "pickedReason": "random_pick"}
+                ],
+                "events": []
+            }
+        })
+
+        self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "A")
+        self.assertIn("已拒收後端舊 traces", app.runtime_trace_status_note)
+
     def test_recent_ok_green_tag_does_not_override_buff_background(self):
         app = self._new_app()
         app.timeline = [
@@ -890,6 +923,7 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.select_saved_name = lambda _name: None
         app._update_runtime_control_buttons = lambda: None
         app.confirm = lambda *_args, **_kwargs: True
+        app.request_pi = lambda *_args, **_kwargs: {"status": "ok"}
         app.set_status = lambda *_args, **_kwargs: None
         app.set_frontend_error = lambda *_args, **_kwargs: None
         app.validate_negative_group_monotonic_by_index = App.validate_negative_group_monotonic_by_index.__get__(app, App)
@@ -1043,6 +1077,8 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.refresh_preview = lambda: refreshed.__setitem__("preview", refreshed["preview"] + 1)
         statuses = []
         app.set_status = lambda msg: statuses.append(msg)
+        request_calls = []
+        app.request_pi = lambda payload, **_kwargs: (request_calls.append(dict(payload)) or {"status": "ok"})
 
         loaded_event = {"type": "press", "button": "space", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
         with mock.patch("front.load_named_timeline", return_value={"name": "legacy", "events": [loaded_event], "_meta": {}}), \
@@ -1059,8 +1095,27 @@ class TimelineWorkflowTests(unittest.TestCase):
         self.assertFalse(app.runtime_manual_restore_active)
         self.assertEqual(refreshed["tree"], 1)
         self.assertEqual(refreshed["preview"], 1)
+        self.assertIn({"action": "reset_runtime"}, request_calls)
         self.assertTrue(statuses)
         self.assertIn("Runtime 已清空", statuses[-1])
+
+    def test_load_selected_timeline_reset_runtime_failure_shows_warning_status(self):
+        app = self._new_workflow_app()
+        app.get_selected_saved_name = lambda: "legacy"
+        app.load_selected_timeline = App.load_selected_timeline.__get__(app, App)
+        app.normalize_meta = App.normalize_meta.__get__(app, App)
+        app.new_meta = App.new_meta.__get__(app, App)
+        statuses = []
+        app.set_status = lambda msg: statuses.append(msg)
+        app.request_pi = lambda *_args, **_kwargs: {"status": "error"}
+
+        loaded_event = {"type": "press", "button": "space", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        with mock.patch("front.load_named_timeline", return_value={"name": "legacy", "events": [loaded_event], "_meta": {}}), \
+             mock.patch("front.save_config"):
+            app.load_selected_timeline()
+
+        self.assertTrue(statuses)
+        self.assertIn("後端未清空，可能顯示舊 round", statuses[-1])
 
     def test_load_selected_timeline_same_and_diff_name_share_confirm_and_reset_flow(self):
         for selected_name, loaded_name in (("demo", "demo"), ("legacy", "legacy")):
