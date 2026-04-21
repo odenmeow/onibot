@@ -9,7 +9,13 @@ if "pynput" not in sys.modules:
     pynput_stub.keyboard = types.SimpleNamespace(Listener=object)
     sys.modules["pynput"] = pynput_stub
 
-from front import App, recalculate_runtime_events_by_index, allocate_randat_blocks, get_buff_cell_visual_state
+from front import (
+    App,
+    recalculate_runtime_events_by_index,
+    allocate_randat_blocks,
+    get_buff_cell_visual_state,
+    move_rows_with_ab_gap_compensation,
+)
 
 
 def _event(at, buff_group=""):
@@ -80,6 +86,33 @@ class RecalculateRuntimeTimelineTests(unittest.TestCase):
 
         recalculated = recalculate_runtime_events_by_index(events, anchor_gap_sec=0.2)
         self.assertEqual(recalculated[14]["at"], round(recalculated[13]["at"] + 1.5, 2))
+
+    def test_move_rows_with_ab_gap_compensation_keeps_tighter_side_gap(self):
+        events = [
+            {"at": 0.00},
+            {"at": 1.00},
+            {"at": 1.10},
+            {"at": 2.50},
+        ]
+        moved, new_indexes, meta = move_rows_with_ab_gap_compensation(events, [2], "up")
+        self.assertEqual(new_indexes, [1])
+        self.assertEqual(moved[1]["at"], 0.1)
+        self.assertEqual(meta["preserve_target"], "A")
+        self.assertTrue(meta["preserved"])
+        self.assertLess(meta["compensation_applied"], 0.0)
+
+    def test_move_rows_with_ab_gap_compensation_handles_down_direction(self):
+        events = [
+            {"at": 0.00},
+            {"at": 0.80},
+            {"at": 1.20},
+            {"at": 1.25},
+        ]
+        moved, new_indexes, meta = move_rows_with_ab_gap_compensation(events, [1], "down")
+        self.assertEqual(new_indexes, [2])
+        self.assertEqual(meta["direction"], "down")
+        self.assertIn(meta["preserve_target"], {"A", "B", None})
+        self.assertGreaterEqual(moved[2]["at"], moved[1]["at"])
 
 
 class _FakeTree:
