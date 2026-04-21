@@ -744,6 +744,16 @@ def apply_positive_jitter(base_value, jitter):
     return round(base + random.uniform(0.0, j), 4)
 
 
+def is_slot_excluded_buff_group(value):
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        return int(text) > 100
+    except Exception:
+        return False
+
+
 def allocate_randat_blocks(events):
     working = [dict(ev) for ev in events]
     rslot = [
@@ -766,6 +776,8 @@ def allocate_randat_blocks(events):
     for idx, ev in enumerate(working):
         group = str(ev.get("buff_group", "")).strip()
         if not group:
+            continue
+        if is_slot_excluded_buff_group(group):
             continue
         if group not in blocks:
             blocks[group] = {"first": idx, "indices": [idx]}
@@ -3351,6 +3363,26 @@ class App:
             runtime_events = []
         landing = {}
         for ev in reversed(runtime_events):
+            if not isinstance(ev, dict):
+                continue
+            group = str(ev.get("buff_group", "")).strip()
+            if not group or group in landing:
+                continue
+            landed_idx = ev.get("runtime_landed_index")
+            anchor_idx = ev.get("runtime_anchor_index")
+            if landed_idx is None or anchor_idx is None:
+                continue
+            landing[group] = {
+                "landed_index": int(landed_idx),
+                "anchor_index": int(anchor_idx),
+                "occupies_original": bool(int(ev.get("runtime_occupies_original", 0))),
+                "self_picked": bool(int(ev.get("runtime_self_picked", ev.get("runtime_occupies_original", 0)))),
+                "color": str(ev.get("runtime_group_color", "")).strip().lower()
+            }
+        if landing:
+            return landing
+        working_timeline = self.runtime_working_timeline if isinstance(self.runtime_working_timeline, list) else []
+        for ev in reversed(working_timeline):
             if not isinstance(ev, dict):
                 continue
             group = str(ev.get("buff_group", "")).strip()
