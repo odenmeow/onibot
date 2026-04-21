@@ -70,7 +70,8 @@ timeline_runtime = {
     "runtime_diag": {},
     "progress": {
         "current_idx": -1,
-        "event_time_ms": 0
+        "event_time_ms": 0,
+        "heartbeat_interval_ms": 1000
     }
 }
 timeline_cooldown_runtime = {
@@ -120,7 +121,8 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
         timeline_runtime["runtime_diag"] = {}
         timeline_runtime["progress"] = {
             "current_idx": -1,
-            "event_time_ms": _now_ms()
+            "event_time_ms": _now_ms(),
+            "heartbeat_interval_ms": 1000
         }
         timeline_cooldown_runtime["next_ready_at"] = {}
         timeline_cooldown_runtime["landed_index_by_group"] = {}
@@ -138,8 +140,28 @@ def append_timeline_runtime_event(event_payload):
         timeline_runtime["last_event"] = event_payload
         timeline_runtime["progress"] = {
             "current_idx": current_idx,
-            "event_time_ms": event_time_ms
+            "event_time_ms": event_time_ms,
+            "heartbeat_interval_ms": 1000
         }
+
+
+def update_timeline_runtime_progress_prediction(next_expected_idx=None, next_expected_at_ms=None, hint_slow_segment=False):
+    with runtime_lock:
+        progress = dict(timeline_runtime.get("progress", {}))
+        progress["heartbeat_interval_ms"] = 1000
+        if next_expected_idx is None:
+            progress.pop("next_expected_idx", None)
+        else:
+            progress["next_expected_idx"] = int(next_expected_idx)
+        if next_expected_at_ms is None:
+            progress.pop("next_expected_at_ms", None)
+        else:
+            progress["next_expected_at_ms"] = int(next_expected_at_ms)
+        if hint_slow_segment:
+            progress["hint_slow_segment"] = True
+        else:
+            progress.pop("hint_slow_segment", None)
+        timeline_runtime["progress"] = progress
 
 
 def patch_timeline_runtime(**kwargs):
@@ -393,52 +415,96 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 
     with run_lock:
         start = time.monotonic()
+        start_wall_ms = _now_ms()
         timeline_shift = 0.0
         emitted_round_trace_groups = set()
+        try:
+            for i, ev in enumerate(normalized):
+                resumed = _wait_if_paused()
+                if resumed:
+                    patch_timeline_runtime(state="running")
+                if stop_event.is_set():
+                    raise InterruptedError("執行已被停止")
 
-        for i, ev in enumerate(normalized):
-            resumed = _wait_if_paused()
-            if resumed:
-                patch_timeline_runtime(state="running")
-            if stop_event.is_set():
-                raise InterruptedError("執行已被停止")
+                source_target = ev["at"]
+                target = max(0.0, source_target - timeline_shift)
+                update_timeline_runtime_progress_prediction(
+                    next_expected_idx=int(ev.get("original_index", i)),
+                    next_expected_at_ms=start_wall_ms + int(round(target * 1000.0)),
+                    hint_slow_segment=(target >= 10.0)
+                )
+                now = time.monotonic() - start
+                wait_time = target - now
+                skip_by_cooldown = False
 
-            source_target = ev["at"]
-            target = max(0.0, source_target - timeline_shift)
-            now = time.monotonic() - start
-            wait_time = target - now
-            skip_by_cooldown = False
+                buff_group = ev.get("buff_group", "")
+                round_trace = ev.get("runtime_round_trace")
+                if (
+                    buff_group
+                    and buff_group not in emitted_round_trace_groups
+                    and isinstance(round_trace, dict)
+                ):
+                    append_timeline_round_trace(round_trace)
+                    emitted_round_trace_groups.add(buff_group)
+                if buff_runtime is not None and buff_group in group_config:
+                    now_abs = time.monotonic()
+                    next_ready = buff_runtime["next_ready_at"].get(buff_group)
+                    if next_ready is not None and now_abs < next_ready:
+                        skip_by_cooldown = True
+                    else:
+                        cfg = group_config[buff_group]
+                        cd = max(0.0, cfg["cycle_sec"])
+                        buff_runtime["next_ready_at"][buff_group] = now_abs + cd
+                        landed_index = ev.get("runtime_landed_index")
+                        with runtime_lock:
+                            timeline_cooldown_runtime["next_ready_at"][buff_group] = now_abs + cd
+                            timeline_cooldown_runtime["landed_index_by_group"][buff_group] = landed_index
 
-            buff_group = ev.get("buff_group", "")
-            round_trace = ev.get("runtime_round_trace")
-            if (
-                buff_group
-                and buff_group not in emitted_round_trace_groups
-                and isinstance(round_trace, dict)
-            ):
-                append_timeline_round_trace(round_trace)
-                emitted_round_trace_groups.add(buff_group)
-            if buff_runtime is not None and buff_group in group_config:
-                now_abs = time.monotonic()
-                next_ready = buff_runtime["next_ready_at"].get(buff_group)
-                if next_ready is not None and now_abs < next_ready:
-                    skip_by_cooldown = True
-                else:
-                    cfg = group_config[buff_group]
-                    cd = max(0.0, cfg["cycle_sec"])
-                    buff_runtime["next_ready_at"][buff_group] = now_abs + cd
-                    landed_index = ev.get("runtime_landed_index")
-                    with runtime_lock:
-                        timeline_cooldown_runtime["next_ready_at"][buff_group] = now_abs + cd
-                        timeline_cooldown_runtime["landed_index_by_group"][buff_group] = landed_index
+                if skip_by_cooldown and buff_skip_mode != BUFF_SKIP_MODE_NONE:
+                    compressed_sec = 0.0
+                    if buff_skip_mode == BUFF_SKIP_MODE_PASS:
+                        compressed_sec = max(0.0, wait_time)
+                        timeline_shift += compressed_sec
+                    elif buff_skip_mode == BUFF_SKIP_MODE_WALK and wait_time > 0:
+                        safe_sleep(wait_time)
+                    results.append({
+                        "index": i,
+                        "original_index": ev["original_index"],
+                        "type": ev["type"],
+                        "button": ev["button"],
+                        "source_target_at": round(source_target, 4),
+                        "target_at": round(target, 4),
+                        "actual_at": round(time.monotonic() - start, 4),
+                        "status": "skipped_by_cooldown",
+                        "buff_skip_mode": buff_skip_mode,
+                        "compressed_sec": round(compressed_sec, 4)
+                    })
+                    append_timeline_runtime_event({
+                        "index": i,
+                        "original_index": ev["original_index"],
+                        "type": ev["type"],
+                        "button": ev["button"],
+                        "status": "skipped_by_cooldown",
+                        "source_target_at": round(source_target, 4),
+                        "target_at": round(target, 4),
+                        "actual_at": round(time.monotonic() - start, 4),
+                        "buff_skip_mode": buff_skip_mode,
+                        "buff_group": buff_group,
+                        "runtime_landed_index": ev.get("runtime_landed_index"),
+                        "runtime_anchor_index": ev.get("runtime_anchor_index"),
+                        "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
+                    })
+                    continue
 
-            if skip_by_cooldown and buff_skip_mode != BUFF_SKIP_MODE_NONE:
-                compressed_sec = 0.0
-                if buff_skip_mode == BUFF_SKIP_MODE_PASS:
-                    compressed_sec = max(0.0, wait_time)
-                    timeline_shift += compressed_sec
-                elif buff_skip_mode == BUFF_SKIP_MODE_WALK and wait_time > 0:
+                if wait_time > 0:
                     safe_sleep(wait_time)
+
+                if ev["type"] == "press":
+                    press_only(ev["button"])
+                else:
+                    release_only(ev["button"])
+
+                actual_now = time.monotonic() - start
                 results.append({
                     "index": i,
                     "original_index": ev["original_index"],
@@ -446,61 +512,29 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     "button": ev["button"],
                     "source_target_at": round(source_target, 4),
                     "target_at": round(target, 4),
-                    "actual_at": round(time.monotonic() - start, 4),
-                    "status": "skipped_by_cooldown",
-                    "buff_skip_mode": buff_skip_mode,
-                    "compressed_sec": round(compressed_sec, 4)
+                    "actual_at": round(actual_now, 4),
+                    "status": "ok"
                 })
                 append_timeline_runtime_event({
                     "index": i,
                     "original_index": ev["original_index"],
                     "type": ev["type"],
                     "button": ev["button"],
-                    "status": "skipped_by_cooldown",
+                    "status": "ok",
                     "source_target_at": round(source_target, 4),
                     "target_at": round(target, 4),
-                    "actual_at": round(time.monotonic() - start, 4),
-                    "buff_skip_mode": buff_skip_mode,
+                    "actual_at": round(actual_now, 4),
                     "buff_group": buff_group,
                     "runtime_landed_index": ev.get("runtime_landed_index"),
                     "runtime_anchor_index": ev.get("runtime_anchor_index"),
                     "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
                 })
-                continue
-
-            if wait_time > 0:
-                safe_sleep(wait_time)
-
-            if ev["type"] == "press":
-                press_only(ev["button"])
-            else:
-                release_only(ev["button"])
-
-            actual_now = time.monotonic() - start
-            results.append({
-                "index": i,
-                "original_index": ev["original_index"],
-                "type": ev["type"],
-                "button": ev["button"],
-                "source_target_at": round(source_target, 4),
-                "target_at": round(target, 4),
-                "actual_at": round(actual_now, 4),
-                "status": "ok"
-            })
-            append_timeline_runtime_event({
-                "index": i,
-                "original_index": ev["original_index"],
-                "type": ev["type"],
-                "button": ev["button"],
-                "status": "ok",
-                "source_target_at": round(source_target, 4),
-                "target_at": round(target, 4),
-                "actual_at": round(actual_now, 4),
-                "buff_group": buff_group,
-                "runtime_landed_index": ev.get("runtime_landed_index"),
-                "runtime_anchor_index": ev.get("runtime_anchor_index"),
-                "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
-            })
+        finally:
+            update_timeline_runtime_progress_prediction(
+                next_expected_idx=None,
+                next_expected_at_ms=None,
+                hint_slow_segment=False
+            )
 
     return results
 

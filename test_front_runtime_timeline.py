@@ -509,6 +509,51 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertFalse(app.runtime_display_frozen)
 
 
+class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
+    def _new_monitor_app(self):
+        app = App.__new__(App)
+        app.task_monitor = {
+            "phase": "watch_progress",
+            "server_task_id": "srv-1",
+            "last_state": "running",
+            "last_processed_count": 1,
+            "last_progress_at": 100.0,
+            "failed": False
+        }
+        app.timeline_runtime_info = {"progress": {}}
+        app.error_messages = []
+        app.set_frontend_error = lambda msg: app.error_messages.append(msg)
+        app._mark_task_monitor_failed = App._mark_task_monitor_failed.__get__(app, App)
+        app._monitor_task_status_progress = App._monitor_task_status_progress.__get__(app, App)
+        app.first_event_progress_watch = {}
+        return app
+
+    def test_monitor_no_false_stall_when_first_event_is_late(self):
+        app = self._new_monitor_app()
+        app.task_monitor["last_progress_at"] = 10.0
+        app.timeline_runtime_info["progress"] = {
+            "event_time_ms": 200000,
+            "next_expected_idx": 0,
+            "next_expected_at_ms": 212000
+        }
+        with mock.patch("front.time.monotonic", return_value=17.0):
+            app._monitor_task_status_progress("running", 1)
+        self.assertFalse(app.task_monitor.get("failed"))
+        self.assertEqual(len(app.error_messages), 0)
+
+    def test_monitor_no_false_stall_for_long_mid_gap(self):
+        app = self._new_monitor_app()
+        app.timeline_runtime_info["progress"] = {
+            "event_time_ms": 300000,
+            "next_expected_idx": 5,
+            "next_expected_at_ms": 314000
+        }
+        with mock.patch("front.time.monotonic", return_value=111.0):
+            app._monitor_task_status_progress("running", 1)
+        self.assertFalse(app.task_monitor.get("failed"))
+        self.assertEqual(len(app.error_messages), 0)
+
+
 class TimelineWorkflowTests(unittest.TestCase):
     def _new_workflow_app(self):
         app = App.__new__(App)

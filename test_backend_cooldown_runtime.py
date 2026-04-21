@@ -24,6 +24,20 @@ import backend
 
 
 class BackendCooldownRuntimeTests(unittest.TestCase):
+    def test_runtime_snapshot_progress_contains_prediction_fields(self):
+        backend.set_timeline_runtime("timeline", "running", events_total=2, loop_count=1, server_task_id="srv-1")
+        backend.update_timeline_runtime_progress_prediction(
+            next_expected_idx=1,
+            next_expected_at_ms=1234567890,
+            hint_slow_segment=True
+        )
+        snap = backend.get_timeline_runtime_snapshot()
+        progress = snap["progress"]
+        self.assertEqual(progress["next_expected_idx"], 1)
+        self.assertEqual(progress["next_expected_at_ms"], 1234567890)
+        self.assertTrue(progress["hint_slow_segment"])
+        self.assertGreater(progress["heartbeat_interval_ms"], 0)
+
     def test_same_group_second_event_can_be_skipped_in_same_round(self):
         runtime = {"next_ready_at": {}}
         events = [
