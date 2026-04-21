@@ -15,6 +15,7 @@ from front import (
     recalculate_runtime_events_by_index,
     allocate_randat_blocks,
     get_buff_cell_visual_state,
+    is_slot_excluded_buff_group,
     move_rows_with_ab_gap_compensation,
 )
 
@@ -309,6 +310,23 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertEqual(at_values, sorted(at_values))
         self.assertNotEqual(assignments["1"]["landed_index"], assignments["1"]["anchor_index"])
 
+    def test_allocate_randat_blocks_excludes_numeric_groups_greater_than_100(self):
+        random.seed(11)
+        events = [
+            {"type": "press", "button": "a", "at": 0.0, "buff_group": "1"},
+            {"type": "press", "button": "b", "at": 1.0, "buff_group": "101"},
+            {"type": "randat", "button": "", "at": 2.0, "buff_group": ""},
+            {"type": "press", "button": "c", "at": 3.0, "buff_group": "2"},
+            {"type": "press", "button": "d", "at": 4.0, "buff_group": "150"},
+        ]
+        _working, assignments, traces, _debug = allocate_randat_blocks(events)
+        self.assertIn("1", assignments)
+        self.assertIn("2", assignments)
+        self.assertNotIn("101", assignments)
+        self.assertNotIn("150", assignments)
+        traced_groups = {str(item.get("buffGroup", "")).strip() for item in traces}
+        self.assertEqual(traced_groups, {"1", "2"})
+
     def test_running_shows_cooldown_text_in_buff_group_column(self):
         app = self._new_app()
         app.timeline = [
@@ -356,6 +374,27 @@ class RuntimeDisplayTests(unittest.TestCase):
         tags = app.tree.item("0", "tags")
         self.assertIn("bg_candidate", tags)
         self.assertNotIn("runtime_ok_1", tags)
+
+    def test_paused_uses_runtime_working_timeline_color_when_backend_events_empty(self):
+        app = self._new_app()
+        app.timeline = [
+            {"type": "press", "button": "a", "at": 0.0, "at_jitter": 0.0, "buff_group": "1", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+            {"type": "press", "button": "b", "at": 1.0, "at_jitter": 0.0, "buff_group": "2", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+        ]
+        app.timeline_runtime_info = {"state": "paused", "events": [], "processed_count": 0}
+        app.runtime_working_timeline = [
+            {"type": "press", "button": "a", "buff_group": "1", "runtime_landed_index": 0, "runtime_anchor_index": 0, "runtime_occupies_original": 1, "runtime_self_picked": 1, "runtime_group_color": "light_yellow"},
+            {"type": "press", "button": "b", "buff_group": "2", "runtime_landed_index": 0, "runtime_anchor_index": 1, "runtime_occupies_original": 0, "runtime_self_picked": 0, "runtime_group_color": "light_blue"},
+        ]
+        app.refresh_tree()
+        self.assertIn("bg_candidate", app.tree.item("0", "tags"))
+        self.assertIn("bg_applied", app.tree.item("1", "tags"))
+
+    def test_is_slot_excluded_buff_group(self):
+        self.assertFalse(is_slot_excluded_buff_group(""))
+        self.assertFalse(is_slot_excluded_buff_group("A"))
+        self.assertFalse(is_slot_excluded_buff_group("100"))
+        self.assertTrue(is_slot_excluded_buff_group("101"))
 
     def test_randat_row_does_not_auto_show_applied_blue_when_idle(self):
         app = self._new_app()
