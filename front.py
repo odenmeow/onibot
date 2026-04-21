@@ -4116,14 +4116,13 @@ class App:
             self.show_warning("提醒", "請先從清單選一個已保存項目")
             return
 
-        if self._is_script_switch_for_load(name):
-            confirmed = self.confirm(
-                "切換腳本確認",
-                "將清空目前 SESSION undo/redo，是否繼續？"
-            )
-            if not confirmed:
-                self.set_status("已取消載入")
-                return
+        confirmed = self.confirm(
+            "載入確認",
+            "將清空目前 SESSION（含 undo/redo 與 Runtime），是否繼續？"
+        )
+        if not confirmed:
+            self.set_status("已取消載入")
+            return
 
         try:
             data = load_named_timeline(name)
@@ -4131,18 +4130,13 @@ class App:
             self.show_error("載入失敗", str(e))
             return
         target_name = data.get("name", name)
-        is_script_switch = self._is_script_switch_for_load(target_name)
-        before = self._begin_timeline_change()
 
         self.timeline = [self.normalize_event_schema(ev) for ev in data.get("events", [])]
         self.timeline_meta = self.normalize_meta(data.get("_meta", {}))
         if not self.timeline_meta.get("original_events") and self.timeline:
             self.timeline_meta["original_events"] = self.copy_events(self.timeline)
         self.current_name = target_name
-        if is_script_switch:
-            self._reset_timeline_history()
-        else:
-            self._finalize_timeline_change(before)
+        self._reset_timeline_history()
         self.current_loaded_from_saved = True
         self.config["last_selected_name"] = self.current_name
         save_config(self.config)

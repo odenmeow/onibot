@@ -889,6 +889,7 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.refresh_saved_list = lambda: None
         app.select_saved_name = lambda _name: None
         app._update_runtime_control_buttons = lambda: None
+        app.confirm = lambda *_args, **_kwargs: True
         app.set_status = lambda *_args, **_kwargs: None
         app.set_frontend_error = lambda *_args, **_kwargs: None
         app.validate_negative_group_monotonic_by_index = App.validate_negative_group_monotonic_by_index.__get__(app, App)
@@ -1028,7 +1029,6 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.load_selected_timeline = App.load_selected_timeline.__get__(app, App)
         app.normalize_meta = App.normalize_meta.__get__(app, App)
         app.new_meta = App.new_meta.__get__(app, App)
-        app._is_script_switch_for_load = lambda _name: False
         app.timeline_runtime_info = {"events": [{"idx": 1}]}
         app.runtime_round_traces = [{"anchorIdx": 1}]
         app.loop_preview_pending = True
@@ -1061,6 +1061,92 @@ class TimelineWorkflowTests(unittest.TestCase):
         self.assertEqual(refreshed["preview"], 1)
         self.assertTrue(statuses)
         self.assertIn("Runtime 已清空", statuses[-1])
+
+    def test_load_selected_timeline_same_and_diff_name_share_confirm_and_reset_flow(self):
+        for selected_name, loaded_name in (("demo", "demo"), ("legacy", "legacy")):
+            app = self._new_workflow_app()
+            app.get_selected_saved_name = lambda selected=selected_name: selected
+            app.load_selected_timeline = App.load_selected_timeline.__get__(app, App)
+            app.normalize_meta = App.normalize_meta.__get__(app, App)
+            app.new_meta = App.new_meta.__get__(app, App)
+            app.timeline = [
+                {"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+            ]
+            app.timeline_histories = {
+                app._history_key(): {
+                    "undo": [app.copy_events(app.timeline)],
+                    "redo": [app.copy_events(app.timeline)],
+                }
+            }
+
+            confirm_calls = []
+            app.confirm = lambda title, msg: (confirm_calls.append((title, msg)) or True)
+
+            loaded_event = {"type": "press", "button": "space", "at": 9.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+            with mock.patch("front.load_named_timeline", return_value={"name": loaded_name, "events": [loaded_event], "_meta": {}}), \
+                 mock.patch("front.save_config"):
+                app.load_selected_timeline()
+
+            self.assertEqual(len(confirm_calls), 1)
+            self.assertIn("SESSION", confirm_calls[0][1])
+            bucket = app.timeline_histories[app._history_key()]
+            self.assertEqual(bucket["undo"], [])
+            self.assertEqual(bucket["redo"], [])
+
+    def test_load_selected_timeline_cancel_keeps_timeline_runtime_and_history_unchanged(self):
+        app = self._new_workflow_app()
+        app.get_selected_saved_name = lambda: "legacy"
+        app.load_selected_timeline = App.load_selected_timeline.__get__(app, App)
+        app.normalize_meta = App.normalize_meta.__get__(app, App)
+        app.new_meta = App.new_meta.__get__(app, App)
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 3.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        app.timeline_runtime_info = {"events": [{"idx": 1}]}
+        app.runtime_round_traces = [{"anchorIdx": 1}]
+        app.loop_preview_pending = True
+        app.loop_preview_cached_payload = {"runtime_display_events": [{"at": 1.0}]}
+        app.loop_preview_origin_snapshot = [{"at": 1.0}]
+        app.runtime_working_timeline = [{"at": 5.0}]
+        app.runtime_display_frozen = True
+        app.runtime_manual_restore_active = True
+        app.timeline_histories = {
+            app._history_key(): {
+                "undo": [[{"at": 1.0}]],
+                "redo": [[{"at": 2.0}]],
+            }
+        }
+        statuses = []
+        app.set_status = lambda msg: statuses.append(msg)
+        app.confirm = lambda *_args, **_kwargs: False
+
+        timeline_before = [dict(ev) for ev in app.timeline]
+        runtime_info_before = {"events": [dict(item) for item in app.timeline_runtime_info["events"]]}
+        round_traces_before = [dict(item) for item in app.runtime_round_traces]
+        history_before = {
+            app._history_key(): {
+                "undo": [[dict(ev) for ev in rows] for rows in app.timeline_histories[app._history_key()]["undo"]],
+                "redo": [[dict(ev) for ev in rows] for rows in app.timeline_histories[app._history_key()]["redo"]],
+            }
+        }
+
+        with mock.patch("front.load_named_timeline") as load_mock, \
+             mock.patch("front.save_config") as save_config_mock:
+            app.load_selected_timeline()
+
+        load_mock.assert_not_called()
+        save_config_mock.assert_not_called()
+        self.assertEqual(app.timeline, timeline_before)
+        self.assertEqual(app.timeline_runtime_info, runtime_info_before)
+        self.assertEqual(app.runtime_round_traces, round_traces_before)
+        self.assertTrue(app.loop_preview_pending)
+        self.assertIsNotNone(app.loop_preview_cached_payload)
+        self.assertEqual(app.loop_preview_origin_snapshot, [{"at": 1.0}])
+        self.assertEqual(app.runtime_working_timeline, [{"at": 5.0}])
+        self.assertTrue(app.runtime_display_frozen)
+        self.assertTrue(app.runtime_manual_restore_active)
+        self.assertEqual(app.timeline_histories, history_before)
+        self.assertIn("已取消載入", statuses[-1])
 
     def test_analyze_without_new_events_only_latest_saved_shows_clear_status(self):
         app = self._new_workflow_app()
