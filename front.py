@@ -2730,6 +2730,8 @@ class App:
             "execution_round": 0,
             "participating_groups": [],
             "draws": [],
+            "previousRoundTraces": [],
+            "currentRoundTraces": [],
             "consistency": {
                 "expected_groups": 0,
                 "actual_draws": 0,
@@ -2877,12 +2879,18 @@ class App:
                 current_round = int(runtime.get("execution_round", 0) or 0)
             if current_round <= 0:
                 current_round = 1
+            current_round_traces = [
+                trace for trace in payload.get("round_traces", [])
+                if int(trace.get("execution_round", 0) or 0) == current_round
+            ]
+            payload["currentRoundTraces"] = copy.deepcopy(current_round_traces)
             previous_round = current_round - 1
             if previous_round >= 1:
                 previous_round_traces = [
                     trace for trace in payload.get("round_traces", [])
                     if int(trace.get("execution_round", 0) or 0) == previous_round
                 ]
+                payload["previousRoundTraces"] = copy.deepcopy(previous_round_traces)
                 if previous_round_traces:
                     lines.append("Previous round final positions (Round #{}):".format(previous_round))
                     ordered_previous_draws = sorted(
@@ -2911,16 +2919,9 @@ class App:
                         )
                     lines.append("-" * 84)
                 else:
-                    reason_bits = []
-                    if not traces:
-                        reason_bits.append("runtime.round_traces 為空")
-                    if not trace_meta_match:
-                        reason_bits.append("trace/prepared key mismatch")
-                    if not reason_bits:
-                        reason_bits.append("後端僅回傳目前輪次 traces 或 execution_round 標記缺失")
-                    runtime_trace_diagnostic_parts.append(
-                        "無法建立 Round #{} 摘要（{}）".format(previous_round, "；".join(reason_bits))
-                    )
+                    lines.append("Previous round final positions (Round #{}): 無資料".format(previous_round))
+                    lines.append("  hint: 目前僅收到 current round traces，屬正常狀況。")
+                    lines.append("-" * 84)
             ordered_rounds = sorted(grouped_by_execution_round.keys())
             for execution_round in ordered_rounds:
                 execution_traces = grouped_by_execution_round.get(execution_round, [])
