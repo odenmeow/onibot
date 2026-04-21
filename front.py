@@ -23,6 +23,9 @@ RUNTIME_POLL_INTERVAL_MS = 300
 CONTROL_REQUEST_TIMEOUT_SEC = 8.0
 STATUS_REQUEST_TIMEOUT_SEC = 0.45
 FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
+ACK_TIMEOUT_MS = 1500
+START_TIMEOUT_MS = 5000
+PROGRESS_STALL_MS = 3000
 ROUND_TRACE_REASON_LABELS = {
     "randat_disabled": "未啟用 randat（無可用 randat 列）",
     "fallback_no_free_slot": "無可用 idx（候選位置皆被占用）",
@@ -1024,6 +1027,35 @@ class App:
     def set_backend_error(self, message):
         self.update_error_text(self.backend_error_text, message)
 
+    def _format_backend_error(self, response):
+        if not isinstance(response, dict):
+            return "Pi 回傳錯誤"
+        message = str(response.get("message", "Pi 回傳錯誤")).strip() or "Pi 回傳錯誤"
+        code = str(response.get("code", "")).strip()
+        phase = str(response.get("phase", "")).strip()
+        server_task_id = str(response.get("server_task_id", "")).strip()
+        diag = response.get("diag", {})
+        if not isinstance(diag, dict):
+            diag = {}
+        last_state = str(diag.get("last_state", "")).strip()
+        elapsed_ms = diag.get("elapsed_ms")
+        threshold_ms = diag.get("threshold_ms")
+
+        lines = [message]
+        if code:
+            lines.append("code={}".format(code))
+        if phase:
+            lines.append("phase={}".format(phase))
+        if server_task_id:
+            lines.append("server_task_id={}".format(server_task_id))
+        if last_state:
+            lines.append("last_state={}".format(last_state))
+        if elapsed_ms is not None:
+            lines.append("elapsed_ms={}".format(elapsed_ms))
+        if threshold_ms is not None:
+            lines.append("threshold_ms={}".format(threshold_ms))
+        return "\n".join(lines)
+
     def clear_errors(self):
         self.frontend_error_main = ""
         self.last_control_error = ""
@@ -1332,7 +1364,7 @@ class App:
             self.set_connected(True)
         status = res.get("status")
         if status in ("error", "busy"):
-            self.set_backend_error(res.get("message", "Pi 回傳錯誤"))
+            self.set_backend_error(self._format_backend_error(res))
         else:
             self.set_backend_error("")
 
@@ -1452,6 +1484,7 @@ class App:
         self.front_loop_round = 0
         self.last_prepared_payload = {}
         self.first_event_progress_watch = {}
+        self.task_monitor = {}
         self.json_view_mode_var = tk.StringVar(value="preview")
 
         container = tk.Frame(root)
@@ -2239,6 +2272,10 @@ class App:
                     changed = self.update_runtime_from_status(res)
                     state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
                     self._check_first_event_progress_timeout(state)
+                    self._monitor_task_status_progress(
+                        state,
+                        self.timeline_runtime_info.get("processed_count", 0)
+                    )
                     if state == "running":
                         self.runtime_manual_restore_active = False
                         self.runtime_display_frozen = False
@@ -2248,6 +2285,7 @@ class App:
                         if self.has_pre_run_snapshot and not self.runtime_manual_restore_active:
                             self._restore_pre_run_snapshot_after_runtime()
                         self.runtime_display_frozen = False
+                        self._reset_task_monitor()
                     else:
                         self.runtime_display_frozen = False
                     if changed:
@@ -2270,9 +2308,127 @@ class App:
         self.runtime_latest_index = None
         self.last_runtime_signature = ""
         self._reset_first_event_progress_watch()
+        self._reset_task_monitor()
 
     def _reset_first_event_progress_watch(self):
         self.first_event_progress_watch = {}
+
+    def _reset_task_monitor(self):
+        self.task_monitor = {}
+
+    def _arm_task_monitor_wait_ack(self, client_task_id):
+        self.task_monitor = {
+            "phase": "wait_ack",
+            "client_task_id": str(client_task_id or "").strip(),
+            "server_task_id": "",
+            "phase_started_at": float(time.monotonic()),
+            "last_state": "submitted",
+            "last_processed_count": 0,
+            "last_progress_at": None,
+            "failed": False
+        }
+
+    def _mark_task_monitor_failed(self, phase, elapsed_ms, threshold_ms, last_state=""):
+        monitor_obj = getattr(self, "task_monitor", {})
+        monitor = monitor_obj if isinstance(monitor_obj, dict) else {}
+        server_task_id = str(monitor.get("server_task_id", "")).strip()
+        self.task_monitor = {
+            "phase": str(phase or "").strip().lower(),
+            "client_task_id": str(monitor.get("client_task_id", "")).strip(),
+            "server_task_id": server_task_id,
+            "phase_started_at": monitor.get("phase_started_at"),
+            "last_state": str(last_state or monitor.get("last_state", "")).strip(),
+            "last_processed_count": int(monitor.get("last_processed_count", 0) or 0),
+            "last_progress_at": monitor.get("last_progress_at"),
+            "failed": True
+        }
+        message = (
+            "任務監控逾時（{}）\nserver_task_id={}\nlast_state={}\nelapsed_ms={}\nthreshold_ms={}".format(
+                str(phase or "").upper(),
+                server_task_id or "unknown",
+                self.task_monitor["last_state"] or "unknown",
+                int(max(0, elapsed_ms)),
+                int(max(0, threshold_ms))
+            )
+        )
+        self.set_frontend_error(message)
+
+    def _monitor_after_ack(self, ack_response):
+        monitor_obj = getattr(self, "task_monitor", {})
+        monitor = monitor_obj if isinstance(monitor_obj, dict) else {}
+        if not monitor:
+            return
+        server_task_id = str(ack_response.get("server_task_id", "")).strip() if isinstance(ack_response, dict) else ""
+        now = float(time.monotonic())
+        monitor["phase"] = "wait_running"
+        monitor["server_task_id"] = server_task_id
+        monitor["phase_started_at"] = now
+        monitor["last_state"] = "accepted"
+        monitor["last_processed_count"] = 0
+        monitor["last_progress_at"] = None
+        monitor["failed"] = False
+        self.task_monitor = monitor
+
+    def _monitor_task_status_progress(self, runtime_state, processed_count):
+        monitor_obj = getattr(self, "task_monitor", {})
+        monitor = monitor_obj if isinstance(monitor_obj, dict) else {}
+        if not monitor or monitor.get("failed"):
+            return
+        phase = str(monitor.get("phase", "")).strip().lower()
+        if phase not in {"wait_running", "watch_progress"}:
+            return
+
+        now = float(time.monotonic())
+        state = str(runtime_state or "").strip().lower()
+        if state:
+            monitor["last_state"] = state
+
+        if phase == "wait_running":
+            started = float(monitor.get("phase_started_at", now))
+            if state == "running":
+                monitor["phase"] = "watch_progress"
+                monitor["phase_started_at"] = now
+                monitor["last_progress_at"] = now
+                monitor["last_processed_count"] = int(max(0, processed_count))
+                self.task_monitor = monitor
+                return
+            elapsed_ms = int((now - started) * 1000.0)
+            if elapsed_ms >= START_TIMEOUT_MS:
+                self._mark_task_monitor_failed(
+                    phase="START_TIMEOUT",
+                    elapsed_ms=elapsed_ms,
+                    threshold_ms=START_TIMEOUT_MS,
+                    last_state=state or "accepted"
+                )
+                return
+            self.task_monitor = monitor
+            return
+
+        if state in {"done", "stopped", "idle", "error"}:
+            self._reset_task_monitor()
+            return
+
+        last_progress_at = monitor.get("last_progress_at")
+        if last_progress_at is None:
+            last_progress_at = now
+        last_processed = int(monitor.get("last_processed_count", 0) or 0)
+        current_processed = int(max(0, processed_count))
+        if current_processed > last_processed:
+            monitor["last_processed_count"] = current_processed
+            monitor["last_progress_at"] = now
+            self.task_monitor = monitor
+            return
+
+        stall_ms = int((now - float(last_progress_at)) * 1000.0)
+        if stall_ms >= PROGRESS_STALL_MS:
+            self._mark_task_monitor_failed(
+                phase="PROGRESS_STALL",
+                elapsed_ms=stall_ms,
+                threshold_ms=PROGRESS_STALL_MS,
+                last_state=state or "running"
+            )
+            return
+        self.task_monitor = monitor
 
     def _extract_first_event_timing(self, prepared_events):
         first_event_at = None
@@ -2362,7 +2518,8 @@ class App:
         }
 
     def _check_first_event_progress_timeout(self, runtime_state):
-        watch = self.first_event_progress_watch if isinstance(self.first_event_progress_watch, dict) else {}
+        watch_obj = getattr(self, "first_event_progress_watch", {})
+        watch = watch_obj if isinstance(watch_obj, dict) else {}
         if not watch:
             return
 
@@ -3244,6 +3401,7 @@ class App:
 
         backend_events = self._sanitize_events_for_backend(prepared_events)
         payload = self._build_start_task_payload(backend_events)
+        self._arm_task_monitor_wait_ack(payload.get("client_task_id"))
 
         display_name = self.current_name if self.current_name else "未命名資料"
 
@@ -3253,7 +3411,11 @@ class App:
             self.refresh_tree()
             def do_send(delay_meta):
                 try:
-                    res = self.request_pi(payload, write_response=False)
+                    res = self.request_pi(
+                        payload,
+                        write_response=False,
+                        timeout=max(0.2, ACK_TIMEOUT_MS / 1000.0)
+                    )
                     sent_at_monotonic = delay_meta["actual_send_time_monotonic"]
                     first_event_timing = self._extract_first_event_timing(backend_events)
                     self.write_text({
@@ -3270,25 +3432,38 @@ class App:
                     })
 
                     if res.get("status") == "stopped":
+                        self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
                         self._restore_pre_run_snapshot_after_runtime()
                         self.set_status("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
                     elif self._is_contract_version_mismatch(res):
+                        self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
                         self._restore_pre_run_snapshot_after_runtime()
                         self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
                     elif res.get("status") in ("error", "busy"):
+                        self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
                         self._restore_pre_run_snapshot_after_runtime()
                         self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
                     else:
+                        self._monitor_after_ack(res)
                         self._arm_first_event_progress_watch(sent_at_monotonic, delay_meta["send_delay_sec"], first_event_timing)
                         suffix = ""
                         if resolve_note:
                             suffix = "（{}）".format(resolve_note)
                         self.set_status("已送出：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
                 except Exception as e:
-                    self.set_frontend_error(str(e))
+                    if isinstance(e, TimeoutError):
+                        self._mark_task_monitor_failed(
+                            phase="ACK_TIMEOUT",
+                            elapsed_ms=ACK_TIMEOUT_MS,
+                            threshold_ms=ACK_TIMEOUT_MS,
+                            last_state="submitted"
+                        )
+                    else:
+                        self._reset_task_monitor()
+                        self.set_frontend_error(str(e))
                     self._restore_pre_run_snapshot_after_runtime()
                     self.show_error("傳送失敗", str(e))
 
@@ -3340,6 +3515,7 @@ class App:
 
         backend_events = self._sanitize_events_for_backend(prepared_events)
         payload = self._build_start_task_payload(backend_events)
+        self._arm_task_monitor_wait_ack(payload.get("client_task_id"))
 
         try:
             self.set_frontend_error("")
@@ -3349,7 +3525,11 @@ class App:
                 if not self.front_loop_enabled:
                     return
                 try:
-                    res = self.request_pi(payload, write_response=False)
+                    res = self.request_pi(
+                        payload,
+                        write_response=False,
+                        timeout=max(0.2, ACK_TIMEOUT_MS / 1000.0)
+                    )
                     sent_at_monotonic = delay_meta["actual_send_time_monotonic"]
                     first_event_timing = self._extract_first_event_timing(backend_events)
                     self.write_text({
@@ -3365,12 +3545,14 @@ class App:
                         "response": res
                     })
                     if self._is_contract_version_mismatch(res):
+                        self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
                         self._restore_pre_run_snapshot_after_runtime()
                         self.front_loop_enabled = False
                         self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
                         return
                     if res.get("status") in ("error", "busy"):
+                        self._reset_task_monitor()
                         self._reset_first_event_progress_watch()
                         self._restore_pre_run_snapshot_after_runtime()
                         self.front_loop_after_id = self.root.after(
@@ -3379,6 +3561,7 @@ class App:
                         )
                         return
                     self._arm_first_event_progress_watch(sent_at_monotonic, delay_meta["send_delay_sec"], first_event_timing)
+                    self._monitor_after_ack(res)
 
                     self.front_loop_round += 1
                     suffix = ""
@@ -3389,8 +3572,17 @@ class App:
                     )
                     self._poll_front_loop_round_done(display_name)
                 except Exception as e:
+                    if isinstance(e, TimeoutError):
+                        self._mark_task_monitor_failed(
+                            phase="ACK_TIMEOUT",
+                            elapsed_ms=ACK_TIMEOUT_MS,
+                            threshold_ms=ACK_TIMEOUT_MS,
+                            last_state="submitted"
+                        )
+                    else:
+                        self._reset_task_monitor()
+                        self.set_frontend_error(str(e))
                     self.front_loop_enabled = False
-                    self.set_frontend_error(str(e))
                     self._restore_pre_run_snapshot_after_runtime()
                     self.show_error("重複傳送失敗", str(e))
 
