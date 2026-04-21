@@ -1446,6 +1446,7 @@ class App:
     def clear_errors(self):
         self.frontend_error_main = ""
         self.frontend_monitor_alert = ""
+        self.runtime_trace_diagnostic = ""
         self.last_control_error = ""
         self.last_status_error = ""
         self.set_frontend_error("")
@@ -1457,6 +1458,9 @@ class App:
             lines.append(self.frontend_error_main)
         if self.frontend_monitor_alert:
             lines.append("監控告警（可恢復）：{}".format(self.frontend_monitor_alert))
+        runtime_trace_diag = str(getattr(self, "runtime_trace_diagnostic", "") or "").strip()
+        if runtime_trace_diag:
+            lines.append("Runtime trace 診斷：{}".format(runtime_trace_diag))
         if self.last_control_error:
             lines.append("最後 control 錯誤：{}".format(self.last_control_error))
         if self.last_status_error:
@@ -1941,6 +1945,7 @@ class App:
         self.status_conn_file = None
         self.frontend_error_main = ""
         self.frontend_monitor_alert = ""
+        self.runtime_trace_diagnostic = ""
         self.last_control_error = ""
         self.last_status_error = ""
         self.timeline_runtime_info = {"events": []}
@@ -2657,13 +2662,18 @@ class App:
     def _consistency_key_from_runtime_status(self, runtime, traces=None):
         runtime_obj = runtime if isinstance(runtime, dict) else {}
         trace_list = traces if isinstance(traces, list) else []
-        execution_round = int(runtime_obj.get("execution_round", 0) or 0)
+        execution_round = int(
+            runtime_obj.get("execution_round", runtime_obj.get("executionRound", 0)) or 0
+        )
         if execution_round <= 0:
             for item in trace_list:
                 if not isinstance(item, dict):
                     continue
                 try:
-                    execution_round = max(execution_round, int(item.get("execution_round", 0) or 0))
+                    execution_round = max(
+                        execution_round,
+                        int(item.get("execution_round", item.get("executionRound", 0)) or 0)
+                    )
                 except Exception:
                     continue
         return self._build_runtime_consistency_key(
@@ -2784,8 +2794,8 @@ class App:
         for trace in traces:
             if not isinstance(trace, dict):
                 continue
-            draw_order = trace.get("draw_order", trace.get("round"))
-            execution_round_raw = trace.get("execution_round")
+            draw_order = trace.get("draw_order", trace.get("drawOrder", trace.get("round")))
+            execution_round_raw = trace.get("execution_round", trace.get("executionRound"))
             if execution_round_raw is None:
                 execution_round = fallback_execution_round
             else:
@@ -2853,7 +2863,59 @@ class App:
         if payload["rslot_count"] == 0:
             lines.append("未啟用 randat 抽籤")
             lines.append("-" * 84)
+        runtime_trace_diagnostic_parts = []
         if grouped_by_execution_round:
+            current_round = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(payload.get("execution_round", 0) or 0)
+            if current_round <= 0:
+                current_round = int(payload.get("execution_round", 0) or 0)
+            if current_round <= 0:
+                current_round = int(runtime.get("execution_round", 0) or 0)
+            if current_round <= 0:
+                current_round = 1
+            previous_round = current_round - 1
+            if previous_round >= 1:
+                previous_round_traces = [
+                    trace for trace in payload.get("round_traces", [])
+                    if int(trace.get("execution_round", 0) or 0) == previous_round
+                ]
+                if previous_round_traces:
+                    lines.append("Previous round final positions (Round #{}):".format(previous_round))
+                    ordered_previous_draws = sorted(
+                        previous_round_traces,
+                        key=lambda item: int(item.get("draw_order", 999999) or 999999)
+                    )
+                    for trace in ordered_previous_draws:
+                        group_label = str(trace.get("group_label") or trace.get("group_id") or "?")
+                        placement = trace.get("placement", {})
+                        if not isinstance(placement, dict):
+                            placement = {}
+                        picked_a = placement.get("picked_slot_a_idx", trace.get("picked_slot", -1))
+                        base_b = placement.get("base_b_idx_before_offset", -1)
+                        final_range = placement.get("final_b_range", [])
+                        if isinstance(final_range, list) and len(final_range) >= 2:
+                            final_b_text = "{}~{}".format(final_range[0], final_range[1])
+                        else:
+                            final_b_text = str(placement.get("final_b_idx_after_offset", -1))
+                        lines.append(
+                            "  {}: A{} -> base B{} -> final B{}".format(
+                                group_label,
+                                picked_a,
+                                base_b,
+                                final_b_text
+                            )
+                        )
+                    lines.append("-" * 84)
+                else:
+                    reason_bits = []
+                    if not traces:
+                        reason_bits.append("runtime.round_traces 為空")
+                    if not trace_meta_match:
+                        reason_bits.append("trace/prepared key mismatch")
+                    if not reason_bits:
+                        reason_bits.append("後端僅回傳目前輪次 traces 或 execution_round 標記缺失")
+                    runtime_trace_diagnostic_parts.append(
+                        "無法建立 Round #{} 摘要（{}）".format(previous_round, "；".join(reason_bits))
+                    )
             ordered_rounds = sorted(grouped_by_execution_round.keys())
             for execution_round in ordered_rounds:
                 execution_traces = grouped_by_execution_round.get(execution_round, [])
@@ -2898,7 +2960,7 @@ class App:
                     and int(prepared_consistency_key.get("execution_round", 0) or 0) in {0, int(execution_round)}
                 )
                 if show_final_positions:
-                    lines.append("Final positions:")
+                    lines.append("Current round final positions:")
                     for group_id in payload.get("apply_order", []):
                         info = payload["group_final_positions"].get(str(group_id), {})
                         if not isinstance(info, dict):
@@ -2921,6 +2983,17 @@ class App:
                     warning_lines.append("⚠ Draw mismatch detected (possible missing group draw).")
                     warning_lines.append("⚠ expected_groups={} but actual_draws={}".format(expected_groups, actual_draws))
                 lines.append("-" * 84)
+            if runtime_trace_diagnostic_parts:
+                lines.append("Trace diagnosis: {}".format(" | ".join(runtime_trace_diagnostic_parts)))
+        status_diag = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
+        if status_diag:
+            runtime_trace_diagnostic_parts.append(status_diag)
+        self.runtime_trace_diagnostic = " | ".join(runtime_trace_diagnostic_parts).strip()
+        if hasattr(self, "_render_frontend_error"):
+            try:
+                self._render_frontend_error()
+            except Exception:
+                pass
         mapper_snapshot = {
             "runtime_type_note": "table_b_preview[*].runtime_type",
             "linker_to_mix_slot_show": payload.get("linker_to_mix_slot_show", {}),
@@ -3180,6 +3253,7 @@ class App:
         if not preserve_round_traces:
             self.runtime_round_traces = []
             self.runtime_trace_status_note = ""
+            self.runtime_trace_diagnostic = ""
             self.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
         self.runtime_recent_ok_indices = []
         self.runtime_recent_skipped_indices = []
