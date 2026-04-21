@@ -1947,6 +1947,8 @@ class App:
         self.timeline_runtime_by_index = {}
         self.runtime_round_traces = []
         self.runtime_trace_status_note = ""
+        self.runtime_trace_mismatch_diag = ""
+        self.runtime_cached_prepared_meta_snapshot = {}
         self.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
         self.runtime_recent_ok_indices = []
         self.runtime_recent_skipped_indices = []
@@ -2694,9 +2696,17 @@ class App:
                 right_num = int(right_value or 0)
             except Exception:
                 right_num = 0
-            if left_num > 0 and right_num > 0 and left_num != right_num:
-                return False
+                if left_num > 0 and right_num > 0 and left_num != right_num:
+                    return False
         return True
+
+    def _mask_runtime_task_id(self, task_id):
+        raw = str(task_id or "").strip()
+        if not raw:
+            return "(empty)"
+        if len(raw) <= 8:
+            return raw
+        return "{}...{}".format(raw[:4], raw[-3:])
 
     def render_runtime_analysis(self, force=False):
         mode_var = getattr(self, "json_view_mode_var", None)
@@ -2754,6 +2764,9 @@ class App:
         payload["consistency"]["trace_key"] = copy.deepcopy(trace_consistency_key)
         payload["consistency"]["prepared_key"] = copy.deepcopy(prepared_consistency_key)
         payload["consistency"]["trace_meta_match"] = bool(trace_meta_match)
+        cached_meta_snapshot = getattr(self, "runtime_cached_prepared_meta_snapshot", {})
+        if not isinstance(cached_meta_snapshot, dict):
+            cached_meta_snapshot = {}
 
         if isinstance(prepared_runtime_meta, dict) and (not traces or trace_meta_match):
             payload["table_b_preview"] = copy.deepcopy(prepared_runtime_meta.get("table_b_preview", []))
@@ -2770,9 +2783,14 @@ class App:
             payload["at_rebase"] = copy.deepcopy(prepared_runtime_meta.get("at_rebase", {}))
         elif isinstance(prepared_runtime_meta, dict) and traces and not trace_meta_match:
             warning_lines.append("⚠ Runtime traces 與 prepared runtime_meta key 不一致，已僅顯示 traces。")
+        if cached_meta_snapshot:
+            payload["cached_prepared_runtime_meta_snapshot"] = copy.deepcopy(cached_meta_snapshot)
         status_note = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
+        mismatch_diag = str(getattr(self, "runtime_trace_mismatch_diag", "") or "").strip()
         if status_note:
             lines.append("狀態：{}".format(status_note))
+            if mismatch_diag:
+                lines.append("診斷：{}".format(mismatch_diag))
             lines.append("-" * 84)
         grouped_by_execution_round = {}
         participating_groups = []
@@ -2898,6 +2916,7 @@ class App:
             for execution_round in ordered_rounds:
                 execution_traces = grouped_by_execution_round.get(execution_round, [])
                 total_groups = len(execution_traces)
+                lines.append("術語：A-slot=抽中的 A 表 idx；base B=由 b_to_a_mapper 反查對應（未套 offset）；final B=套用 offset 後的 B 範圍。")
                 lines.append("Execution Round #{}（送出輪次，groups={}）".format(execution_round, total_groups))
                 ordered_draws = sorted(
                     execution_traces,
@@ -3055,12 +3074,30 @@ class App:
                 "server_task_id": server_task_id
             }
             self.runtime_trace_status_note = ""
+            self.runtime_trace_mismatch_diag = ""
+            self.runtime_cached_prepared_meta_snapshot = {}
         elif backend_round_traces and rejection_reasons:
             if isinstance(self.runtime_round_traces, list) and self.runtime_round_traces:
                 round_traces = list(self.runtime_round_traces)
             self.runtime_trace_status_note = "⚠ 已拒收後端舊 traces（{}）".format(", ".join(rejection_reasons))
+            if "server_task_id mismatch" in rejection_reasons:
+                self.runtime_trace_mismatch_diag = "prepared server_task_id={} / backend server_task_id={}".format(
+                    self._mask_runtime_task_id(prepared_task_id),
+                    self._mask_runtime_task_id(server_task_id)
+                )
+                self.runtime_cached_prepared_meta_snapshot = {
+                    "source": "cached prepared meta (非本次後端回報)",
+                    "linker_to_mix_slot_show": copy.deepcopy(prepared_runtime_meta.get("linker_to_mix_slot_show", {})) if isinstance(prepared_runtime_meta, dict) else {},
+                    "b_to_a_mapper": copy.deepcopy(prepared_runtime_meta.get("b_to_a_mapper", {})) if isinstance(prepared_runtime_meta, dict) else {},
+                    "at_rebase": copy.deepcopy(prepared_runtime_meta.get("at_rebase", {})) if isinstance(prepared_runtime_meta, dict) else {}
+                }
+            else:
+                self.runtime_trace_mismatch_diag = ""
+                self.runtime_cached_prepared_meta_snapshot = {}
         elif isinstance(self.runtime_round_traces, list) and self.runtime_round_traces:
             round_traces = list(self.runtime_round_traces)
+            self.runtime_trace_mismatch_diag = ""
+            self.runtime_cached_prepared_meta_snapshot = {}
         runtime_state = str(runtime.get("state", "")).strip().lower()
         front_round_state = str(getattr(self, "front_round_state", "")).strip().lower()
         if (
