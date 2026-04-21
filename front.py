@@ -2673,16 +2673,42 @@ class App:
         self.set_status("已保存 Pi IP：{}，送出延遲 {} 秒".format(ip, delay))
         self.set_connected(False, "設定已更新，請重新測試連線")
 
-    def apply_send_delay_if_needed(self):
-        delay = self.parse_send_delay_sec()
+    def apply_send_delay_if_needed(self, on_ready, delay_override=None):
+        delay = float(delay_override) if delay_override is not None else self.parse_send_delay_sec()
         self.config["send_delay_sec"] = delay
         save_config(self.config)
+
+        now_monotonic = time.monotonic()
+        scheduled_send_time_monotonic = now_monotonic + max(0.0, delay)
         if delay <= 0:
-            return 0.0
+            actual_send_time_monotonic = now_monotonic
+            send_error_ms = (actual_send_time_monotonic - scheduled_send_time_monotonic) * 1000.0
+            on_ready({
+                "send_delay_sec": 0.0,
+                "scheduled_send_time_monotonic": scheduled_send_time_monotonic,
+                "actual_send_time_monotonic": actual_send_time_monotonic,
+                "send_error_ms": send_error_ms
+            })
+            return
+
         self.set_status("延遲 {} 秒後送出...".format(delay))
-        self.root.update_idletasks()
-        time.sleep(delay)
-        return delay
+
+        def poll_delay_ready():
+            now = time.monotonic()
+            if now >= scheduled_send_time_monotonic:
+                actual_send_time_monotonic = now
+                send_error_ms = (actual_send_time_monotonic - scheduled_send_time_monotonic) * 1000.0
+                on_ready({
+                    "send_delay_sec": delay,
+                    "scheduled_send_time_monotonic": scheduled_send_time_monotonic,
+                    "actual_send_time_monotonic": actual_send_time_monotonic,
+                    "send_error_ms": send_error_ms
+                })
+                return
+            remaining_ms = int(max(10.0, min(50.0, (scheduled_send_time_monotonic - now) * 1000.0)))
+            self.root.after(remaining_ms, poll_delay_ready)
+
+        self.root.after(10, poll_delay_ready)
 
     def auto_connect(self):
         self.ping_pi(show_popup=False)
@@ -3225,38 +3251,48 @@ class App:
             self.set_frontend_error("")
             self.clear_runtime_highlight()
             self.refresh_tree()
-            delay = self.apply_send_delay_if_needed()
-            res = self.request_pi(payload, write_response=False)
-            sent_at_monotonic = time.monotonic()
-            first_event_timing = self._extract_first_event_timing(backend_events)
-            self.write_text({
-                "sending_name": display_name,
-                "pi_host": self.config["pi_host"],
-                "send_delay_sec": delay,
-                "sent_at_monotonic": sent_at_monotonic,
-                "first_event_at": first_event_timing["first_event_at"] if first_event_timing else None,
-                "request": payload,
-                "response": res
-            })
+            def do_send(delay_meta):
+                try:
+                    res = self.request_pi(payload, write_response=False)
+                    sent_at_monotonic = delay_meta["actual_send_time_monotonic"]
+                    first_event_timing = self._extract_first_event_timing(backend_events)
+                    self.write_text({
+                        "sending_name": display_name,
+                        "pi_host": self.config["pi_host"],
+                        "send_delay_sec": delay_meta["send_delay_sec"],
+                        "scheduled_send_time_monotonic": delay_meta["scheduled_send_time_monotonic"],
+                        "actual_send_time_monotonic": delay_meta["actual_send_time_monotonic"],
+                        "send_error_ms": delay_meta["send_error_ms"],
+                        "sent_at_monotonic": sent_at_monotonic,
+                        "first_event_at": first_event_timing["first_event_at"] if first_event_timing else None,
+                        "request": payload,
+                        "response": res
+                    })
 
-            if res.get("status") == "stopped":
-                self._reset_first_event_progress_watch()
-                self._restore_pre_run_snapshot_after_runtime()
-                self.set_status("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
-            elif self._is_contract_version_mismatch(res):
-                self._reset_first_event_progress_watch()
-                self._restore_pre_run_snapshot_after_runtime()
-                self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
-            elif res.get("status") in ("error", "busy"):
-                self._reset_first_event_progress_watch()
-                self._restore_pre_run_snapshot_after_runtime()
-                self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
-            else:
-                self._arm_first_event_progress_watch(sent_at_monotonic, delay, first_event_timing)
-                suffix = ""
-                if resolve_note:
-                    suffix = "（{}）".format(resolve_note)
-                self.set_status("已送出：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
+                    if res.get("status") == "stopped":
+                        self._reset_first_event_progress_watch()
+                        self._restore_pre_run_snapshot_after_runtime()
+                        self.set_status("Pi 已停止執行：{} -> {}".format(display_name, self.config["pi_host"]))
+                    elif self._is_contract_version_mismatch(res):
+                        self._reset_first_event_progress_watch()
+                        self._restore_pre_run_snapshot_after_runtime()
+                        self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
+                    elif res.get("status") in ("error", "busy"):
+                        self._reset_first_event_progress_watch()
+                        self._restore_pre_run_snapshot_after_runtime()
+                        self.set_status("送出失敗：{} -> {}".format(display_name, self.config["pi_host"]))
+                    else:
+                        self._arm_first_event_progress_watch(sent_at_monotonic, delay_meta["send_delay_sec"], first_event_timing)
+                        suffix = ""
+                        if resolve_note:
+                            suffix = "（{}）".format(resolve_note)
+                        self.set_status("已送出：{} -> {}{}".format(display_name, self.config["pi_host"], suffix))
+                except Exception as e:
+                    self.set_frontend_error(str(e))
+                    self._restore_pre_run_snapshot_after_runtime()
+                    self.show_error("傳送失敗", str(e))
+
+            self.apply_send_delay_if_needed(do_send)
         except Exception as e:
             self.set_frontend_error(str(e))
             self._restore_pre_run_snapshot_after_runtime()
@@ -3309,46 +3345,57 @@ class App:
             self.set_frontend_error("")
             self.clear_runtime_highlight()
             self.refresh_tree()
-            if self.front_loop_round == 0:
-                delay = self.apply_send_delay_if_needed()
-            else:
-                delay = 0.0
-            res = self.request_pi(payload, write_response=False)
-            sent_at_monotonic = time.monotonic()
-            first_event_timing = self._extract_first_event_timing(backend_events)
-            self.write_text({
-                "sending_name": display_name,
-                "pi_host": self.config["pi_host"],
-                "send_delay_sec": delay,
-                "sent_at_monotonic": sent_at_monotonic,
-                "first_event_at": first_event_timing["first_event_at"] if first_event_timing else None,
-                "request": payload,
-                "response": res
-            })
-            if self._is_contract_version_mismatch(res):
-                self._reset_first_event_progress_watch()
-                self._restore_pre_run_snapshot_after_runtime()
-                self.front_loop_enabled = False
-                self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
-                return
-            if res.get("status") in ("error", "busy"):
-                self._reset_first_event_progress_watch()
-                self._restore_pre_run_snapshot_after_runtime()
-                self.front_loop_after_id = self.root.after(
-                    300,
-                    lambda: self._dispatch_front_loop_once(display_name)
-                )
-                return
-            self._arm_first_event_progress_watch(sent_at_monotonic, delay, first_event_timing)
+            def do_send(delay_meta):
+                if not self.front_loop_enabled:
+                    return
+                try:
+                    res = self.request_pi(payload, write_response=False)
+                    sent_at_monotonic = delay_meta["actual_send_time_monotonic"]
+                    first_event_timing = self._extract_first_event_timing(backend_events)
+                    self.write_text({
+                        "sending_name": display_name,
+                        "pi_host": self.config["pi_host"],
+                        "send_delay_sec": delay_meta["send_delay_sec"],
+                        "scheduled_send_time_monotonic": delay_meta["scheduled_send_time_monotonic"],
+                        "actual_send_time_monotonic": delay_meta["actual_send_time_monotonic"],
+                        "send_error_ms": delay_meta["send_error_ms"],
+                        "sent_at_monotonic": sent_at_monotonic,
+                        "first_event_at": first_event_timing["first_event_at"] if first_event_timing else None,
+                        "request": payload,
+                        "response": res
+                    })
+                    if self._is_contract_version_mismatch(res):
+                        self._reset_first_event_progress_watch()
+                        self._restore_pre_run_snapshot_after_runtime()
+                        self.front_loop_enabled = False
+                        self.show_error("版本不相容", self._build_contract_version_mismatch_message(res))
+                        return
+                    if res.get("status") in ("error", "busy"):
+                        self._reset_first_event_progress_watch()
+                        self._restore_pre_run_snapshot_after_runtime()
+                        self.front_loop_after_id = self.root.after(
+                            300,
+                            lambda: self._dispatch_front_loop_once(display_name)
+                        )
+                        return
+                    self._arm_first_event_progress_watch(sent_at_monotonic, delay_meta["send_delay_sec"], first_event_timing)
 
-            self.front_loop_round += 1
-            suffix = ""
-            if resolve_note:
-                suffix = "（{}）".format(resolve_note)
-            self.set_status(
-                "前端重複送出中：{} 第 {} 輪{}".format(display_name, self.front_loop_round, suffix)
-            )
-            self._poll_front_loop_round_done(display_name)
+                    self.front_loop_round += 1
+                    suffix = ""
+                    if resolve_note:
+                        suffix = "（{}）".format(resolve_note)
+                    self.set_status(
+                        "前端重複送出中：{} 第 {} 輪{}".format(display_name, self.front_loop_round, suffix)
+                    )
+                    self._poll_front_loop_round_done(display_name)
+                except Exception as e:
+                    self.front_loop_enabled = False
+                    self.set_frontend_error(str(e))
+                    self._restore_pre_run_snapshot_after_runtime()
+                    self.show_error("重複傳送失敗", str(e))
+
+            delay_override = None if self.front_loop_round == 0 else 0.0
+            self.apply_send_delay_if_needed(do_send, delay_override=delay_override)
         except Exception as e:
             self.front_loop_enabled = False
             self.set_frontend_error(str(e))
