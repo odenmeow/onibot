@@ -2719,6 +2719,14 @@ class App:
                     warning_lines.append("⚠ Draw mismatch detected (possible missing group draw).")
                     warning_lines.append("⚠ expected_groups={} but actual_draws={}".format(expected_groups, actual_draws))
                 lines.append("-" * 84)
+        mapper_snapshot = {
+            "runtime_type_note": "table_b_preview[*].runtime_type",
+            "linker_to_mix_slot_show": payload.get("linker_to_mix_slot_show", {}),
+            "b_to_a_mapper": payload.get("b_to_a_mapper", {}),
+            "at_rebase": payload.get("at_rebase", {})
+        }
+        lines.append("【內容放在這邊】")
+        lines.append(json.dumps(mapper_snapshot, ensure_ascii=False, indent=2))
         self.text.delete("1.0", tk.END)
         if lines:
             summary_text = "\n".join(lines)
