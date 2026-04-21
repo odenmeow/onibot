@@ -1,4 +1,10 @@
 # -*- coding: utf-8 -*-
+"""
+executor_only 邊界說明：
+- 此模組僅負責「執行」已排程完成的 timeline 事件（press/release + at_ms）。
+- start_task 只接受可執行欄位：idx/at_ms/action/btn/skip_mode。
+- 任何抽籤/排程語意欄位（例如 randat 指令級資料）一律拒收，避免後端參與排程決策。
+"""
 import json
 import random
 import socket
@@ -67,6 +73,7 @@ timeline_cooldown_runtime = {
 # 狀態輪詢防爆：避免 timeline_runtime.events / round_traces 無上限回傳造成卡頓
 STATUS_EVENTS_LIMIT = 120
 STATUS_ROUND_TRACES_LIMIT = 40
+START_TASK_ALLOWED_TIMELINE_FIELDS = {"idx", "at_ms", "action", "btn", "skip_mode"}
 
 
 def _now_ms():
@@ -538,6 +545,14 @@ def parse_start_task_timeline(raw_timeline):
     for i, row in enumerate(raw_timeline):
         if not isinstance(row, dict):
             raise ValueError("timeline 第 {} 列格式錯誤".format(i))
+        # executor_only：只接受可執行欄位，拒收任何排程語意欄位（如 randat）。
+        extra_keys = sorted([k for k in row.keys() if k not in START_TASK_ALLOWED_TIMELINE_FIELDS])
+        if extra_keys:
+            raise ValueError(
+                "timeline 第 {} 列包含未允許欄位: {}（僅接受: idx/at_ms/action/btn/skip_mode）".format(
+                    i, ",".join(extra_keys)
+                )
+            )
         action = str(row.get("action", "")).strip().lower()
         button = str(row.get("btn", "")).strip().lower()
         if action not in ("press", "release"):
@@ -675,6 +690,7 @@ def handle_request(data):
         return {"status": "ok", "mode": "macro", "message": "已收到 macro，開始背景執行"}
 
     if str(data.get("type", "")).strip().lower() == "start_task":
+        # executor_only：只執行前端/上游已決定好的 timeline，不處理排程語意。
         if current_run_thread is not None and current_run_thread.is_alive():
             return make_error_response(
                 code="busy",
