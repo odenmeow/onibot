@@ -4544,7 +4544,8 @@ class App:
             runtime_display_events, backend_events, resolve_note = self.prepare_events_for_send(
                 action_reason="before_send_loop_preview",
                 base_events=preview_origin,
-                return_backend=True
+                return_backend=True,
+                execution_round_override=1
             )
             if runtime_display_events is None:
                 self.loop_preview_pending = False
@@ -4814,7 +4815,13 @@ class App:
                 lambda: self._poll_front_loop_round_done(display_name)
             )
 
-    def prepare_events_for_send(self, action_reason="before_send", base_events=None, return_backend=False):
+    def prepare_events_for_send(
+        self,
+        action_reason="before_send",
+        base_events=None,
+        return_backend=False,
+        execution_round_override=None
+    ):
         rslot_count = 0
         try:
             offset_sec = self.get_manual_offset_sec()
@@ -4903,7 +4910,14 @@ class App:
                     ev["buff_cycle_sec"] = chosen_cycle
                     ev["buff_jitter_sec"] = chosen_jitter
 
-        execution_round = int(getattr(self, "pending_runtime_version", 0) or 0)
+        execution_round = None
+        if execution_round_override is not None:
+            try:
+                execution_round = int(execution_round_override)
+            except Exception:
+                execution_round = 0
+        if not execution_round or execution_round <= 0:
+            execution_round = int(getattr(self, "pending_runtime_version", 0) or 0)
         if execution_round <= 0:
             execution_round = int(getattr(self, "front_loop_round", 0) or 0) + 1
         if execution_round <= 0:

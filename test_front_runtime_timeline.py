@@ -1382,6 +1382,37 @@ class TimelineWorkflowTests(unittest.TestCase):
 
         self.assertEqual(round2[0]["at"], 1.0)
 
+    def test_first_loop_preview_after_load_forces_execution_round_one(self):
+        app = self._new_workflow_app()
+        app.send_timeline_loop = App.send_timeline_loop.__get__(app, App)
+        app._auto_switch_runtime_view_on_loop_start = lambda: None
+        app.render_runtime_analysis = lambda *_args, **_kwargs: None
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 1.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        # 模擬前一次執行到 round 2；第一次預覽仍應強制顯示 round 1。
+        app.front_loop_round = 2
+        app.pending_runtime_version = 2
+        app.runtime_version = 2
+
+        captured = {}
+
+        def fake_prepare_events_for_send(**kwargs):
+            captured["kwargs"] = dict(kwargs)
+            return (
+                app.copy_events(app.timeline),
+                app.copy_events(app.timeline),
+                ""
+            )
+
+        app.prepare_events_for_send = fake_prepare_events_for_send
+
+        app.send_timeline_loop()
+
+        self.assertTrue(app.loop_preview_pending)
+        self.assertIn("kwargs", captured)
+        self.assertEqual(captured["kwargs"].get("execution_round_override"), 1)
+
     def test_undo_redo_groups_multi_row_change_in_one_step(self):
         app = self._new_workflow_app()
         app.timeline = [
