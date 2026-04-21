@@ -1022,73 +1022,6 @@ def allocate_randat_blocks(events):
 
         working = reordered
 
-    if randat_executed and blocks:
-        block_meta = {}
-        for group, info in blocks.items():
-            indices = list(info.get("indices", []))
-            if not indices:
-                continue
-            first = indices[0]
-            last = indices[-1]
-            front_gap = 0.0
-            back_gap = 0.0
-            if first > 0:
-                front_gap = round(_safe_float(working[first].get("at", 0.0)) - _safe_float(working[first - 1].get("at", 0.0)), 4)
-            if last + 1 < len(working):
-                back_gap = round(_safe_float(working[last + 1].get("at", 0.0)) - _safe_float(working[last].get("at", 0.0)), 4)
-            block_meta[group] = {
-                "first": first,
-                "last": last,
-                "front_gap": front_gap,
-                "back_gap": back_gap,
-            }
-
-        reorder_order = sorted(
-            block_assignments.keys(),
-            key=lambda gid: (int(block_assignments[gid]["picked_slot"]), _group_sort_key(gid))
-        )
-        reordered = list(working)
-        for group in reorder_order:
-            rows = [row for row in reordered if str(row.get("__runtime_gid", "")).strip() == str(group)]
-            if not rows:
-                continue
-            reordered = [row for row in reordered if str(row.get("__runtime_gid", "")).strip() != str(group)]
-            target_origin = int(block_assignments[group]["picked_slot"])
-            insert_at = None
-            for pos, row in enumerate(reordered):
-                if int(row.get("__origin_idx", -1)) == target_origin:
-                    insert_at = pos
-                    break
-            if insert_at is None:
-                insert_at = len(reordered)
-            reordered[insert_at:insert_at] = rows
-
-        first_at = 0.0
-        if reordered:
-            first_origin = int(reordered[0].get("__origin_idx", 0))
-            first_at = original_at_by_idx.get(first_origin, 0.0)
-        prev_at = round(first_at, 4)
-        for idx, row in enumerate(reordered):
-            if idx == 0:
-                row["at"] = prev_at
-                continue
-            prev_row = reordered[idx - 1]
-            prev_group = str(prev_row.get("__runtime_gid", "")).strip()
-            cur_group = str(row.get("__runtime_gid", "")).strip()
-            prev_origin = int(prev_row.get("__origin_idx", -1))
-            cur_origin = int(row.get("__origin_idx", -1))
-            gap = original_gap_by_pair.get((prev_origin, cur_origin))
-            if prev_group != cur_group and cur_group in block_meta and cur_origin == int(block_meta[cur_group]["first"]):
-                gap = block_meta[cur_group]["front_gap"]
-            if prev_group != cur_group and prev_group in block_meta and prev_origin == int(block_meta[prev_group]["last"]):
-                gap = block_meta[prev_group]["back_gap"]
-            if gap is None:
-                gap = round(max(0.0, original_at_by_idx.get(cur_origin, prev_at) - original_at_by_idx.get(prev_origin, prev_at)), 4)
-            prev_at = round(prev_at + max(0.0, _safe_float(gap, 0.0)), 4)
-            row["at"] = prev_at
-
-        working = reordered
-
     for ev in working:
         group = str(ev.get("buff_group", "")).strip()
         if group in block_assignments:
@@ -2742,6 +2675,31 @@ class App:
                     warning_lines.append("⚠ Draw mismatch detected (possible missing group draw).")
                     warning_lines.append("⚠ expected_groups={} but actual_draws={}".format(expected_groups, actual_draws))
                 lines.append("-" * 84)
+        table_b_preview = payload.get("table_b_preview", [])
+        if isinstance(table_b_preview, list) and table_b_preview:
+            lines.append("Table B（未插入前）")
+            for row in table_b_preview:
+                if not isinstance(row, dict):
+                    continue
+                lines.append(
+                    "  B.idx {runtime_idx} <= A.idx {source_idx} | slot={slot_kind} | type={type} | btn={button} | group={buff_group} | at={at}".format(
+                        runtime_idx=row.get("runtime_idx"),
+                        source_idx=row.get("source_idx"),
+                        slot_kind=row.get("slot_kind", ""),
+                        type=row.get("type", ""),
+                        button=row.get("button", ""),
+                        buff_group=row.get("buff_group", ""),
+                        at=row.get("at", ""),
+                    )
+                )
+            lines.append("-" * 84)
+
+        lines.append("mixSlotShow = {}".format(json.dumps(payload.get("mix_slot_show", []), ensure_ascii=False)))
+        lines.append("mixSlotMapping = {}".format(json.dumps(payload.get("mix_slot_mapping", {}), ensure_ascii=False)))
+        lines.append("mixSlotMappingDone = {}".format(json.dumps(payload.get("mix_slot_mapping_done", []), ensure_ascii=False)))
+        lines.append("bslotMap = {}".format(json.dumps(payload.get("bslot_map", {}), ensure_ascii=False)))
+        lines.append("bGroupMapper = {}".format(json.dumps(payload.get("b_group_mapper", {}), ensure_ascii=False)))
+        lines.append("-" * 84)
         self.text.delete("1.0", tk.END)
         if lines:
             summary_text = "\n".join(lines)
