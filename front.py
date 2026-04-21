@@ -770,10 +770,17 @@ def allocate_randat_blocks(events):
         "rslot": list(rslot),
         "bslot_map": {},
         "b_group_mapper": {},
+        "linker_to_mix_slot_show": {},
+        "b_to_a_mapper": {},
         "mix_slot_show": [],
         "mix_slot_mapping": {},
         "mix_slot_mapping_done": [],
-        "table_b_before_insert": []
+        "table_b_before_insert": [],
+        "at_rebase": {
+            "first_at_before_shift": 0.0,
+            "target_first_at": 0.3,
+            "delta": 0.0
+        }
     }
 
     for idx, ev in enumerate(working):
@@ -963,11 +970,16 @@ def allocate_randat_blocks(events):
             "runtime_idx": len(runtime_debug["table_b_before_insert"]),
             "source_idx": int(source_idx),
             "slot_kind": slot_kind,
+            "runtime_type": ("bslot" if slot_kind == "bslot" else str(row.get("type", "")).strip().lower()),
             "type": str(row.get("type", "")).strip().lower(),
             "button": str(row.get("button", "")).strip().lower(),
             "buff_group": str(row.get("buff_group", "")).strip(),
             "at": round(_safe_float(row.get("at", 0.0)), 4),
         })
+        if slot_kind in ("rslot", "bslot"):
+            runtime_idx = int(len(runtime_debug["table_b_before_insert"]) - 1)
+            runtime_debug["linker_to_mix_slot_show"][str(runtime_idx)] = int(source_idx)
+            runtime_debug["b_to_a_mapper"][str(runtime_idx)] = int(source_idx)
 
     if randat_executed and blocks:
         block_meta = {}
@@ -1037,72 +1049,16 @@ def allocate_randat_blocks(events):
 
         working = reordered
 
-    if randat_executed and blocks:
-        block_meta = {}
-        for group, info in blocks.items():
-            indices = list(info.get("indices", []))
-            if not indices:
-                continue
-            first = indices[0]
-            last = indices[-1]
-            front_gap = 0.0
-            back_gap = 0.0
-            if first > 0:
-                front_gap = round(_safe_float(working[first].get("at", 0.0)) - _safe_float(working[first - 1].get("at", 0.0)), 4)
-            if last + 1 < len(working):
-                back_gap = round(_safe_float(working[last + 1].get("at", 0.0)) - _safe_float(working[last].get("at", 0.0)), 4)
-            block_meta[group] = {
-                "first": first,
-                "last": last,
-                "front_gap": front_gap,
-                "back_gap": back_gap,
-            }
-
-        reorder_order = sorted(
-            block_assignments.keys(),
-            key=lambda gid: (int(block_assignments[gid]["picked_slot"]), _group_sort_key(gid))
-        )
-        reordered = list(working)
-        for group in reorder_order:
-            rows = [row for row in reordered if str(row.get("__runtime_gid", "")).strip() == str(group)]
-            if not rows:
-                continue
-            reordered = [row for row in reordered if str(row.get("__runtime_gid", "")).strip() != str(group)]
-            target_origin = int(block_assignments[group]["picked_slot"])
-            insert_at = None
-            for pos, row in enumerate(reordered):
-                if int(row.get("__origin_idx", -1)) == target_origin:
-                    insert_at = pos
-                    break
-            if insert_at is None:
-                insert_at = len(reordered)
-            reordered[insert_at:insert_at] = rows
-
-        first_at = 0.0
-        if reordered:
-            first_origin = int(reordered[0].get("__origin_idx", 0))
-            first_at = original_at_by_idx.get(first_origin, 0.0)
-        prev_at = round(first_at, 4)
-        for idx, row in enumerate(reordered):
-            if idx == 0:
-                row["at"] = prev_at
-                continue
-            prev_row = reordered[idx - 1]
-            prev_group = str(prev_row.get("__runtime_gid", "")).strip()
-            cur_group = str(row.get("__runtime_gid", "")).strip()
-            prev_origin = int(prev_row.get("__origin_idx", -1))
-            cur_origin = int(row.get("__origin_idx", -1))
-            gap = original_gap_by_pair.get((prev_origin, cur_origin))
-            if prev_group != cur_group and cur_group in block_meta and cur_origin == int(block_meta[cur_group]["first"]):
-                gap = block_meta[cur_group]["front_gap"]
-            if prev_group != cur_group and prev_group in block_meta and prev_origin == int(block_meta[prev_group]["last"]):
-                gap = block_meta[prev_group]["back_gap"]
-            if gap is None:
-                gap = round(max(0.0, original_at_by_idx.get(cur_origin, prev_at) - original_at_by_idx.get(prev_origin, prev_at)), 4)
-            prev_at = round(prev_at + max(0.0, _safe_float(gap, 0.0)), 4)
-            row["at"] = prev_at
-
-        working = reordered
+    if working:
+        first_at_before_shift = round(_safe_float(working[0].get("at", 0.0)), 4)
+        delta = round(0.3 - first_at_before_shift, 4)
+        for row in working:
+            row["at"] = round(_safe_float(row.get("at", 0.0)) + delta, 4)
+        runtime_debug["at_rebase"] = {
+            "first_at_before_shift": first_at_before_shift,
+            "target_first_at": 0.3,
+            "delta": delta
+        }
 
     for ev in working:
         group = str(ev.get("buff_group", "")).strip()
@@ -2645,7 +2601,10 @@ class App:
             "mix_slot_mapping": {},
             "mix_slot_mapping_done": [],
             "bslot_map": {},
-            "b_group_mapper": {}
+            "b_group_mapper": {},
+            "linker_to_mix_slot_show": {},
+            "b_to_a_mapper": {},
+            "at_rebase": {}
         }
         prepared_payload = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
         prepared_runtime_meta = prepared_payload.get("runtime_meta", {})
@@ -2656,6 +2615,9 @@ class App:
             payload["mix_slot_mapping_done"] = copy.deepcopy(prepared_runtime_meta.get("mix_slot_mapping_done", []))
             payload["bslot_map"] = copy.deepcopy(prepared_runtime_meta.get("bslot_map", {}))
             payload["b_group_mapper"] = copy.deepcopy(prepared_runtime_meta.get("b_group_mapper", {}))
+            payload["linker_to_mix_slot_show"] = copy.deepcopy(prepared_runtime_meta.get("linker_to_mix_slot_show", {}))
+            payload["b_to_a_mapper"] = copy.deepcopy(prepared_runtime_meta.get("b_to_a_mapper", {}))
+            payload["at_rebase"] = copy.deepcopy(prepared_runtime_meta.get("at_rebase", {}))
         lines = []
         warning_lines = []
         status_note = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
@@ -4652,7 +4614,10 @@ class App:
                 "mix_slot_mapping": copy.deepcopy(randat_debug.get("mix_slot_mapping", {})),
                 "mix_slot_mapping_done": copy.deepcopy(randat_debug.get("mix_slot_mapping_done", [])),
                 "bslot_map": copy.deepcopy(randat_debug.get("bslot_map", {})),
-                "b_group_mapper": copy.deepcopy(randat_debug.get("b_group_mapper", {}))
+                "b_group_mapper": copy.deepcopy(randat_debug.get("b_group_mapper", {})),
+                "linker_to_mix_slot_show": copy.deepcopy(randat_debug.get("linker_to_mix_slot_show", {})),
+                "b_to_a_mapper": copy.deepcopy(randat_debug.get("b_to_a_mapper", {})),
+                "at_rebase": copy.deepcopy(randat_debug.get("at_rebase", {}))
             },
             "resolve_note": resolve_note
         }
