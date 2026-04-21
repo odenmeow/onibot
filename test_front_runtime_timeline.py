@@ -315,7 +315,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         ]
 
         with mock.patch("front.random.randrange", side_effect=[2, 0]):
-            working, assignments, _traces, _debug = allocate_randat_blocks(events)
+            working, assignments, _traces, debug = allocate_randat_blocks(events)
 
         self.assertEqual(working[0].get("buff_group", ""), "")
         self.assertEqual(working[1].get("buff_group", ""), "1")
@@ -323,6 +323,10 @@ class RuntimeDisplayTests(unittest.TestCase):
         at_values = [float(row.get("at", 0.0)) for row in working]
         self.assertEqual(at_values, sorted(at_values))
         self.assertNotEqual(assignments["1"]["landed_index"], assignments["1"]["anchor_index"])
+        self.assertEqual(debug.get("apply_order"), ["2", "1"])
+        self.assertEqual([item.get("group_id") for item in debug.get("placement_ledger", [])], ["2", "1"])
+        self.assertIn("1", debug.get("group_final_positions", {}))
+        self.assertIn("2", debug.get("group_final_positions", {}))
 
     def test_allocate_randat_blocks_excludes_numeric_groups_greater_than_100(self):
         random.seed(11)
@@ -427,6 +431,7 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertIn("Execution Round #1", captured["text"])
         self.assertIn("Execution Round #2", captured["text"])
+        self.assertIn("picked A-slot=", captured["text"])
 
     def test_recent_ok_green_tag_does_not_override_buff_background(self):
         app = self._new_app()
@@ -853,6 +858,10 @@ class TimelineWorkflowTests(unittest.TestCase):
         self.assertEqual(app.timeline, timeline_before)
         self.assertEqual(app.timeline_meta["original_events"], original_before)
         self.assertIsNotNone(prepared)
+        runtime_meta = app.last_prepared_payload.get("runtime_meta", {})
+        self.assertIn("placement_ledger", runtime_meta)
+        self.assertIn("group_final_positions", runtime_meta)
+        self.assertIn("apply_order", runtime_meta)
         save_mock.assert_not_called()
 
     def test_save_updates_latest_saved_only(self):
