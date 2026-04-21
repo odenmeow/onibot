@@ -3947,10 +3947,18 @@ class App:
         self.name_entry.delete(0, tk.END)
         self.name_entry.insert(0, self.current_name)
 
+        self.clear_runtime_highlight(preserve_round_traces=False)
+        self.loop_preview_pending = False
+        self.loop_preview_cached_payload = None
+        self.loop_preview_origin_snapshot = []
+        self.runtime_working_timeline = []
+        self.runtime_display_frozen = False
+        self.runtime_manual_restore_active = False
+
         self.refresh_tree()
         self.refresh_preview()
         self.update_current_labels()
-        self.set_status("已載入：{}".format(self.current_name))
+        self.set_status("已載入：{}，Runtime 已清空".format(self.current_name))
 
     def delete_selected_timeline(self):
         name = self.get_selected_saved_name()
