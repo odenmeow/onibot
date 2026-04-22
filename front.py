@@ -2762,10 +2762,10 @@ class App:
             if normalized_round >= 2:
                 real_rounds.append(normalized_round)
         display_rounds = []
-        for display_index, real_round in enumerate(sorted(real_rounds, reverse=True)[:10], start=1):
+        for real_round in sorted(real_rounds, reverse=True)[:10]:
             display_rounds.append({
                 "real_round": int(real_round),
-                "display_label": "Round #{}".format(display_index),
+                "display_label": "Round #{}".format(int(real_round)),
                 "traces": grouped_by_execution_round.get(real_round, [])
             })
         return display_rounds
@@ -2933,11 +2933,6 @@ class App:
         payload["participating_groups"] = list(participating_groups)
         payload["execution_round"] = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(fallback_execution_round)
         display_rounds = self._build_runtime_display_rounds(grouped_by_execution_round)
-        round_display_lookup = {
-            int(item.get("real_round", 0)): str(item.get("display_label", ""))
-            for item in display_rounds
-            if int(item.get("real_round", 0)) > 0
-        }
         expected_groups = 0
         actual_draws = 0
         is_consistent = True
@@ -2972,49 +2967,6 @@ class App:
                 "actual_draws": actual_draws,
                 "is_consistent": is_consistent
             }
-            previous_round = current_round - 1
-            if previous_round >= 1:
-                previous_round_traces = [
-                    trace for trace in payload.get("round_traces", [])
-                    if int(trace.get("execution_round", 0) or 0) == previous_round
-                ]
-                payload["previousRoundTraces"] = copy.deepcopy(previous_round_traces)
-                previous_round_label = round_display_lookup.get(previous_round, "Round #?")
-                if previous_round_traces:
-                    lines.append("Previous round final positions ({}):".format(previous_round_label))
-                    ordered_previous_draws = sorted(
-                        previous_round_traces,
-                        key=lambda item: int(item.get("draw_order", 999999) or 999999)
-                    )
-                    for trace in ordered_previous_draws:
-                        group_label = str(trace.get("group_label") or trace.get("group_id") or "?")
-                        placement = trace.get("placement", {})
-                        if not isinstance(placement, dict):
-                            placement = {}
-                        picked_a = placement.get("picked_slot_a_idx", trace.get("picked_slot", -1))
-                        base_b = placement.get("base_b_idx_before_offset", -1)
-                        final_slot_text = _format_index_range(
-                            placement.get("final_b_range_slot"),
-                            fallback_value=placement.get("final_b_range")
-                        )
-                        final_row_text = _format_index_range(
-                            placement.get("final_runtime_row_range"),
-                            fallback_value=placement.get("final_b_range")
-                        )
-                        lines.append(
-                            "  {}: A{} -> base B{} -> final slot B{} -> final row idx {}".format(
-                                group_label,
-                                picked_a,
-                                base_b,
-                                final_slot_text,
-                                final_row_text
-                            )
-                        )
-                    lines.append("-" * 84)
-                else:
-                    lines.append("Previous round final positions ({}): 無資料".format(previous_round_label))
-                    lines.append("  hint: 目前僅收到 current round traces，屬正常狀況。")
-                    lines.append("-" * 84)
             for display_round in display_rounds:
                 execution_round = int(display_round.get("real_round", 0) or 0)
                 execution_label = str(display_round.get("display_label", "Round #?"))
@@ -3102,14 +3054,6 @@ class App:
                 self._render_frontend_error()
             except Exception:
                 pass
-        mapper_snapshot = {
-            "runtime_type_note": "table_b_preview[*].runtime_type",
-            "linker_to_mix_slot_show": payload.get("linker_to_mix_slot_show", {}),
-            "b_to_a_mapper": payload.get("b_to_a_mapper", {}),
-            "at_rebase": payload.get("at_rebase", {})
-        }
-        lines.append("【內容放在這邊】")
-        lines.append(json.dumps(mapper_snapshot, ensure_ascii=False, indent=2))
         self.text.delete("1.0", tk.END)
         if lines:
             summary_text = "\n".join(lines)
@@ -3126,8 +3070,6 @@ class App:
                 self.text.tag_add("runtime_consistency_warning", warning_start, warning_end)
             else:
                 self.text.insert(tk.END, warning_text)
-        self.text.insert(tk.END, "\n\n---\n詳細 JSON\n")
-        self.text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))
 
     def update_runtime_from_status(self, status_response):
         runtime = status_response.get("timeline_runtime", {})
