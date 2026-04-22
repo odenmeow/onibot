@@ -441,9 +441,8 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.render_runtime_analysis(force=True)
 
-        self.assertIn("Execution Round #2", captured["text"])
         self.assertIn("Execution Round #1", captured["text"])
-        self.assertLess(captured["text"].find("Execution Round #2"), captured["text"].find("Execution Round #1"))
+        self.assertNotIn("Execution Round #2", captured["text"])
         self.assertIn("picked A-slot=", captured["text"])
         self.assertIn("final slot B", captured["text"])
         self.assertIn("final row idx", captured["text"])
@@ -532,7 +531,10 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.render_runtime_analysis(force=True)
 
         self.assertNotIn("Previous round final positions", captured["text"])
-        self.assertIn("Execution Round #3", captured["text"])
+        self.assertIn("Execution Round #2", captured["text"])
+        self.assertIn("Execution Round #1", captured["text"])
+        self.assertLess(captured["text"].find("Execution Round #2"), captured["text"].find("Execution Round #1"))
+        self.assertNotIn("Execution Round #3", captured["text"])
 
     def test_render_runtime_analysis_does_not_show_previous_summary_for_round1(self):
         app = self._new_app()

@@ -2764,7 +2764,7 @@ class App:
         baseline_round = min(real_rounds) if real_rounds else 1
         display_rounds = []
         for real_round in sorted(real_rounds, reverse=True)[:10]:
-            display_round = int(real_round - baseline_round + 1)
+            display_round = int(real_round - 1)
             if display_round <= 0:
                 display_round = 1
             display_rounds.append({
