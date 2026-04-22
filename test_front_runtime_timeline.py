@@ -479,6 +479,8 @@ class RuntimeDisplayTests(unittest.TestCase):
             ("Trace diagnosis:" in captured["text"]) or ("hint: 目前僅收到 current round traces" in captured["text"])
         )
         self.assertNotIn("Current round final positions:", captured["text"])
+        self.assertIn("Execution Round #2", captured["text"])
+        self.assertNotIn("backend 未提供 round_traces", captured["text"])
 
     def test_render_runtime_analysis_shows_previous_round_summary_for_round2(self):
         app = self._new_app()
@@ -1197,16 +1199,25 @@ class TimelineWorkflowTests(unittest.TestCase):
             "runtime_version": 9,
             "execution_round": 1,
             "round_traces": [{"execution_round": 1, "buffGroup": "A"}],
-            "runtime_meta": {"execution_round": 0, "runtime_version": 0}
+            "runtime_meta": {
+                "execution_round": 0,
+                "runtime_version": 0,
+                "draw_result": [{"group": "A"}],
+                "round_traces": [{"execution_round": 1, "buffGroup": "A"}],
+                "placement_ledger": [{"group_id": "A"}],
+            }
         }
 
         payload = app._build_start_task_payload([{"type": "press", "button": "space", "at": 0.1, "skip_mode": "pass"}])
 
         self.assertEqual(payload["execution_round"], 1)
         self.assertEqual(payload["runtime_version"], 9)
-        self.assertEqual(len(payload["round_traces"]), 1)
+        self.assertNotIn("round_traces", payload)
         self.assertEqual(payload["runtime_meta"]["execution_round"], 1)
         self.assertEqual(payload["runtime_meta"]["runtime_version"], 9)
+        self.assertIn("draw_result", payload["runtime_meta"])
+        self.assertNotIn("round_traces", payload["runtime_meta"])
+        self.assertNotIn("placement_ledger", payload["runtime_meta"])
 
     def test_extract_runtime_progress_brief_fallback_never_returns_round_zero(self):
         app = self._new_workflow_app()
