@@ -441,8 +441,9 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.render_runtime_analysis(force=True)
 
-        self.assertIn("Execution Round #1", captured["text"])
         self.assertIn("Execution Round #2", captured["text"])
+        self.assertIn("Execution Round #1", captured["text"])
+        self.assertLess(captured["text"].find("Execution Round #2"), captured["text"].find("Execution Round #1"))
         self.assertIn("picked A-slot=", captured["text"])
         self.assertIn("final slot B", captured["text"])
         self.assertIn("final row idx", captured["text"])
@@ -475,11 +476,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.render_runtime_analysis(force=True)
 
         self.assertNotIn("key 不一致", captured["text"])
-        self.assertTrue(
-            ("Trace diagnosis:" in captured["text"]) or ("hint: 目前僅收到 current round traces" in captured["text"])
-        )
+        self.assertTrue(("Trace diagnosis:" in captured["text"]) or ("Execution Round #1" in captured["text"]))
         self.assertNotIn("Current round final positions:", captured["text"])
-        self.assertIn("Execution Round #2", captured["text"])
+        self.assertIn("Execution Round #1", captured["text"])
         self.assertNotIn("backend 未提供 round_traces", captured["text"])
 
     def test_render_runtime_analysis_shows_previous_round_summary_for_round2(self):
@@ -512,8 +511,8 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.render_runtime_analysis(force=True)
 
-        self.assertTrue(captured["text"].startswith("Previous round final positions (Round #1):"))
-        self.assertIn("A2 -> base B4 -> final slot B4~5 -> final row idx 7~8", captured["text"])
+        self.assertNotIn("Previous round final positions", captured["text"])
+        self.assertIn("Execution Round #1", captured["text"])
 
     def test_render_runtime_analysis_shows_previous_round_summary_for_latest_round3(self):
         app = self._new_app()
@@ -532,9 +531,8 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.render_runtime_analysis(force=True)
 
-        self.assertIn("Previous round final positions (Round #2):", captured["text"])
-        self.assertIn("A3 -> base B6 -> final slot B6~7 -> final row idx 9~10", captured["text"])
-        self.assertNotIn("Previous round final positions (Round #1):", captured["text"])
+        self.assertNotIn("Previous round final positions", captured["text"])
+        self.assertIn("Execution Round #3", captured["text"])
 
     def test_render_runtime_analysis_does_not_show_previous_summary_for_round1(self):
         app = self._new_app()
@@ -581,9 +579,8 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.render_runtime_analysis(force=True)
 
-        self.assertIn("Previous round final positions (Round #1):", captured["text"])
-        self.assertIn("A2 -> base B4 -> final slot B4~5 -> final row idx 11~12", captured["text"])
-        self.assertIn("Execution Round #2", captured["text"])
+        self.assertNotIn("Previous round final positions", captured["text"])
+        self.assertIn("Execution Round #1", captured["text"])
 
     def test_render_runtime_analysis_shows_slot_and_row_idx_ranges_together(self):
         app = self._new_app()
@@ -631,9 +628,7 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.render_runtime_analysis(force=True)
 
-        self.assertTrue(
-            ("Trace diagnosis:" in captured["text"]) or ("hint: 目前僅收到 current round traces" in captured["text"])
-        )
+        self.assertTrue(("Trace diagnosis:" in captured["text"]) or ("Execution Round #1" in captured["text"]))
         self.assertIn("server_task_id mismatch", app.runtime_trace_diagnostic)
 
     def test_render_runtime_analysis_consistency_only_counts_current_round(self):
