@@ -3595,12 +3595,8 @@ class App:
             normalized_runtime_version = int(runtime_version_value or 0)
         except Exception:
             normalized_runtime_version = 0
-        round_traces_payload = prepared.get("round_traces")
-        if not isinstance(round_traces_payload, list):
-            round_traces_payload = []
         payload["execution_round"] = normalized_execution_round
         payload["runtime_version"] = normalized_runtime_version
-        payload["round_traces"] = copy.deepcopy(round_traces_payload)
         if not runtime_meta and prepared:
             runtime_meta = {
                 "rslot_count": int(prepared.get("rslot_count", 0) or 0),
@@ -3608,8 +3604,13 @@ class App:
                 "draw_result": copy.deepcopy(prepared.get("block_assignments", {}))
             }
         runtime_meta = copy.deepcopy(runtime_meta) if isinstance(runtime_meta, dict) else {}
-        runtime_meta["execution_round"] = normalized_execution_round
-        runtime_meta["runtime_version"] = normalized_runtime_version
+        sanitized_runtime_meta = {}
+        for key in ("rslot_count", "randat_executed", "picked_reason", "draw_result"):
+            if key in runtime_meta:
+                sanitized_runtime_meta[key] = copy.deepcopy(runtime_meta.get(key))
+        sanitized_runtime_meta["execution_round"] = normalized_execution_round
+        sanitized_runtime_meta["runtime_version"] = normalized_runtime_version
+        runtime_meta = sanitized_runtime_meta
         if runtime_meta:
             payload["runtime_meta"] = runtime_meta
         return payload
