@@ -2750,6 +2750,26 @@ class App:
                 return False
         return True
 
+    def _build_runtime_display_rounds(self, grouped_by_execution_round):
+        if not isinstance(grouped_by_execution_round, dict):
+            return []
+        real_rounds = []
+        for round_no in grouped_by_execution_round.keys():
+            try:
+                normalized_round = int(round_no)
+            except Exception:
+                continue
+            if normalized_round >= 2:
+                real_rounds.append(normalized_round)
+        display_rounds = []
+        for display_index, real_round in enumerate(sorted(real_rounds, reverse=True)[:10], start=1):
+            display_rounds.append({
+                "real_round": int(real_round),
+                "display_label": "Round #{}".format(display_index),
+                "traces": grouped_by_execution_round.get(real_round, [])
+            })
+        return display_rounds
+
     def render_runtime_analysis(self, force=False):
         mode_var = getattr(self, "json_view_mode_var", None)
         mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
@@ -2844,6 +2864,7 @@ class App:
             lines.append("狀態：{}".format(status_note))
             lines.append("-" * 84)
         grouped_by_execution_round = {}
+        round_display_lookup = {}
         participating_groups = []
         fallback_execution_round = int(payload.get("runtime_version", 0) or 0)
         if fallback_execution_round <= 0:
@@ -2911,6 +2932,12 @@ class App:
         payload["randat_executed"] = bool(payload["rslot_count"] > 0)
         payload["participating_groups"] = list(participating_groups)
         payload["execution_round"] = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(fallback_execution_round)
+        display_rounds = self._build_runtime_display_rounds(grouped_by_execution_round)
+        round_display_lookup = {
+            int(item.get("real_round", 0)): str(item.get("display_label", ""))
+            for item in display_rounds
+            if int(item.get("real_round", 0)) > 0
+        }
         expected_groups = 0
         actual_draws = 0
         is_consistent = True
@@ -2918,8 +2945,8 @@ class App:
             lines.append("未啟用 randat 抽籤")
             lines.append("-" * 84)
         runtime_trace_diagnostic_parts = []
-        if grouped_by_execution_round:
-            current_round = max(grouped_by_execution_round.keys()) if grouped_by_execution_round else int(payload.get("execution_round", 0) or 0)
+        if display_rounds:
+            current_round = int(display_rounds[0].get("real_round", 0) or 0)
             if current_round <= 0:
                 current_round = int(payload.get("execution_round", 0) or 0)
             if current_round <= 0:
@@ -2952,8 +2979,9 @@ class App:
                     if int(trace.get("execution_round", 0) or 0) == previous_round
                 ]
                 payload["previousRoundTraces"] = copy.deepcopy(previous_round_traces)
+                previous_round_label = round_display_lookup.get(previous_round, "Round #?")
                 if previous_round_traces:
-                    lines.append("Previous round final positions (Round #{}):".format(previous_round))
+                    lines.append("Previous round final positions ({}):".format(previous_round_label))
                     ordered_previous_draws = sorted(
                         previous_round_traces,
                         key=lambda item: int(item.get("draw_order", 999999) or 999999)
@@ -2984,14 +3012,15 @@ class App:
                         )
                     lines.append("-" * 84)
                 else:
-                    lines.append("Previous round final positions (Round #{}): 無資料".format(previous_round))
+                    lines.append("Previous round final positions ({}): 無資料".format(previous_round_label))
                     lines.append("  hint: 目前僅收到 current round traces，屬正常狀況。")
                     lines.append("-" * 84)
-            ordered_rounds = sorted(grouped_by_execution_round.keys())
-            for execution_round in ordered_rounds:
-                execution_traces = grouped_by_execution_round.get(execution_round, [])
+            for display_round in display_rounds:
+                execution_round = int(display_round.get("real_round", 0) or 0)
+                execution_label = str(display_round.get("display_label", "Round #?"))
+                execution_traces = display_round.get("traces", []) if isinstance(display_round.get("traces", []), list) else []
                 total_groups = len(execution_traces)
-                lines.append("Execution Round #{}（送出輪次，groups={}）".format(execution_round, total_groups))
+                lines.append("Execution {}（送出輪次，groups={}）".format(execution_label, total_groups))
                 ordered_draws = sorted(
                     execution_traces,
                     key=lambda item: int(item.get("draw_order", item.get("round", 999999)) or 999999)
@@ -3034,7 +3063,7 @@ class App:
                     and int(prepared_consistency_key.get("execution_round", 0) or 0) in {0, int(execution_round)}
                 )
                 if show_final_positions:
-                    lines.append("Current round final positions:")
+                    lines.append("Current round final positions ({}):".format(execution_label))
                     for group_id in payload.get("apply_order", []):
                         info = payload["group_final_positions"].get(str(group_id), {})
                         if not isinstance(info, dict):
@@ -3062,6 +3091,8 @@ class App:
                 lines.append("-" * 84)
             if runtime_trace_diagnostic_parts:
                 lines.append("Trace diagnosis: {}".format(" | ".join(runtime_trace_diagnostic_parts)))
+        elif grouped_by_execution_round:
+            lines.append("暫無可顯示的 runtime 回合（僅顯示 execution_round >= 2 且最多 10 筆）。")
         status_diag = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
         if status_diag:
             runtime_trace_diagnostic_parts.append(status_diag)
