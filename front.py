@@ -2759,13 +2759,17 @@ class App:
                 normalized_round = int(round_no)
             except Exception:
                 continue
-            if normalized_round >= 2:
+            if normalized_round >= 1:
                 real_rounds.append(normalized_round)
+        baseline_round = min(real_rounds) if real_rounds else 1
         display_rounds = []
         for real_round in sorted(real_rounds, reverse=True)[:10]:
+            display_round = int(real_round - baseline_round + 1)
+            if display_round <= 0:
+                display_round = 1
             display_rounds.append({
                 "real_round": int(real_round),
-                "display_label": "Round #{}".format(int(real_round)),
+                "display_label": "Round #{}".format(display_round),
                 "traces": grouped_by_execution_round.get(real_round, [])
             })
         return display_rounds
@@ -3044,7 +3048,7 @@ class App:
             if runtime_trace_diagnostic_parts:
                 lines.append("Trace diagnosis: {}".format(" | ".join(runtime_trace_diagnostic_parts)))
         elif grouped_by_execution_round:
-            lines.append("暫無可顯示的 runtime 回合（僅顯示 execution_round >= 2 且最多 10 筆）。")
+            lines.append("暫無可顯示的 runtime 回合（最多顯示 10 筆）。")
         status_diag = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
         if status_diag:
             runtime_trace_diagnostic_parts.append(status_diag)
