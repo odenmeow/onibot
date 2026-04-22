@@ -1,30 +1,34 @@
 {
   "pi_host": "192.168.100.140",
-  "send_delay_sec": 1.0,
-  "last_selected_name": "影子跳舞3人少",
-  "buff_skip_mode": "compress",
-  "manual_offset_sec": 1.0,
-  "timeline_at_random_sec": 0.0,
-  "hint_note_text": "前端可接受按鍵(button)：\n\nfn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n\n\n\n\n注意：\t\t多數電腦的實體 Fn 鍵\t\t無法直接被前端鍵盤監聽。\n\n\n建議用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。",
+  "send_delay_sec": 0.0,
+  "auto_switch_runtime_on_loop_start": true,
+  "last_selected_name": "一拳左右亂打1",
+  "buff_skip_mode": "pass",
+  "manual_offset_sec": 0.03,
+  "ack_timeout_ms": 1500,
+  "hint_note_text": "前端可接受按鍵(button)：\n\nfn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n\n\n\n\n注意：\t\t多數電腦的實體 Fn 鍵\t\t無法直接被前端鍵盤監聽。\n\n\n建議用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n\n淺藍和淺黃都是 buff。\n\n【運行中的淺黃】: 代表自己搶到自己原位執行。\n【運行中的淺藍】: 代表搶到空格或者別人位置。\n\n\n\n補充：  『套用偏移』是手動把選取列之後的時間整段平移；\n\n\t『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at；\n\n\t『at 交換』可快速對調兩列 at 時間。\n\n\trandat：type=randat 的列是候選落點；\n\n\t每個 buff_group 會整包換位，組內順序不拆。\n\n\tat_jitter：前端每輪重算為 base + random(0~j)，僅延後。\n\n\t最後一欄 group：用於顯示系統重疊群組；若無系統綁定可視為使用者自訂分組語意。",
   "ui_recent_colors": [
     "#ffffff"
   ],
   "ui_layout": {
     "window_size": [
-      1134,
-      620
+      1148,
+      662
     ],
     "paned_sash_x": 462,
+    "paned_ratio": 0.4096,
+    "right_paned_sash_y": 229,
+    "right_paned_ratio": 0.437,
     "tree_column_widths": {
       "idx": 40,
-      "type": 56,
+      "type": 41,
       "button": 51,
-      "at": 42,
-      "at_jitter": 54,
-      "buff_group": 81,
-      "buff_cycle_sec": 107,
-      "buff_jitter_sec": 84,
-      "group": 57
+      "at": 56,
+      "at_jitter": 73,
+      "buff_group": 82,
+      "buff_cycle_sec": 89,
+      "buff_jitter_sec": 117,
+      "group": 103
     }
   }
 }

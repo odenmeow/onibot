@@ -1,0 +1,300 @@
+{
+  "name": "一拳左右亂打2 持久版",
+  "saved_at": "2026-04-21 01:08:08",
+  "events": [
+    {
+      "type": "press",
+      "button": "x",
+      "at": 1.17,
+      "at_jitter": 0.12,
+      "at_random_sec": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0,
+      "row_color": ""
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 7.47,
+      "at_jitter": 0.12,
+      "at_random_sec": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0,
+      "row_color": ""
+    },
+    {
+      "type": "press",
+      "button": "right",
+      "at": 7.75,
+      "at_jitter": 0.12,
+      "at_random_sec": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0,
+      "row_color": ""
+    },
+    {
+      "type": "release",
+      "button": "right",
+      "at": 8.19,
+      "at_jitter": 0.12,
+      "at_random_sec": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0,
+      "row_color": ""
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 8.2,
+      "at_jitter": 0.12,
+      "at_random_sec": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0,
+      "row_color": ""
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 14.24,
+      "at_jitter": 0.12,
+      "at_random_sec": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0,
+      "row_color": ""
+    },
+    {
+      "type": "press",
+      "button": "left",
+      "at": 14.42,
+      "at_jitter": 0.12,
+      "at_random_sec": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0,
+      "row_color": ""
+    },
+    {
+      "type": "release",
+      "button": "left",
+      "at": 14.94,
+      "at_jitter": 0.12,
+      "at_random_sec": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "replicatedRow": 0,
+      "row_color": ""
+    }
+  ],
+  "_meta": {
+    "original_events": [
+      {
+        "type": "press",
+        "button": "x",
+        "at": 1.17,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 7.47,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "press",
+        "button": "right",
+        "at": 7.75,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "release",
+        "button": "right",
+        "at": 8.19,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 8.2,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 14.24,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "press",
+        "button": "left",
+        "at": 14.42,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "release",
+        "button": "left",
+        "at": 14.94,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      }
+    ],
+    "latest_saved_events": [
+      {
+        "type": "press",
+        "button": "x",
+        "at": 1.17,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 7.47,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "press",
+        "button": "right",
+        "at": 7.75,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "release",
+        "button": "right",
+        "at": 8.19,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 8.2,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 14.24,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "press",
+        "button": "left",
+        "at": 14.42,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      },
+      {
+        "type": "release",
+        "button": "left",
+        "at": 14.94,
+        "at_jitter": 0.12,
+        "at_random_sec": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "replicatedRow": 0,
+        "row_color": ""
+      }
+    ]
+  }
+}
