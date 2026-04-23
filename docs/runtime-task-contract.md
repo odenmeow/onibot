@@ -24,6 +24,7 @@
 ### 0.3 時間基準
 - 所有 `*_ms` 欄位為毫秒。
 - 延遲與 timeout 計算使用**單調時鐘**（monotonic clock）。
+- 後端對外輸出的 `event_time_ms` / `next_expected_at_ms` 必須由 monotonic clock 映射產生，不可直接依賴 wall clock（避免 NTP/手動校時造成跳時）。
 
 ---
 
@@ -255,6 +256,12 @@
 
 允許 state 枚舉：
 `accepted | running | paused | resumed | stopped | finished | error`
+
+### G.4 ACK timeout 後任務歸屬校正（強制）
+- 前端若在 `ack_timeout_ms` 內未讀到 ACK，不得直接判定任務未啟動。
+- 前端必須立即補發 `status` 查詢，使用 `client_task_id` 對 `timeline_runtime.client_task_id` 做任務認領。
+- 若後端已在執行同一 `client_task_id`，前端必須進入「已校正」狀態並接續監控（不可中止該輪）。
+- 重連/短斷線後，前端 timeout 監控需重設 baseline，再以最新 `status` 校準。
 
 **Error**
 ```json

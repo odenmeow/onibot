@@ -2035,6 +2035,7 @@ class App:
         self.last_prepared_payload = {}
         self.first_event_progress_watch = {}
         self.task_monitor = {}
+        self.monitor_reconnect_pending = False
         self.last_handshake_info = {}
         self.json_view_mode_var = tk.StringVar(value="preview")
 
@@ -3182,6 +3183,11 @@ class App:
                     changed = self.update_runtime_from_status(res)
                     state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
                     run_id = int(self.timeline_runtime_info.get("run_id", 0) or 0)
+                    if bool(getattr(self, "monitor_reconnect_pending", False)):
+                        self._calibrate_monitor_after_reconnect(
+                            state,
+                            self.timeline_runtime_info.get("processed_count", 0)
+                        )
                     self._check_first_event_progress_timeout(state)
                     self._monitor_task_status_progress(
                         state,
@@ -3234,6 +3240,7 @@ class App:
         except Exception as e:
             kind = self._classify_request_error(e)
             self._set_channel_error("status", "[status:{}] {}".format(kind, str(e)))
+            self.monitor_reconnect_pending = True
         finally:
             self.root.after(RUNTIME_POLL_INTERVAL_MS, self.poll_runtime_status)
 
@@ -3286,6 +3293,7 @@ class App:
     def _reset_task_monitor(self):
         self.task_monitor = {}
         self.runtime_wait_ack_active = False
+        self.monitor_reconnect_pending = False
 
     def _arm_task_monitor_wait_ack(self, client_task_id):
         self.task_monitor = {
@@ -3300,7 +3308,77 @@ class App:
             "failed": False
         }
         self.runtime_wait_ack_active = True
+        self.monitor_reconnect_pending = False
         self.set_frontend_monitor_alert("")
+
+    def _status_matches_inflight_task(self, status_response):
+        if not isinstance(status_response, dict):
+            return False
+        runtime = status_response.get("timeline_runtime", {})
+        runtime = runtime if isinstance(runtime, dict) else {}
+        runtime_state = str(runtime.get("state", "")).strip().lower()
+        if runtime_state not in {"running", "resumed", "paused", "waiting_ack"}:
+            return False
+        inflight_client_task_id = str(getattr(self, "front_inflight_client_task_id", "")).strip()
+        if not inflight_client_task_id:
+            return False
+        runtime_client_task_id = str(runtime.get("client_task_id", "")).strip()
+        return bool(runtime_client_task_id) and runtime_client_task_id == inflight_client_task_id
+
+    def _adopt_running_task_after_ack_timeout(self, status_response):
+        if not self._status_matches_inflight_task(status_response):
+            return False
+        runtime = status_response.get("timeline_runtime", {})
+        runtime = runtime if isinstance(runtime, dict) else {}
+        adopted_server_task_id = str(runtime.get("server_task_id", "")).strip()
+        synthetic_ack = {
+            "type": "ack",
+            "status": "ok",
+            "client_task_id": str(getattr(self, "front_inflight_client_task_id", "")).strip(),
+            "server_task_id": adopted_server_task_id,
+            "reconciled_after_ack_timeout": True
+        }
+        self.write_text({
+            "ack_timeout_reconcile": True,
+            "timeline_runtime": runtime,
+            "synthetic_ack": synthetic_ack
+        })
+        self._monitor_after_ack(synthetic_ack)
+        state = str(runtime.get("state", "")).strip().lower()
+        if state in {"running", "resumed", "paused"}:
+            self._set_front_round_state("running")
+        self.runtime_display_frozen = False
+        self.runtime_wait_ack_active = False
+        self.monitor_reconnect_pending = True
+        self.set_status("ACK 逾時後已完成任務歸屬校正，沿用後端執行中任務")
+        return True
+
+    def _calibrate_monitor_after_reconnect(self, runtime_state, processed_count):
+        monitor_obj = getattr(self, "task_monitor", {})
+        monitor = monitor_obj if isinstance(monitor_obj, dict) else {}
+        if not monitor or monitor.get("failed"):
+            self.monitor_reconnect_pending = False
+            return
+        state = str(runtime_state or "").strip().lower()
+        if state not in {"running", "resumed", "paused"}:
+            self.monitor_reconnect_pending = False
+            return
+        now = float(time.monotonic())
+        monitor["phase"] = "watch_progress"
+        monitor["phase_started_at"] = now
+        monitor["last_state"] = state
+        monitor["last_processed_count"] = int(max(0, processed_count))
+        monitor["last_progress_at"] = now
+        monitor["paused_at"] = now if state == "paused" else None
+        monitor["failed"] = False
+        self.task_monitor = monitor
+        self.monitor_reconnect_pending = False
+        watch_obj = getattr(self, "first_event_progress_watch", {})
+        watch = watch_obj if isinstance(watch_obj, dict) else {}
+        if watch:
+            watch["timeout_reported"] = False
+            watch["expected_first_event_deadline"] = now + FIRST_EVENT_DEADLINE_GRACE_SEC
+            self.first_event_progress_watch = watch
 
     def _freeze_runtime_for_wait_ack(self, snapshot_events):
         self.wait_ack_snapshot_timeline = self.copy_events(snapshot_events or [])
@@ -4829,6 +4907,21 @@ class App:
                     self._poll_front_loop_round_done(display_name)
                 except Exception as e:
                     if isinstance(e, PiRequestError) and e.kind == "ack_read_timeout":
+                        recovered = False
+                        try:
+                            status_response = self.request_pi(
+                                {"action": "status"},
+                                write_response=False,
+                                channel="status",
+                                timeout=max(0.2, ack_timeout_ms / 1000.0)
+                            )
+                            if isinstance(status_response, dict):
+                                recovered = self._adopt_running_task_after_ack_timeout(status_response)
+                        except Exception:
+                            recovered = False
+                        if recovered:
+                            self._poll_front_loop_round_done(display_name)
+                            return
                         self._mark_task_monitor_failed(
                             phase="ACK_TIMEOUT",
                             elapsed_ms=ack_timeout_ms,

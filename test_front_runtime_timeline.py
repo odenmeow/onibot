@@ -988,8 +988,23 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
         app.set_frontend_monitor_alert = lambda msg: app.error_messages.append(msg)
         app._mark_task_monitor_failed = App._mark_task_monitor_failed.__get__(app, App)
         app._monitor_task_status_progress = App._monitor_task_status_progress.__get__(app, App)
+        app._status_matches_inflight_task = App._status_matches_inflight_task.__get__(app, App)
+        app._adopt_running_task_after_ack_timeout = App._adopt_running_task_after_ack_timeout.__get__(app, App)
+        app._calibrate_monitor_after_reconnect = App._calibrate_monitor_after_reconnect.__get__(app, App)
+        app._monitor_after_ack = App._monitor_after_ack.__get__(app, App)
+        app._set_front_round_state = App._set_front_round_state.__get__(app, App)
         app.first_event_progress_watch = {}
         app._reset_task_monitor = App._reset_task_monitor.__get__(app, App)
+        app.monitor_reconnect_pending = False
+        app.front_inflight_client_task_id = "ct-1"
+        app.front_round_state = "waiting_ack"
+        app.front_round_state_changed_at = 0.0
+        app.runtime_display_frozen = True
+        app.runtime_wait_ack_active = True
+        app.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
+        app.runtime_trace_status_note = ""
+        app.set_status = lambda *_args, **_kwargs: None
+        app.write_text = lambda *_args, **_kwargs: None
         return app
 
     def test_monitor_no_false_stall_when_first_event_is_late(self):
@@ -1029,6 +1044,38 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
             app._monitor_task_status_progress("running", 1)
         self.assertFalse(app.task_monitor.get("failed"))
         self.assertEqual(len(app.error_messages), 0)
+
+    def test_ack_timeout_reconcile_adopts_inflight_running_task(self):
+        app = self._new_monitor_app()
+        status_response = {
+            "timeline_runtime": {
+                "state": "running",
+                "client_task_id": "ct-1",
+                "server_task_id": "srv-99"
+            }
+        }
+        adopted = app._adopt_running_task_after_ack_timeout(status_response)
+        self.assertTrue(adopted)
+        self.assertEqual(app.task_monitor.get("server_task_id"), "srv-99")
+        self.assertEqual(app.task_monitor.get("phase"), "wait_running")
+        self.assertFalse(app.runtime_wait_ack_active)
+        self.assertEqual(app.front_round_state, "running")
+        self.assertTrue(app.monitor_reconnect_pending)
+
+    def test_reconnect_calibration_resets_progress_baseline(self):
+        app = self._new_monitor_app()
+        app.task_monitor.update({
+            "phase": "watch_progress",
+            "last_progress_at": 10.0,
+            "last_processed_count": 1,
+            "failed": False
+        })
+        app.monitor_reconnect_pending = True
+        with mock.patch("front.time.monotonic", return_value=123.0):
+            app._calibrate_monitor_after_reconnect("running", 4)
+        self.assertEqual(app.task_monitor.get("last_processed_count"), 4)
+        self.assertEqual(app.task_monitor.get("last_progress_at"), 123.0)
+        self.assertFalse(app.monitor_reconnect_pending)
 
 
 class FrontLoopRoundTransitionTests(unittest.TestCase):
