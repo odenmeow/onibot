@@ -4423,7 +4423,8 @@ class App:
             action_reason="calculate_offset_only",
             run_randat_gate=False,
             run_randat_allocate=False,
-            apply_at_jitter=False
+            apply_at_jitter=False,
+            apply_buff_cycle_roll=False
         )
         if isinstance(prepared, tuple):
             runtime_display_events = prepared[0] if len(prepared) >= 1 else None
@@ -4917,7 +4918,8 @@ class App:
         execution_round_override=None,
         run_randat_gate=True,
         run_randat_allocate=True,
-        apply_at_jitter=True
+        apply_at_jitter=True,
+        apply_buff_cycle_roll=True
     ):
         rslot_count = 0
         try:
@@ -5072,7 +5074,7 @@ class App:
             jitter = max(0.0, _safe_float(ev.get("buff_jitter_sec", 0.0)))
             group = str(ev.get("buff_group", "")).strip()
             cycle_key = group if group else "__nogroup_{}".format(id(ev))
-            if cycle > 0.0:
+            if apply_buff_cycle_roll and cycle > 0.0:
                 if cycle_key not in group_cycle_roll:
                     group_cycle_roll[cycle_key] = round(cycle + random.uniform(0.0, jitter), 4)
                 rolled_cycle = group_cycle_roll[cycle_key]
@@ -5080,7 +5082,7 @@ class App:
                 rolled_cycle = round(cycle, 4)
             ev["runtime_buff_cycle_base"] = round(cycle, 4)
             ev["runtime_buff_cycle_applied"] = round(rolled_cycle, 4)
-            ev["buff_cycle_sec"] = round(rolled_cycle, 4)
+            ev["buff_cycle_sec"] = round(rolled_cycle, 4) if apply_buff_cycle_roll else round(cycle, 4)
             ev["buff_jitter_sec"] = round(jitter, 4)
             ev["at_random_sec"] = 0.0
             ev["skip_mode"] = normalize_front_skip_mode(ev.get("skip_mode", self.config.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)))
@@ -5104,6 +5106,8 @@ class App:
         if resolved_groups:
             resolve_note = "已解決衝突群組: {}".format("、".join(resolved_groups))
         random_note = "jitter 已前端重算（+0~j，僅延後）" if apply_at_jitter else "未套用 at_jitter 隨機化"
+        if not apply_buff_cycle_roll:
+            random_note = "{}；保留 buff_cycle_sec 原值".format(random_note)
         resolve_note = "{}；{}".format(resolve_note, random_note) if resolve_note else random_note
         self.last_prepared_payload = {
             "action_reason": action_reason,
