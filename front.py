@@ -4419,16 +4419,18 @@ class App:
             self.show_warning("提醒", "目前沒有 timeline 資料")
             return
 
-        prepared = self.prepare_events_for_send(action_reason="calculate_offset_only")
+        prepared = self.prepare_events_for_send(
+            action_reason="calculate_offset_only",
+            run_randat_gate=False,
+            run_randat_allocate=False,
+            apply_at_jitter=False
+        )
         if isinstance(prepared, tuple):
             runtime_display_events = prepared[0] if len(prepared) >= 1 else None
         else:
             runtime_display_events = None
         if runtime_display_events is None:
             return
-        for ev in runtime_display_events:
-            if self._is_negative_buff_group(ev.get("buff_group", "")):
-                ev["buff_group"] = ""
         before = self._begin_timeline_change()
         self.runtime_working_timeline = self.copy_events(runtime_display_events)
         self.timeline = self.copy_events(runtime_display_events)
@@ -4912,7 +4914,10 @@ class App:
         action_reason="before_send",
         base_events=None,
         return_backend=False,
-        execution_round_override=None
+        execution_round_override=None,
+        run_randat_gate=True,
+        run_randat_allocate=True,
+        apply_at_jitter=True
     ):
         rslot_count = 0
         try:
@@ -4923,18 +4928,19 @@ class App:
                 1 for ev in normalized_base_events
                 if str(ev.get("type", "")).strip().lower() == "randat"
             )
-            if rslot_count > 0:
+            if run_randat_gate and rslot_count > 0:
                 self.validate_randat_gate_rules(normalized_base_events)
             self.validate_negative_group_monotonic_by_index(normalized_base_events)
             events = recalculate_runtime_events_by_index(normalized_base_events, offset_sec)
         except Exception as e:
             detail = str(e)
-            if rslot_count > 0:
+            if run_randat_gate and rslot_count > 0:
                 detail = "randat 檢核失敗：{}".format(detail)
                 self.set_frontend_error(detail)
                 self.show_warning("送出已阻擋", detail)
             else:
-                self.show_error("時間重算失敗", detail)
+                title = "糾正複製體失敗" if action_reason == "calculate_offset_only" else "時間重算失敗"
+                self.show_error(title, detail)
             return (None, None, "") if return_backend else (None, "")
         unsupported = self.get_unsupported_buttons(events)
         if unsupported:
@@ -5015,33 +5021,37 @@ class App:
         if execution_round <= 0:
             execution_round = int(getattr(self, "runtime_version", 0) or 0) + 1
 
-        events, block_assignments, round_traces, randat_debug = allocate_randat_blocks(
-            events,
-            execution_round=execution_round
-        )
-        existing_round_traces = list(self.runtime_round_traces) if isinstance(self.runtime_round_traces, list) else []
-        merged_round_traces = []
-        for item in existing_round_traces:
-            if not isinstance(item, dict):
-                continue
-            try:
-                item_round = int(item.get("execution_round", item.get("executionRound", 0)) or 0)
-            except Exception:
-                item_round = 0
-            if item_round == int(execution_round):
-                continue
-            merged_round_traces.append(copy.deepcopy(item))
-        for item in round_traces:
-            if not isinstance(item, dict):
-                continue
-            merged_round_traces.append(copy.deepcopy(item))
-        merged_round_traces.sort(
-            key=lambda item: (
-                int(item.get("execution_round", item.get("executionRound", 0)) or 0),
-                int(item.get("draw_order", item.get("drawOrder", item.get("round", 999999))) or 999999)
+        block_assignments = []
+        round_traces = []
+        randat_debug = {}
+        if run_randat_allocate:
+            events, block_assignments, round_traces, randat_debug = allocate_randat_blocks(
+                events,
+                execution_round=execution_round
             )
-        )
-        self.runtime_round_traces = merged_round_traces
+            existing_round_traces = list(self.runtime_round_traces) if isinstance(self.runtime_round_traces, list) else []
+            merged_round_traces = []
+            for item in existing_round_traces:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    item_round = int(item.get("execution_round", item.get("executionRound", 0)) or 0)
+                except Exception:
+                    item_round = 0
+                if item_round == int(execution_round):
+                    continue
+                merged_round_traces.append(copy.deepcopy(item))
+            for item in round_traces:
+                if not isinstance(item, dict):
+                    continue
+                merged_round_traces.append(copy.deepcopy(item))
+            merged_round_traces.sort(
+                key=lambda item: (
+                    int(item.get("execution_round", item.get("executionRound", 0)) or 0),
+                    int(item.get("draw_order", item.get("drawOrder", item.get("round", 999999))) or 999999)
+                )
+            )
+            self.runtime_round_traces = merged_round_traces
         self.runtime_trace_status_note = ""
         self.runtime_working_timeline = self.copy_events(events)
         if hasattr(self, "render_runtime_analysis"):
@@ -5056,7 +5066,8 @@ class App:
         }
         group_cycle_roll = {}
         for ev in events:
-            ev["at"] = apply_positive_jitter(ev.get("at", 0.0), ev.get("at_jitter", 0.0))
+            if apply_at_jitter:
+                ev["at"] = apply_positive_jitter(ev.get("at", 0.0), ev.get("at_jitter", 0.0))
             cycle = max(0.0, _safe_float(ev.get("buff_cycle_sec", 0.0)))
             jitter = max(0.0, _safe_float(ev.get("buff_jitter_sec", 0.0)))
             group = str(ev.get("buff_group", "")).strip()
@@ -5092,7 +5103,7 @@ class App:
         resolve_note = ""
         if resolved_groups:
             resolve_note = "已解決衝突群組: {}".format("、".join(resolved_groups))
-        random_note = "jitter 已前端重算（+0~j，僅延後）"
+        random_note = "jitter 已前端重算（+0~j，僅延後）" if apply_at_jitter else "未套用 at_jitter 隨機化"
         resolve_note = "{}；{}".format(resolve_note, random_note) if resolve_note else random_note
         self.last_prepared_payload = {
             "action_reason": action_reason,
@@ -5110,7 +5121,7 @@ class App:
                 "runtime_version": int(getattr(self, "pending_runtime_version", 0) or (int(getattr(self, "runtime_version", 0)) + 1)),
                 "execution_round": int(execution_round),
                 "rslot_count": int(rslot_count),
-                "randat_executed": bool(rslot_count > 0),
+                "randat_executed": bool(run_randat_allocate and rslot_count > 0),
                 "draw_result": copy.deepcopy(block_assignments),
                 "table_b_preview": copy.deepcopy(randat_debug.get("table_b_before_insert", [])),
                 "mix_slot_show": copy.deepcopy(randat_debug.get("mix_slot_show", [])),

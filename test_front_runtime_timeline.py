@@ -1541,17 +1541,60 @@ class TimelineWorkflowTests(unittest.TestCase):
         refreshed = {"tree": 0, "preview": 0}
         app.refresh_tree = lambda: refreshed.__setitem__("tree", refreshed["tree"] + 1)
         app.refresh_preview = lambda: refreshed.__setitem__("preview", refreshed["preview"] + 1)
-        app.prepare_events_for_send = lambda action_reason="calculate_offset_only": ([
+        app.prepare_events_for_send = lambda **_kwargs: ([
             {"type": "press", "button": "space", "at": 1.23, "at_jitter": 0.0, "buff_group": "-1", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0, "row_color": ""}
         ], "")
 
         app.calculate_offsets_only()
 
         self.assertEqual(app.timeline[0]["at"], 1.23)
-        self.assertEqual(app.timeline[0]["buff_group"], "")
+        self.assertEqual(app.timeline[0]["buff_group"], "-1")
         self.assertEqual(app.timeline_meta["original_events"][0]["at"], 6.12)
         self.assertEqual(refreshed["tree"], 1)
         self.assertEqual(refreshed["preview"], 1)
+
+    def test_calculate_offsets_only_disables_randat_gate_allocate_and_jitter(self):
+        app = self._new_workflow_app()
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 6.12, "at_jitter": 0.5, "buff_group": "-1", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0}
+        ]
+        captured = {}
+
+        def fake_prepare_events_for_send(**kwargs):
+            captured["kwargs"] = dict(kwargs)
+            return (app.copy_events(app.timeline), "")
+
+        app.prepare_events_for_send = fake_prepare_events_for_send
+        app.calculate_offsets_only()
+
+        self.assertIn("kwargs", captured)
+        self.assertEqual(captured["kwargs"].get("run_randat_gate"), False)
+        self.assertEqual(captured["kwargs"].get("run_randat_allocate"), False)
+        self.assertEqual(captured["kwargs"].get("apply_at_jitter"), False)
+
+    def test_prepare_events_for_send_can_skip_randat_gate_for_offset_only(self):
+        app = self._new_workflow_app()
+        app.show_warning = lambda *_args, **_kwargs: None
+        app.show_error = lambda *_args, **_kwargs: None
+        app.render_prepared_payload = lambda: None
+        app.render_runtime_analysis = lambda **_kwargs: None
+        app.timeline = [
+            {"type": "press", "button": "space", "at": 0.0, "at_jitter": 0.0, "buff_group": "2", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0},
+            {"type": "randat", "button": "", "at": 0.05, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0},
+            {"type": "press", "button": "space", "at": 0.1, "at_jitter": 0.0, "buff_group": "1", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0},
+        ]
+
+        prepared_blocked, _ = app.prepare_events_for_send("before_send")
+        prepared_unblocked, _ = app.prepare_events_for_send(
+            "calculate_offset_only",
+            run_randat_gate=False,
+            run_randat_allocate=False,
+            apply_at_jitter=False
+        )
+
+        self.assertIsNone(prepared_blocked)
+        self.assertIsNotNone(prepared_unblocked)
+        self.assertEqual([ev.get("buff_group", "") for ev in prepared_unblocked if ev.get("type") == "press"], ["2", "1"])
 
     def test_prepare_events_multi_round_still_uses_origin_snapshot(self):
         app = self._new_workflow_app()
