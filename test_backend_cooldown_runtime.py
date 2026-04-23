@@ -313,6 +313,7 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
         timeline_runtime = status["timeline_runtime"]
         self.assertEqual(timeline_runtime["runtime_version"], 5)
         self.assertEqual(timeline_runtime["execution_round"], 5)
+        self.assertEqual(timeline_runtime["client_task_id"], "ct-2")
 
     def test_start_task_uses_runtime_meta_execution_round_when_top_level_missing(self):
         orig_thread = backend.threading.Thread
@@ -347,6 +348,21 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
         status = backend.handle_request({"action": "status"})
         timeline_runtime = status["timeline_runtime"]
         self.assertEqual(timeline_runtime["execution_round"], 1)
+
+    def test_now_ms_uses_monotonic_mapping_to_avoid_wall_clock_jumps(self):
+        orig_mono = backend.time.monotonic
+        orig_anchor_mono = backend._clock_anchor_monotonic
+        orig_anchor_wall = backend._clock_anchor_wall_ms
+        try:
+            backend._clock_anchor_monotonic = 100.0
+            backend._clock_anchor_wall_ms = 1_000_000
+            backend.time.monotonic = lambda: 102.5
+            mapped_now = backend._now_ms()
+        finally:
+            backend.time.monotonic = orig_mono
+            backend._clock_anchor_monotonic = orig_anchor_mono
+            backend._clock_anchor_wall_ms = orig_anchor_wall
+        self.assertEqual(mapped_now, 1_002_500)
 
 
 if __name__ == "__main__":

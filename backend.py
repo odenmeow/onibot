@@ -51,6 +51,9 @@ runtime_lock = threading.Lock()
 current_run_thread = None
 current_run_clock = None
 current_server_task_id = ""
+current_client_task_id = ""
+_clock_anchor_monotonic = time.monotonic()
+_clock_anchor_wall_ms = int(time.time() * 1000)
 current_run_status = {
     "state": "idle",   # idle / running / stopping / stopped / error
     "mode": "",
@@ -89,7 +92,8 @@ START_TASK_ALLOWED_TIMELINE_FIELDS = {"idx", "at_ms", "action", "btn", "skip_mod
 
 
 def _now_ms():
-    return int(time.time() * 1000)
+    elapsed_ms = int(max(0.0, (time.monotonic() - _clock_anchor_monotonic) * 1000.0))
+    return int(_clock_anchor_wall_ms + elapsed_ms)
 
 
 def _new_server_task_id():
@@ -113,6 +117,7 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
     with runtime_lock:
         timeline_runtime["run_id"] += 1
         timeline_runtime["server_task_id"] = str(server_task_id or "")
+        timeline_runtime["client_task_id"] = str(current_client_task_id or "")
         timeline_runtime["state"] = state
         timeline_runtime["mode"] = mode
         timeline_runtime["loop_count"] = int(loop_count)
@@ -208,6 +213,7 @@ def get_timeline_runtime_snapshot():
         return {
             "run_id": int(timeline_runtime.get("run_id", 0)),
             "server_task_id": str(timeline_runtime.get("server_task_id", "")),
+            "client_task_id": str(timeline_runtime.get("client_task_id", "")),
             "state": timeline_runtime.get("state", "idle"),
             "mode": timeline_runtime.get("mode", ""),
             "loop_count": int(timeline_runtime.get("loop_count", 0)),
@@ -924,7 +930,7 @@ def resume_current_run():
 
 
 def handle_request(data):
-    global current_run_thread, current_run_status, current_server_task_id
+    global current_run_thread, current_run_status, current_server_task_id, current_client_task_id
 
     action = data.get("action")
 
@@ -987,6 +993,7 @@ def handle_request(data):
             "server_task_id": ""
         }
         current_server_task_id = ""
+        current_client_task_id = ""
         return {
             "status": "ok",
             "state": "idle",
@@ -1076,6 +1083,7 @@ def handle_request(data):
         chosen_skip_mode = next((mode for mode in skip_mode_values if mode), BUFF_SKIP_MODE_WALK)
         buff_skip_mode, deprecated_alias = normalize_buff_skip_mode(chosen_skip_mode)
         current_server_task_id = _new_server_task_id()
+        current_client_task_id = client_task_id
         stop_event.clear()
         pause_event.clear()
         current_run_thread = threading.Thread(
@@ -1089,6 +1097,7 @@ def handle_request(data):
         if incoming_runtime_diag:
             patch_timeline_runtime(runtime_diag=incoming_runtime_diag)
         patch_timeline_runtime(
+            client_task_id=current_client_task_id,
             runtime_version=max(0, incoming_runtime_version),
             execution_round=incoming_execution_round
         )
