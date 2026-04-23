@@ -1,6 +1,6 @@
 {
   "name": "一拳左右亂打1",
-  "saved_at": "2026-04-22 14:05:14",
+  "saved_at": "2026-04-23 19:35:30",
   "events": [
     {
       "type": "press",
@@ -1055,6 +1055,22 @@
       "runtime_source_index": 63
     },
     {
+      "type": "randat",
+      "button": "",
+      "at": 16.16,
+      "at_jitter": 0.0,
+      "buff_group": "",
+      "buff_cycle_sec": 0.0,
+      "buff_jitter_sec": 0.0,
+      "row_color": "#d8ecff",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 0.0,
+      "runtime_buff_cycle_applied": 0.0,
+      "skip_mode": "pass",
+      "runtime_source_index": 64
+    },
+    {
       "type": "press",
       "button": "right",
       "at": 16.67,
@@ -1068,7 +1084,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 64
+      "runtime_source_index": 65
     },
     {
       "type": "press",
@@ -1084,7 +1100,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 65
+      "runtime_source_index": 66
     },
     {
       "type": "release",
@@ -1100,7 +1116,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 66
+      "runtime_source_index": 67
     },
     {
       "type": "release",
@@ -1116,7 +1132,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 67
+      "runtime_source_index": 68
     },
     {
       "type": "press",
@@ -1132,7 +1148,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 68
+      "runtime_source_index": 69
     },
     {
       "type": "press",
@@ -1148,7 +1164,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 69
+      "runtime_source_index": 70
     },
     {
       "type": "release",
@@ -1164,7 +1180,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 70
+      "runtime_source_index": 71
     },
     {
       "type": "release",
@@ -1180,7 +1196,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 71
+      "runtime_source_index": 72
     },
     {
       "type": "press",
@@ -1196,7 +1212,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 72
+      "runtime_source_index": 73
     },
     {
       "type": "press",
@@ -1212,7 +1228,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 73
+      "runtime_source_index": 74
     },
     {
       "type": "release",
@@ -1228,7 +1244,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 74
+      "runtime_source_index": 75
     },
     {
       "type": "release",
@@ -1244,7 +1260,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 75
+      "runtime_source_index": 76
     },
     {
       "type": "press",
@@ -1260,7 +1276,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 76
+      "runtime_source_index": 77
     },
     {
       "type": "press",
@@ -1276,7 +1292,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 77
+      "runtime_source_index": 78
     },
     {
       "type": "release",
@@ -1292,7 +1308,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 78
+      "runtime_source_index": 79
     },
     {
       "type": "release",
@@ -1308,7 +1324,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 79
+      "runtime_source_index": 80
     },
     {
       "type": "press",
@@ -1317,7 +1333,7 @@
       "at_jitter": 0.07,
       "at_random_sec": 0.0,
       "buff_group": "2",
-      "buff_cycle_sec": 19.4012,
+      "buff_cycle_sec": 23.0265,
       "buff_jitter_sec": 6.0,
       "replicatedRow": 0,
       "row_color": "",
@@ -1335,10 +1351,10 @@
         83
       ],
       "runtime_picked_slot": 82,
-      "runtime_buff_cycle_base": 15.0,
-      "runtime_buff_cycle_applied": 19.4012,
+      "runtime_buff_cycle_base": 20.0,
+      "runtime_buff_cycle_applied": 23.0265,
       "skip_mode": "pass",
-      "runtime_source_index": 80
+      "runtime_source_index": 81
     },
     {
       "type": "release",
@@ -1347,7 +1363,7 @@
       "at_jitter": 0.07,
       "at_random_sec": 0.0,
       "buff_group": "2",
-      "buff_cycle_sec": 19.4012,
+      "buff_cycle_sec": 23.0265,
       "buff_jitter_sec": 6.0,
       "replicatedRow": 0,
       "row_color": "",
@@ -1365,10 +1381,10 @@
         83
       ],
       "runtime_picked_slot": 82,
-      "runtime_buff_cycle_base": 15.0,
-      "runtime_buff_cycle_applied": 19.4012,
+      "runtime_buff_cycle_base": 20.0,
+      "runtime_buff_cycle_applied": 23.0265,
       "skip_mode": "pass",
-      "runtime_source_index": 81
+      "runtime_source_index": 82
     },
     {
       "type": "randat",
@@ -1384,7 +1400,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 82
+      "runtime_source_index": 83
     },
     {
       "type": "press",
@@ -1400,7 +1416,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 83
+      "runtime_source_index": 84
     },
     {
       "type": "press",
@@ -1416,7 +1432,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 84
+      "runtime_source_index": 85
     },
     {
       "type": "release",
@@ -1432,7 +1448,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 85
+      "runtime_source_index": 86
     },
     {
       "type": "release",
@@ -1448,7 +1464,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 86
+      "runtime_source_index": 87
     },
     {
       "type": "press",
@@ -1464,7 +1480,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 87
+      "runtime_source_index": 88
     },
     {
       "type": "press",
@@ -1480,7 +1496,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 88
+      "runtime_source_index": 89
     },
     {
       "type": "release",
@@ -1496,7 +1512,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 89
+      "runtime_source_index": 90
     },
     {
       "type": "release",
@@ -1512,7 +1528,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 90
+      "runtime_source_index": 91
     },
     {
       "type": "press",
@@ -1528,7 +1544,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 91
+      "runtime_source_index": 92
     },
     {
       "type": "press",
@@ -1544,7 +1560,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 92
+      "runtime_source_index": 93
     },
     {
       "type": "release",
@@ -1560,7 +1576,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 93
+      "runtime_source_index": 94
     },
     {
       "type": "release",
@@ -1576,7 +1592,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 94
+      "runtime_source_index": 95
     },
     {
       "type": "randat",
@@ -1592,7 +1608,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 95
+      "runtime_source_index": 96
     },
     {
       "type": "press",
@@ -1608,7 +1624,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 96
+      "runtime_source_index": 97
     },
     {
       "type": "press",
@@ -1624,7 +1640,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 97
+      "runtime_source_index": 98
     },
     {
       "type": "release",
@@ -1640,7 +1656,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 98
+      "runtime_source_index": 99
     },
     {
       "type": "release",
@@ -1656,7 +1672,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 99
+      "runtime_source_index": 100
     },
     {
       "type": "press",
@@ -1672,7 +1688,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 100
+      "runtime_source_index": 101
     },
     {
       "type": "press",
@@ -1688,7 +1704,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 101
+      "runtime_source_index": 102
     },
     {
       "type": "release",
@@ -1704,7 +1720,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 102
+      "runtime_source_index": 103
     },
     {
       "type": "release",
@@ -1720,7 +1736,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 103
+      "runtime_source_index": 104
     },
     {
       "type": "press",
@@ -1736,7 +1752,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 104
+      "runtime_source_index": 105
     },
     {
       "type": "press",
@@ -1752,7 +1768,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 105
+      "runtime_source_index": 106
     },
     {
       "type": "release",
@@ -1768,7 +1784,7 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 106
+      "runtime_source_index": 107
     },
     {
       "type": "release",
@@ -1784,7 +1800,415 @@
       "runtime_buff_cycle_base": 0.0,
       "runtime_buff_cycle_applied": 0.0,
       "skip_mode": "pass",
-      "runtime_source_index": 107
+      "runtime_source_index": 108
+    },
+    {
+      "type": "press",
+      "button": "left",
+      "at": 32.94,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 109
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 33.22,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 110
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 33.39,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 111
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 33.57,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 112
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 33.74,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 113
+    },
+    {
+      "type": "release",
+      "button": "left",
+      "at": 33.94,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 114
+    },
+    {
+      "type": "press",
+      "button": "up",
+      "at": 34.24,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 115
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 34.52,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 116
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 34.69,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 117
+    },
+    {
+      "type": "release",
+      "button": "up",
+      "at": 35.19,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 120
+    },
+    {
+      "type": "press",
+      "button": "g",
+      "at": 35.69,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 121
+    },
+    {
+      "type": "release",
+      "button": "g",
+      "at": 35.86,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 122
+    },
+    {
+      "type": "press",
+      "button": "right",
+      "at": 36.36,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 123
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 36.64,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 124
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 36.81,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 125
+    },
+    {
+      "type": "press",
+      "button": "shift",
+      "at": 36.97,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "shift",
+      "at": 37.15,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0
+    },
+    {
+      "type": "release",
+      "button": "right",
+      "at": 37.31,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 68.3044,
+      "skip_mode": "pass",
+      "runtime_source_index": 126
+    },
+    {
+      "type": "press",
+      "button": "down",
+      "at": 37.54,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 60.7235,
+      "skip_mode": "pass",
+      "runtime_source_index": 127
+    },
+    {
+      "type": "press",
+      "button": "alt",
+      "at": 38.02,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 60.7235,
+      "skip_mode": "pass",
+      "runtime_source_index": 128
+    },
+    {
+      "type": "release",
+      "button": "alt",
+      "at": 38.19,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 60.7235,
+      "skip_mode": "pass",
+      "runtime_source_index": 129
+    },
+    {
+      "type": "release",
+      "button": "down",
+      "at": 38.41,
+      "at_jitter": 0.07,
+      "buff_group": "3",
+      "buff_cycle_sec": 60.0,
+      "buff_jitter_sec": 13.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 60.0,
+      "runtime_buff_cycle_applied": 60.7235,
+      "skip_mode": "pass",
+      "runtime_source_index": 130
+    },
+    {
+      "type": "press",
+      "button": "left",
+      "at": 38.91,
+      "at_jitter": 0.07,
+      "buff_group": "4",
+      "buff_cycle_sec": 47.1937,
+      "buff_jitter_sec": 15.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 35.0,
+      "runtime_buff_cycle_applied": 47.1937,
+      "skip_mode": "pass",
+      "runtime_source_index": 131
+    },
+    {
+      "type": "press",
+      "button": "x",
+      "at": 39.19,
+      "at_jitter": 0.07,
+      "buff_group": "4",
+      "buff_cycle_sec": 47.1937,
+      "buff_jitter_sec": 15.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 35.0,
+      "runtime_buff_cycle_applied": 47.1937,
+      "skip_mode": "pass",
+      "runtime_source_index": 132
+    },
+    {
+      "type": "release",
+      "button": "left",
+      "at": 39.36,
+      "at_jitter": 0.07,
+      "buff_group": "4",
+      "buff_cycle_sec": 47.1937,
+      "buff_jitter_sec": 15.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 35.0,
+      "runtime_buff_cycle_applied": 47.1937,
+      "skip_mode": "pass",
+      "runtime_source_index": 133
+    },
+    {
+      "type": "release",
+      "button": "x",
+      "at": 39.59,
+      "at_jitter": 0.07,
+      "buff_group": "4",
+      "buff_cycle_sec": 47.1937,
+      "buff_jitter_sec": 15.0,
+      "row_color": "#fff4b3",
+      "replicatedRow": 0,
+      "at_random_sec": 0.0,
+      "runtime_buff_cycle_base": 35.0,
+      "runtime_buff_cycle_applied": 47.1937,
+      "skip_mode": "pass",
+      "runtime_source_index": 134
     }
   ],
   "_meta": {
@@ -4164,6 +4588,22 @@
         "runtime_source_index": 63
       },
       {
+        "type": "randat",
+        "button": "",
+        "at": 16.16,
+        "at_jitter": 0.0,
+        "buff_group": "",
+        "buff_cycle_sec": 0.0,
+        "buff_jitter_sec": 0.0,
+        "row_color": "#d8ecff",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 0.0,
+        "runtime_buff_cycle_applied": 0.0,
+        "skip_mode": "pass",
+        "runtime_source_index": 64
+      },
+      {
         "type": "press",
         "button": "right",
         "at": 16.67,
@@ -4177,7 +4617,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 64
+        "runtime_source_index": 65
       },
       {
         "type": "press",
@@ -4193,7 +4633,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 65
+        "runtime_source_index": 66
       },
       {
         "type": "release",
@@ -4209,7 +4649,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 66
+        "runtime_source_index": 67
       },
       {
         "type": "release",
@@ -4225,7 +4665,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 67
+        "runtime_source_index": 68
       },
       {
         "type": "press",
@@ -4241,7 +4681,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 68
+        "runtime_source_index": 69
       },
       {
         "type": "press",
@@ -4257,7 +4697,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 69
+        "runtime_source_index": 70
       },
       {
         "type": "release",
@@ -4273,7 +4713,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 70
+        "runtime_source_index": 71
       },
       {
         "type": "release",
@@ -4289,7 +4729,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 71
+        "runtime_source_index": 72
       },
       {
         "type": "press",
@@ -4305,7 +4745,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 72
+        "runtime_source_index": 73
       },
       {
         "type": "press",
@@ -4321,7 +4761,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 73
+        "runtime_source_index": 74
       },
       {
         "type": "release",
@@ -4337,7 +4777,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 74
+        "runtime_source_index": 75
       },
       {
         "type": "release",
@@ -4353,7 +4793,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 75
+        "runtime_source_index": 76
       },
       {
         "type": "press",
@@ -4369,7 +4809,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 76
+        "runtime_source_index": 77
       },
       {
         "type": "press",
@@ -4385,7 +4825,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 77
+        "runtime_source_index": 78
       },
       {
         "type": "release",
@@ -4401,7 +4841,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 78
+        "runtime_source_index": 79
       },
       {
         "type": "release",
@@ -4417,7 +4857,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 79
+        "runtime_source_index": 80
       },
       {
         "type": "press",
@@ -4426,7 +4866,7 @@
         "at_jitter": 0.07,
         "at_random_sec": 0.0,
         "buff_group": "2",
-        "buff_cycle_sec": 19.4012,
+        "buff_cycle_sec": 23.0265,
         "buff_jitter_sec": 6.0,
         "replicatedRow": 0,
         "row_color": "",
@@ -4444,10 +4884,10 @@
           83
         ],
         "runtime_picked_slot": 82,
-        "runtime_buff_cycle_base": 15.0,
-        "runtime_buff_cycle_applied": 19.4012,
+        "runtime_buff_cycle_base": 20.0,
+        "runtime_buff_cycle_applied": 23.0265,
         "skip_mode": "pass",
-        "runtime_source_index": 80
+        "runtime_source_index": 81
       },
       {
         "type": "release",
@@ -4456,7 +4896,7 @@
         "at_jitter": 0.07,
         "at_random_sec": 0.0,
         "buff_group": "2",
-        "buff_cycle_sec": 19.4012,
+        "buff_cycle_sec": 23.0265,
         "buff_jitter_sec": 6.0,
         "replicatedRow": 0,
         "row_color": "",
@@ -4474,10 +4914,10 @@
           83
         ],
         "runtime_picked_slot": 82,
-        "runtime_buff_cycle_base": 15.0,
-        "runtime_buff_cycle_applied": 19.4012,
+        "runtime_buff_cycle_base": 20.0,
+        "runtime_buff_cycle_applied": 23.0265,
         "skip_mode": "pass",
-        "runtime_source_index": 81
+        "runtime_source_index": 82
       },
       {
         "type": "randat",
@@ -4493,7 +4933,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 82
+        "runtime_source_index": 83
       },
       {
         "type": "press",
@@ -4509,7 +4949,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 83
+        "runtime_source_index": 84
       },
       {
         "type": "press",
@@ -4525,7 +4965,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 84
+        "runtime_source_index": 85
       },
       {
         "type": "release",
@@ -4541,7 +4981,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 85
+        "runtime_source_index": 86
       },
       {
         "type": "release",
@@ -4557,7 +4997,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 86
+        "runtime_source_index": 87
       },
       {
         "type": "press",
@@ -4573,7 +5013,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 87
+        "runtime_source_index": 88
       },
       {
         "type": "press",
@@ -4589,7 +5029,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 88
+        "runtime_source_index": 89
       },
       {
         "type": "release",
@@ -4605,7 +5045,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 89
+        "runtime_source_index": 90
       },
       {
         "type": "release",
@@ -4621,7 +5061,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 90
+        "runtime_source_index": 91
       },
       {
         "type": "press",
@@ -4637,7 +5077,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 91
+        "runtime_source_index": 92
       },
       {
         "type": "press",
@@ -4653,7 +5093,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 92
+        "runtime_source_index": 93
       },
       {
         "type": "release",
@@ -4669,7 +5109,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 93
+        "runtime_source_index": 94
       },
       {
         "type": "release",
@@ -4685,7 +5125,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 94
+        "runtime_source_index": 95
       },
       {
         "type": "randat",
@@ -4701,7 +5141,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 95
+        "runtime_source_index": 96
       },
       {
         "type": "press",
@@ -4717,7 +5157,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 96
+        "runtime_source_index": 97
       },
       {
         "type": "press",
@@ -4733,7 +5173,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 97
+        "runtime_source_index": 98
       },
       {
         "type": "release",
@@ -4749,7 +5189,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 98
+        "runtime_source_index": 99
       },
       {
         "type": "release",
@@ -4765,7 +5205,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 99
+        "runtime_source_index": 100
       },
       {
         "type": "press",
@@ -4781,7 +5221,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 100
+        "runtime_source_index": 101
       },
       {
         "type": "press",
@@ -4797,7 +5237,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 101
+        "runtime_source_index": 102
       },
       {
         "type": "release",
@@ -4813,7 +5253,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 102
+        "runtime_source_index": 103
       },
       {
         "type": "release",
@@ -4829,7 +5269,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 103
+        "runtime_source_index": 104
       },
       {
         "type": "press",
@@ -4845,7 +5285,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 104
+        "runtime_source_index": 105
       },
       {
         "type": "press",
@@ -4861,7 +5301,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 105
+        "runtime_source_index": 106
       },
       {
         "type": "release",
@@ -4877,7 +5317,7 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 106
+        "runtime_source_index": 107
       },
       {
         "type": "release",
@@ -4893,7 +5333,415 @@
         "runtime_buff_cycle_base": 0.0,
         "runtime_buff_cycle_applied": 0.0,
         "skip_mode": "pass",
-        "runtime_source_index": 107
+        "runtime_source_index": 108
+      },
+      {
+        "type": "press",
+        "button": "left",
+        "at": 32.94,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 109
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 33.22,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 110
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 33.39,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 111
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 33.57,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 112
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 33.74,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 113
+      },
+      {
+        "type": "release",
+        "button": "left",
+        "at": 33.94,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 114
+      },
+      {
+        "type": "press",
+        "button": "up",
+        "at": 34.24,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 115
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 34.52,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 116
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 34.69,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 117
+      },
+      {
+        "type": "release",
+        "button": "up",
+        "at": 35.19,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 120
+      },
+      {
+        "type": "press",
+        "button": "g",
+        "at": 35.69,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 121
+      },
+      {
+        "type": "release",
+        "button": "g",
+        "at": 35.86,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 122
+      },
+      {
+        "type": "press",
+        "button": "right",
+        "at": 36.36,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 123
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 36.64,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 124
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 36.81,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 125
+      },
+      {
+        "type": "press",
+        "button": "shift",
+        "at": 36.97,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0
+      },
+      {
+        "type": "release",
+        "button": "shift",
+        "at": 37.15,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0
+      },
+      {
+        "type": "release",
+        "button": "right",
+        "at": 37.31,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 68.3044,
+        "skip_mode": "pass",
+        "runtime_source_index": 126
+      },
+      {
+        "type": "press",
+        "button": "down",
+        "at": 37.54,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 60.7235,
+        "skip_mode": "pass",
+        "runtime_source_index": 127
+      },
+      {
+        "type": "press",
+        "button": "alt",
+        "at": 38.02,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 60.7235,
+        "skip_mode": "pass",
+        "runtime_source_index": 128
+      },
+      {
+        "type": "release",
+        "button": "alt",
+        "at": 38.19,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 60.7235,
+        "skip_mode": "pass",
+        "runtime_source_index": 129
+      },
+      {
+        "type": "release",
+        "button": "down",
+        "at": 38.41,
+        "at_jitter": 0.07,
+        "buff_group": "3",
+        "buff_cycle_sec": 60.0,
+        "buff_jitter_sec": 13.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 60.0,
+        "runtime_buff_cycle_applied": 60.7235,
+        "skip_mode": "pass",
+        "runtime_source_index": 130
+      },
+      {
+        "type": "press",
+        "button": "left",
+        "at": 38.91,
+        "at_jitter": 0.07,
+        "buff_group": "4",
+        "buff_cycle_sec": 47.1937,
+        "buff_jitter_sec": 15.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 35.0,
+        "runtime_buff_cycle_applied": 47.1937,
+        "skip_mode": "pass",
+        "runtime_source_index": 131
+      },
+      {
+        "type": "press",
+        "button": "x",
+        "at": 39.19,
+        "at_jitter": 0.07,
+        "buff_group": "4",
+        "buff_cycle_sec": 47.1937,
+        "buff_jitter_sec": 15.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 35.0,
+        "runtime_buff_cycle_applied": 47.1937,
+        "skip_mode": "pass",
+        "runtime_source_index": 132
+      },
+      {
+        "type": "release",
+        "button": "left",
+        "at": 39.36,
+        "at_jitter": 0.07,
+        "buff_group": "4",
+        "buff_cycle_sec": 47.1937,
+        "buff_jitter_sec": 15.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 35.0,
+        "runtime_buff_cycle_applied": 47.1937,
+        "skip_mode": "pass",
+        "runtime_source_index": 133
+      },
+      {
+        "type": "release",
+        "button": "x",
+        "at": 39.59,
+        "at_jitter": 0.07,
+        "buff_group": "4",
+        "buff_cycle_sec": 47.1937,
+        "buff_jitter_sec": 15.0,
+        "row_color": "#fff4b3",
+        "replicatedRow": 0,
+        "at_random_sec": 0.0,
+        "runtime_buff_cycle_base": 35.0,
+        "runtime_buff_cycle_applied": 47.1937,
+        "skip_mode": "pass",
+        "runtime_source_index": 134
       }
     ]
   }
