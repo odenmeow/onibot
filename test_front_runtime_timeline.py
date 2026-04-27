@@ -1069,6 +1069,7 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
         app.frontend_monitor_alert_level = ""
         app.ack_timeout_recovered = False
         app.ack_timeout_recovered_source = ""
+        app.front_loop_enabled = False
         app.set_status = lambda *_args, **_kwargs: None
         app.write_text = lambda *_args, **_kwargs: None
         return app
@@ -1133,6 +1134,36 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
         self.assertEqual(app.runtime_trace_status_note, "ACK timeout 已校正，後端任務持續中")
         self.assertTrue(any(item.get("ack_timeout_recovered") for item in recovered_logs))
         self.assertTrue(any(str(msg).startswith("INFO:ACK timeout 已恢復") for msg in app.error_messages))
+
+    def test_ack_timeout_reconcile_does_not_override_loop_round_status_text(self):
+        app = self._new_monitor_app()
+        app.front_loop_enabled = True
+        status_messages = []
+        app.set_status = lambda msg: status_messages.append(msg)
+        adopted = app._adopt_running_task_after_ack_timeout({
+            "timeline_runtime": {
+                "state": "running",
+                "client_task_id": "ct-1",
+                "server_task_id": "srv-99"
+            }
+        })
+        self.assertTrue(adopted)
+        self.assertEqual(status_messages, [])
+
+    def test_ack_timeout_reconcile_does_not_write_operation_status_text(self):
+        app = self._new_monitor_app()
+        app.front_loop_enabled = False
+        status_messages = []
+        app.set_status = lambda msg: status_messages.append(msg)
+        adopted = app._adopt_running_task_after_ack_timeout({
+            "timeline_runtime": {
+                "state": "running",
+                "client_task_id": "ct-1",
+                "server_task_id": "srv-99"
+            }
+        })
+        self.assertTrue(adopted)
+        self.assertEqual(status_messages, [])
 
     def test_reconnect_calibration_resets_progress_baseline(self):
         app = self._new_monitor_app()

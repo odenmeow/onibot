@@ -3497,7 +3497,6 @@ class App:
         self.runtime_wait_ack_active = False
         self.monitor_reconnect_pending = True
         self._mark_ack_timeout_recovered("ack_timeout_adopt")
-        self.set_status("ACK 逾時後已完成任務歸屬校正，沿用後端執行中任務")
         return True
 
     def _calibrate_monitor_after_reconnect(self, runtime_state, processed_count):
