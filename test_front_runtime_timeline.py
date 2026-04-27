@@ -225,6 +225,10 @@ class RuntimeDisplayTests(unittest.TestCase):
         app._is_runtime_key_compatible = App._is_runtime_key_compatible.__get__(app, App)
         app.refresh_tree = App.refresh_tree.__get__(app, App)
         app.poll_runtime_status = App.poll_runtime_status.__get__(app, App)
+        app.is_auto_connect_enabled = App.is_auto_connect_enabled.__get__(app, App)
+        app.update_auto_connect_ui = App.update_auto_connect_ui.__get__(app, App)
+        app.set_auto_connect_enabled = App.set_auto_connect_enabled.__get__(app, App)
+        app.toggle_auto_connect = App.toggle_auto_connect.__get__(app, App)
         app.restore_pre_run_state = App.restore_pre_run_state.__get__(app, App)
         app._is_runtime_readonly = App._is_runtime_readonly.__get__(app, App)
         app.clear_runtime_highlight = App.clear_runtime_highlight.__get__(app, App)
@@ -257,6 +261,35 @@ class RuntimeDisplayTests(unittest.TestCase):
             insert=lambda *_args, **_kwargs: None
         )
         return app
+
+    def test_poll_runtime_status_skips_when_auto_connect_paused(self):
+        app = self._new_app()
+        app.config["auto_connect_enabled"] = False
+        app.request_pi = mock.Mock(side_effect=AssertionError("status request should not run"))
+        app._classify_request_error = lambda *_args, **_kwargs: "request_error"
+        app._set_channel_error = lambda *_args, **_kwargs: None
+        app.root = _FakeRoot()
+
+        app.poll_runtime_status()
+
+        app.request_pi.assert_not_called()
+
+    def test_toggle_auto_connect_persists_and_triggers_auto_connect(self):
+        app = self._new_app()
+        app.config["auto_connect_enabled"] = False
+        app.auto_connect_state_var = _FakeStringVar("")
+        app.auto_connect_toggle_btn = types.SimpleNamespace(config=lambda **kwargs: None)
+        app.auto_connect = mock.Mock()
+        app.close_connection = mock.Mock()
+        app.set_status = mock.Mock()
+        app.monitor_reconnect_pending = True
+
+        with mock.patch("front.save_config") as save_config_mock:
+            app.toggle_auto_connect()
+
+        self.assertTrue(app.config["auto_connect_enabled"])
+        app.auto_connect.assert_called_once()
+        save_config_mock.assert_called_once()
 
     def test_visual_state_priority_keeps_background_semantics(self):
         candidate_tags = get_buff_cell_visual_state(
