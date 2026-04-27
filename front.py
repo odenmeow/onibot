@@ -1812,7 +1812,7 @@ class App:
             self.auto_connect_state_var.set("啟用" if enabled else "暫停")
         btn = getattr(self, "auto_connect_toggle_btn", None)
         if btn is not None:
-            btn.config(text="暫停自動連線" if enabled else "重啟自動連線")
+            btn.config(text="暫停自動重連" if enabled else "重啟自動重連")
 
     def set_auto_connect_enabled(self, enabled, persist=False):
         self.config["auto_connect_enabled"] = bool(enabled)
@@ -1824,12 +1824,11 @@ class App:
         next_enabled = not self.is_auto_connect_enabled()
         self.set_auto_connect_enabled(next_enabled, persist=True)
         if next_enabled:
-            self.set_status("已重啟自動連線 / 重連")
+            self.set_status("已重啟自動重連")
             self.auto_connect()
         else:
-            self.close_connection(channel="status", silent=True)
             self.monitor_reconnect_pending = False
-            self.set_status("已暫停自動連線 / 重連（可手動按「測試連線」）")
+            self.set_status("已暫停自動重連（狀態同步持續啟用）")
 
     def set_connected(self, connected, message=""):
         self.connected = connected
@@ -2156,9 +2155,12 @@ class App:
         tk.Label(connection_row, text="連線狀況：").pack(side="left")
         self.connection_var = tk.StringVar(value="未連線")
         tk.Label(connection_row, textvariable=self.connection_var, fg="#1a4fb8").pack(side="left", padx=(0, 10))
-        tk.Label(connection_row, text="自動連線：").pack(side="left")
+        tk.Label(connection_row, text="自動重連：").pack(side="left")
         self.auto_connect_state_var = tk.StringVar(value="啟用")
         tk.Label(connection_row, textvariable=self.auto_connect_state_var, fg="#1a4fb8").pack(side="left", padx=(0, 8))
+        tk.Label(connection_row, text="狀態同步：").pack(side="left")
+        self.status_sync_state_var = tk.StringVar(value="啟用")
+        tk.Label(connection_row, textvariable=self.status_sync_state_var, fg="#1a4fb8").pack(side="left", padx=(0, 8))
 
         connection_btn_row = tk.Frame(info)
         connection_btn_row.pack(fill="x", padx=8, pady=(0, 4))
@@ -2166,7 +2168,7 @@ class App:
         tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
         self.auto_connect_toggle_btn = tk.Button(
             connection_btn_row,
-            text="暫停自動連線",
+            text="暫停自動重連",
             command=self.toggle_auto_connect,
             width=12
         )
@@ -3271,7 +3273,7 @@ class App:
 
     def poll_runtime_status(self):
         try:
-            if self.is_auto_connect_enabled() and (not self.offline_mode):
+            if not self.offline_mode:
                 res = self.request_pi({"action": "status"}, write_response=False, channel="status")
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
