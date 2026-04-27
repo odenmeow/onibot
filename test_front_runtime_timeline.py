@@ -168,6 +168,22 @@ class _FakeStringVar:
         self._value = value
 
 
+class _FakeTextWidget:
+    def __init__(self):
+        self.value = ""
+        self.fg = "#b30000"
+
+    def config(self, **kwargs):
+        if "fg" in kwargs:
+            self.fg = kwargs["fg"]
+
+    def delete(self, _start, _end):
+        self.value = ""
+
+    def insert(self, _where, text):
+        self.value = str(text)
+
+
 class RuntimeDisplayTests(unittest.TestCase):
     def setUp(self):
         self._orig_showwarning = sys.modules["front"].messagebox.showwarning
@@ -1028,6 +1044,9 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
         app.error_messages = []
         app.set_frontend_error = lambda msg: app.error_messages.append(msg)
         app.set_frontend_monitor_alert = lambda msg: app.error_messages.append(msg)
+        app._set_frontend_monitor_info = lambda msg: app.error_messages.append("INFO:" + str(msg))
+        app._is_ack_timeout_message = App._is_ack_timeout_message.__get__(app, App)
+        app._mark_ack_timeout_recovered = App._mark_ack_timeout_recovered.__get__(app, App)
         app._mark_task_monitor_failed = App._mark_task_monitor_failed.__get__(app, App)
         app._monitor_task_status_progress = App._monitor_task_status_progress.__get__(app, App)
         app._status_matches_inflight_task = App._status_matches_inflight_task.__get__(app, App)
@@ -1045,6 +1064,12 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
         app.runtime_wait_ack_active = True
         app.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
         app.runtime_trace_status_note = ""
+        app.frontend_error_main = ""
+        app.frontend_monitor_alert = ""
+        app.frontend_monitor_alert_level = ""
+        app.ack_timeout_recovered = False
+        app.ack_timeout_recovered_source = ""
+        app.front_loop_enabled = False
         app.set_status = lambda *_args, **_kwargs: None
         app.write_text = lambda *_args, **_kwargs: None
         return app
@@ -1089,6 +1114,8 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
 
     def test_ack_timeout_reconcile_adopts_inflight_running_task(self):
         app = self._new_monitor_app()
+        recovered_logs = []
+        app.write_text = lambda payload: recovered_logs.append(payload)
         status_response = {
             "timeline_runtime": {
                 "state": "running",
@@ -1103,9 +1130,45 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
         self.assertFalse(app.runtime_wait_ack_active)
         self.assertEqual(app.front_round_state, "running")
         self.assertTrue(app.monitor_reconnect_pending)
+        self.assertTrue(app.ack_timeout_recovered)
+        self.assertEqual(app.runtime_trace_status_note, "ACK timeout 已校正，後端任務持續中")
+        self.assertTrue(any(item.get("ack_timeout_recovered") for item in recovered_logs))
+        self.assertTrue(any(str(msg).startswith("INFO:ACK timeout 已恢復") for msg in app.error_messages))
+
+    def test_ack_timeout_reconcile_does_not_override_loop_round_status_text(self):
+        app = self._new_monitor_app()
+        app.front_loop_enabled = True
+        status_messages = []
+        app.set_status = lambda msg: status_messages.append(msg)
+        adopted = app._adopt_running_task_after_ack_timeout({
+            "timeline_runtime": {
+                "state": "running",
+                "client_task_id": "ct-1",
+                "server_task_id": "srv-99"
+            }
+        })
+        self.assertTrue(adopted)
+        self.assertEqual(status_messages, [])
+
+    def test_ack_timeout_reconcile_does_not_write_operation_status_text(self):
+        app = self._new_monitor_app()
+        app.front_loop_enabled = False
+        status_messages = []
+        app.set_status = lambda msg: status_messages.append(msg)
+        adopted = app._adopt_running_task_after_ack_timeout({
+            "timeline_runtime": {
+                "state": "running",
+                "client_task_id": "ct-1",
+                "server_task_id": "srv-99"
+            }
+        })
+        self.assertTrue(adopted)
+        self.assertEqual(status_messages, [])
 
     def test_reconnect_calibration_resets_progress_baseline(self):
         app = self._new_monitor_app()
+        recovered_logs = []
+        app.write_text = lambda payload: recovered_logs.append(payload)
         app.task_monitor.update({
             "phase": "watch_progress",
             "last_progress_at": 10.0,
@@ -1118,6 +1181,62 @@ class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
         self.assertEqual(app.task_monitor.get("last_processed_count"), 4)
         self.assertEqual(app.task_monitor.get("last_progress_at"), 123.0)
         self.assertFalse(app.monitor_reconnect_pending)
+        self.assertTrue(app.ack_timeout_recovered)
+        self.assertTrue(any(item.get("ack_timeout_recovered") for item in recovered_logs))
+
+    def test_ack_timeout_alert_auto_downgraded_after_reconcile(self):
+        app = App.__new__(App)
+        app.frontend_error_text = _FakeTextWidget()
+        app.frontend_error_main = ""
+        app.frontend_monitor_alert = ""
+        app.frontend_monitor_alert_level = ""
+        app.runtime_trace_diagnostic = ""
+        app.last_control_error = ""
+        app.last_status_error = ""
+        app.ack_timeout_recovered = False
+        app.ack_timeout_recovered_source = ""
+        app.runtime_trace_status_note = ""
+        app.task_monitor = {
+            "phase": "wait_ack",
+            "client_task_id": "ct-1",
+            "server_task_id": "",
+            "phase_started_at": 0.0,
+            "last_state": "submitted",
+            "last_processed_count": 0,
+            "last_progress_at": None,
+            "paused_at": None,
+            "failed": False
+        }
+        app.monitor_reconnect_pending = False
+        app.front_inflight_client_task_id = "ct-1"
+        app.front_round_state = "waiting_ack"
+        app.front_round_state_changed_at = 0.0
+        app.runtime_display_frozen = True
+        app.runtime_wait_ack_active = True
+        app.runtime_trace_owner = {"run_id": 0, "server_task_id": ""}
+        app.write_text = lambda *_args, **_kwargs: None
+        app.set_status = lambda *_args, **_kwargs: None
+        app.update_error_text = App.update_error_text.__get__(app, App)
+        app._render_frontend_error = App._render_frontend_error.__get__(app, App)
+        app.set_frontend_monitor_alert = App.set_frontend_monitor_alert.__get__(app, App)
+        app._set_frontend_monitor_info = App._set_frontend_monitor_info.__get__(app, App)
+        app._is_ack_timeout_message = App._is_ack_timeout_message.__get__(app, App)
+        app._mark_ack_timeout_recovered = App._mark_ack_timeout_recovered.__get__(app, App)
+        app._status_matches_inflight_task = App._status_matches_inflight_task.__get__(app, App)
+        app._monitor_after_ack = App._monitor_after_ack.__get__(app, App)
+        app._set_front_round_state = App._set_front_round_state.__get__(app, App)
+        app._adopt_running_task_after_ack_timeout = App._adopt_running_task_after_ack_timeout.__get__(app, App)
+
+        app.set_frontend_monitor_alert("任務監控告警（ACK_TIMEOUT）")
+        self.assertEqual(app.frontend_error_text.fg, "#b30000")
+
+        adopted = app._adopt_running_task_after_ack_timeout({
+            "timeline_runtime": {"state": "running", "client_task_id": "ct-1", "server_task_id": "srv-1"}
+        })
+        self.assertTrue(adopted)
+        self.assertEqual(app.frontend_monitor_alert_level, "info")
+        self.assertIn("已恢復", app.frontend_error_text.value)
+        self.assertEqual(app.frontend_error_text.fg, "#3566b8")
 
 
 class FrontLoopRoundTransitionTests(unittest.TestCase):
