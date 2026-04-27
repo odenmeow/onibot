@@ -1110,6 +1110,34 @@ class FrontLoopRoundTransitionTests(unittest.TestCase):
         self.assertEqual(app.front_inflight_client_task_id, "ct-1")
 
 
+class SendDelayPersistTests(unittest.TestCase):
+    def _new_delay_app(self):
+        app = App.__new__(App)
+        app.config = {"send_delay_sec": 1.0}
+        app.send_delay_entry = types.SimpleNamespace(get=lambda: "1.0")
+        app.parse_send_delay_sec = App.parse_send_delay_sec.__get__(app, App)
+        app.apply_send_delay_if_needed = App.apply_send_delay_if_needed.__get__(app, App)
+        app.set_status = lambda *_args, **_kwargs: None
+        app.root = types.SimpleNamespace(after=lambda _ms, cb: cb())
+        return app
+
+    def test_delay_override_does_not_persist_when_disabled(self):
+        app = self._new_delay_app()
+        called = []
+
+        with mock.patch("front.save_config") as save_mock:
+            app.apply_send_delay_if_needed(
+                lambda payload: called.append(payload),
+                delay_override=0.0,
+                persist_config=False
+            )
+
+        self.assertEqual(app.config.get("send_delay_sec"), 1.0)
+        self.assertEqual(len(called), 1)
+        self.assertEqual(called[0].get("send_delay_sec"), 0.0)
+        save_mock.assert_not_called()
+
+
 class TimelineWorkflowTests(unittest.TestCase):
     def _new_workflow_app(self):
         app = App.__new__(App)
