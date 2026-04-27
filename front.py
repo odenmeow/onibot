@@ -108,6 +108,7 @@ def load_config():
         return {
             "pi_host": DEFAULT_PI_HOST,
             "send_delay_sec": 1.0,
+            "auto_connect_enabled": True,
             "auto_switch_runtime_on_loop_start": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
@@ -117,6 +118,8 @@ def load_config():
             "ui_recent_colors": [],
             "ui_layout": {
                 "paned_sash_x": None,
+                "left_paned_sashes": [],
+                "left_paned_ratios": [],
                 "right_paned_sash_y": None,
                 "window_size": None,
                 "tree_column_widths": {}
@@ -144,6 +147,7 @@ def load_config():
         return {
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
+            "auto_connect_enabled": bool(data.get("auto_connect_enabled", True)),
             "auto_switch_runtime_on_loop_start": bool(data.get("auto_switch_runtime_on_loop_start", True)),
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": normalize_front_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)),
@@ -154,6 +158,8 @@ def load_config():
             "ui_layout": {
                 "paned_sash_x": ui_layout.get("paned_sash_x"),
                 "paned_ratio": ui_layout.get("paned_ratio"),
+                "left_paned_sashes": ui_layout.get("left_paned_sashes", []),
+                "left_paned_ratios": ui_layout.get("left_paned_ratios", []),
                 "right_paned_sash_y": ui_layout.get("right_paned_sash_y"),
                 "right_paned_ratio": ui_layout.get("right_paned_ratio"),
                 "window_size": ui_layout.get("window_size"),
@@ -164,6 +170,7 @@ def load_config():
         return {
             "pi_host": DEFAULT_PI_HOST,
             "send_delay_sec": 1.0,
+            "auto_connect_enabled": True,
             "auto_switch_runtime_on_loop_start": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
@@ -173,6 +180,8 @@ def load_config():
             "ui_recent_colors": [],
             "ui_layout": {
                 "paned_sash_x": None,
+                "left_paned_sashes": [],
+                "left_paned_ratios": [],
                 "right_paned_sash_y": None,
                 "window_size": None,
                 "tree_column_widths": {}
@@ -1794,6 +1803,34 @@ class App:
     def set_connection_status(self, message):
         self.connection_var.set(message)
 
+    def is_auto_connect_enabled(self):
+        return bool(self.config.get("auto_connect_enabled", True))
+
+    def update_auto_connect_ui(self):
+        enabled = self.is_auto_connect_enabled()
+        if hasattr(self, "auto_connect_state_var"):
+            self.auto_connect_state_var.set("啟用" if enabled else "暫停")
+        btn = getattr(self, "auto_connect_toggle_btn", None)
+        if btn is not None:
+            btn.config(text="暫停自動連線" if enabled else "重啟自動連線")
+
+    def set_auto_connect_enabled(self, enabled, persist=False):
+        self.config["auto_connect_enabled"] = bool(enabled)
+        if persist:
+            save_config(self.config)
+        self.update_auto_connect_ui()
+
+    def toggle_auto_connect(self):
+        next_enabled = not self.is_auto_connect_enabled()
+        self.set_auto_connect_enabled(next_enabled, persist=True)
+        if next_enabled:
+            self.set_status("已重啟自動連線 / 重連")
+            self.auto_connect()
+        else:
+            self.close_connection(channel="status", silent=True)
+            self.monitor_reconnect_pending = False
+            self.set_status("已暫停自動連線 / 重連（可手動按「測試連線」）")
+
     def set_connected(self, connected, message=""):
         self.connected = connected
         if connected:
@@ -1970,6 +2007,8 @@ class App:
     def __init__(self, root):
         ensure_dirs()
         self.config = load_config()
+        if "auto_connect_enabled" not in self.config:
+            self.config["auto_connect_enabled"] = True
 
         self.root = root
         self.root.title("鍵盤錄製 / Timeline 分析 / 傳送")
@@ -2051,8 +2090,11 @@ class App:
         body.add(left_panel, minsize=440)
         body.add(right_panel, minsize=320)
 
-        top = tk.LabelFrame(left_panel, text="操作區")
-        top.pack(fill="x", pady=(0, 6))
+        left_content_paned = tk.PanedWindow(left_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED)
+        left_content_paned.pack(fill="both", expand=True)
+        self.left_content_paned = left_content_paned
+
+        top = tk.LabelFrame(left_content_paned, text="操作區")
 
         btn_specs = [
             ("重新分析", self.analyze, "#fff4b3"),
@@ -2095,7 +2137,7 @@ class App:
             fg="#1a4fb8"
         ).grid(row=2, column=0, columnspan=btn_count, sticky="w", padx=8, pady=(0, 8))
 
-        info = tk.LabelFrame(left_panel, text="目前套用資訊")
+        info = tk.LabelFrame(left_content_paned, text="目前套用資訊")
         row = tk.Frame(info)
         row.pack(fill="x", padx=8, pady=2)
 
@@ -2110,12 +2152,26 @@ class App:
         tk.Button(row, text="保存", command=self.save_apply_info).pack(side="left", padx=5)
 
         connection_row = tk.Frame(info)
-        connection_row.pack(fill="x", padx=8, pady=(2, 5))
+        connection_row.pack(fill="x", padx=8, pady=(2, 3))
         tk.Label(connection_row, text="連線狀況：").pack(side="left")
         self.connection_var = tk.StringVar(value="未連線")
         tk.Label(connection_row, textvariable=self.connection_var, fg="#1a4fb8").pack(side="left", padx=(0, 10))
-        tk.Button(connection_row, text="測試連線", command=self.ping_pi, width=10).pack(side="left", padx=4)
-        tk.Button(connection_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
+        tk.Label(connection_row, text="自動連線：").pack(side="left")
+        self.auto_connect_state_var = tk.StringVar(value="啟用")
+        tk.Label(connection_row, textvariable=self.auto_connect_state_var, fg="#1a4fb8").pack(side="left", padx=(0, 8))
+
+        connection_btn_row = tk.Frame(info)
+        connection_btn_row.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Button(connection_btn_row, text="測試連線", command=self.ping_pi, width=10).pack(side="left", padx=4)
+        tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
+        self.auto_connect_toggle_btn = tk.Button(
+            connection_btn_row,
+            text="暫停自動連線",
+            command=self.toggle_auto_connect,
+            width=12
+        )
+        self.auto_connect_toggle_btn.pack(side="left", padx=4)
+        self.update_auto_connect_ui()
 
         buff_mode_row = tk.Frame(info)
         buff_mode_row.pack(fill="x", padx=8, pady=(0, 5))
@@ -2136,10 +2192,7 @@ class App:
             self.buff_skip_mode_combo.current(0)
         self.buff_skip_mode_combo.pack(side="left", padx=5)
         self.buff_skip_mode_combo.bind("<<ComboboxSelected>>", self.on_buff_skip_mode_change)
-        info.pack(fill="x", pady=5)
-
-        save_frame = tk.LabelFrame(left_panel, text="儲存 / 載入")
-        save_frame.pack(fill="x", pady=5)
+        save_frame = tk.LabelFrame(left_content_paned, text="儲存 / 載入")
 
         name_row = tk.Frame(save_frame)
         name_row.pack(fill="x", padx=8, pady=(5, 3))
@@ -2158,8 +2211,7 @@ class App:
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
         self.saved_listbox.pack(fill="x", padx=5, pady=5)
 
-        error_frame = tk.LabelFrame(left_panel, text="錯誤訊息（前端 / 後端）")
-        error_frame.pack(fill="both", expand=True, pady=(5, 0))
+        error_frame = tk.LabelFrame(left_content_paned, text="錯誤訊息（前端 / 後端）")
         tk.Label(error_frame, text="前端：", width=8, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="nw")
         self.frontend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
         self.frontend_error_text.grid(row=0, column=1, sticky="nsew", padx=(0, 6), pady=2)
@@ -2170,6 +2222,10 @@ class App:
         error_frame.grid_rowconfigure(0, weight=1)
         error_frame.grid_rowconfigure(1, weight=1)
         self.clear_errors()
+        self.left_content_paned.add(top, minsize=110)
+        self.left_content_paned.add(info, minsize=120)
+        self.left_content_paned.add(save_frame, minsize=120)
+        self.left_content_paned.add(error_frame, minsize=140)
 
         jitter_frame = tk.LabelFrame(right_panel, text="timeline 設定")
         jitter_frame.pack(fill="x", pady=(0, 8))
@@ -2333,6 +2389,17 @@ class App:
         _, sash_y = self.right_content_paned.sash_coord(0)
         return max(0, int(sash_y))
 
+    def get_current_left_paned_sashes(self):
+        self.root.update_idletasks()
+        panes = self.left_content_paned.panes()
+        if len(panes) < 2:
+            return []
+        positions = []
+        for idx in range(len(panes) - 1):
+            _x, sash_y = self.left_content_paned.sash_coord(idx)
+            positions.append(max(0, int(sash_y)))
+        return positions
+
     def apply_saved_ui_layout(self):
         ui_layout = self.config.get("ui_layout", {})
         if not isinstance(ui_layout, dict):
@@ -2391,9 +2458,31 @@ class App:
         max_y = max(min_y, right_total - 120)
         self.right_content_paned.sash_place(0, 0, min(max_y, max(min_y, target_y)))
 
+        left_saved_sashes = ui_layout.get("left_paned_sashes", [])
+        left_saved_ratios = ui_layout.get("left_paned_ratios", [])
+        if not isinstance(left_saved_sashes, list):
+            left_saved_sashes = []
+        if not isinstance(left_saved_ratios, list):
+            left_saved_ratios = []
+        left_total = self.left_content_paned.winfo_height()
+        left_panes = self.left_content_paned.panes()
+        if left_total > 0 and len(left_panes) >= 2:
+            for idx in range(len(left_panes) - 1):
+                y = None
+                if idx < len(left_saved_sashes) and isinstance(left_saved_sashes[idx], (int, float)):
+                    y = int(left_saved_sashes[idx])
+                elif idx < len(left_saved_ratios) and isinstance(left_saved_ratios[idx], (int, float)):
+                    y = int(float(left_saved_ratios[idx]) * float(left_total))
+                if y is None:
+                    continue
+                min_left_y = 80
+                max_left_y = max(min_left_y, left_total - 80)
+                self.left_content_paned.sash_place(idx, 0, min(max_left_y, max(min_left_y, y)))
+
     def save_ui_layout(self):
         sash_x = self.get_current_paned_sash_x()
         right_sash_y = self.get_current_right_paned_sash_y()
+        left_sashes = self.get_current_left_paned_sashes()
         if sash_x is None or right_sash_y is None:
             self.show_warning("提醒", "目前無法取得 UI 版面資訊，請稍後再試")
             return
@@ -2408,17 +2497,22 @@ class App:
 
         body_width = max(1, int(self.body.winfo_width()))
         right_height = max(1, int(self.right_content_paned.winfo_height()))
+        left_height = max(1, int(self.left_content_paned.winfo_height()))
+        left_sash_ratios = [round(float(y) / float(left_height), 4) for y in left_sashes]
         self.config["ui_layout"] = {
             "window_size": [self.root.winfo_width(), self.root.winfo_height()],
             "paned_sash_x": int(sash_x),
             "paned_ratio": round(float(sash_x) / float(body_width), 4),
+            "left_paned_sashes": [int(y) for y in left_sashes],
+            "left_paned_ratios": left_sash_ratios,
             "right_paned_sash_y": int(right_sash_y),
             "right_paned_ratio": round(float(right_sash_y) / float(right_height), 4),
             "tree_column_widths": column_widths
         }
         self.config["ui_recent_colors"] = self._get_recent_colors()
+        self.config["auto_connect_enabled"] = self.is_auto_connect_enabled()
         save_config(self.config)
-        self.set_status("已保存 UI 版面（PanedWindow 像素位置 + 欄寬）")
+        self.set_status("已保存 UI 版面（含自動連線開關）")
 
     def get_hint_note_text(self):
         text = str(self.config.get("hint_note_text", "")).strip()
@@ -3177,7 +3271,7 @@ class App:
 
     def poll_runtime_status(self):
         try:
-            if not self.offline_mode:
+            if self.is_auto_connect_enabled() and (not self.offline_mode):
                 res = self.request_pi({"action": "status"}, write_response=False, channel="status")
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
@@ -3240,7 +3334,8 @@ class App:
         except Exception as e:
             kind = self._classify_request_error(e)
             self._set_channel_error("status", "[status:{}] {}".format(kind, str(e)))
-            self.monitor_reconnect_pending = True
+            if self.is_auto_connect_enabled():
+                self.monitor_reconnect_pending = True
         finally:
             self.root.after(RUNTIME_POLL_INTERVAL_MS, self.poll_runtime_status)
 
@@ -4084,6 +4179,8 @@ class App:
         self.root.after(10, poll_delay_ready)
 
     def auto_connect(self):
+        if not self.is_auto_connect_enabled():
+            return
         self.ping_pi(show_popup=False)
 
     def go_offline(self):
