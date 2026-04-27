@@ -108,6 +108,7 @@ def load_config():
         return {
             "pi_host": DEFAULT_PI_HOST,
             "send_delay_sec": 1.0,
+            "auto_connect_enabled": True,
             "auto_switch_runtime_on_loop_start": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
@@ -144,6 +145,7 @@ def load_config():
         return {
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
+            "auto_connect_enabled": bool(data.get("auto_connect_enabled", True)),
             "auto_switch_runtime_on_loop_start": bool(data.get("auto_switch_runtime_on_loop_start", True)),
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": normalize_front_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)),
@@ -164,6 +166,7 @@ def load_config():
         return {
             "pi_host": DEFAULT_PI_HOST,
             "send_delay_sec": 1.0,
+            "auto_connect_enabled": True,
             "auto_switch_runtime_on_loop_start": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
@@ -1794,6 +1797,34 @@ class App:
     def set_connection_status(self, message):
         self.connection_var.set(message)
 
+    def is_auto_connect_enabled(self):
+        return bool(self.config.get("auto_connect_enabled", True))
+
+    def update_auto_connect_ui(self):
+        enabled = self.is_auto_connect_enabled()
+        if hasattr(self, "auto_connect_state_var"):
+            self.auto_connect_state_var.set("啟用" if enabled else "暫停")
+        btn = getattr(self, "auto_connect_toggle_btn", None)
+        if btn is not None:
+            btn.config(text="暫停自動連線" if enabled else "重啟自動連線")
+
+    def set_auto_connect_enabled(self, enabled, persist=False):
+        self.config["auto_connect_enabled"] = bool(enabled)
+        if persist:
+            save_config(self.config)
+        self.update_auto_connect_ui()
+
+    def toggle_auto_connect(self):
+        next_enabled = not self.is_auto_connect_enabled()
+        self.set_auto_connect_enabled(next_enabled, persist=True)
+        if next_enabled:
+            self.set_status("已重啟自動連線 / 重連")
+            self.auto_connect()
+        else:
+            self.close_connection(channel="status", silent=True)
+            self.monitor_reconnect_pending = False
+            self.set_status("已暫停自動連線 / 重連（可手動按「測試連線」）")
+
     def set_connected(self, connected, message=""):
         self.connected = connected
         if connected:
@@ -1970,6 +2001,8 @@ class App:
     def __init__(self, root):
         ensure_dirs()
         self.config = load_config()
+        if "auto_connect_enabled" not in self.config:
+            self.config["auto_connect_enabled"] = True
 
         self.root = root
         self.root.title("鍵盤錄製 / Timeline 分析 / 傳送")
@@ -2114,8 +2147,19 @@ class App:
         tk.Label(connection_row, text="連線狀況：").pack(side="left")
         self.connection_var = tk.StringVar(value="未連線")
         tk.Label(connection_row, textvariable=self.connection_var, fg="#1a4fb8").pack(side="left", padx=(0, 10))
+        tk.Label(connection_row, text="自動連線：").pack(side="left")
+        self.auto_connect_state_var = tk.StringVar(value="啟用")
+        tk.Label(connection_row, textvariable=self.auto_connect_state_var, fg="#1a4fb8").pack(side="left", padx=(0, 8))
         tk.Button(connection_row, text="測試連線", command=self.ping_pi, width=10).pack(side="left", padx=4)
         tk.Button(connection_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
+        self.auto_connect_toggle_btn = tk.Button(
+            connection_row,
+            text="暫停自動連線",
+            command=self.toggle_auto_connect,
+            width=12
+        )
+        self.auto_connect_toggle_btn.pack(side="left", padx=4)
+        self.update_auto_connect_ui()
 
         buff_mode_row = tk.Frame(info)
         buff_mode_row.pack(fill="x", padx=8, pady=(0, 5))
@@ -2417,8 +2461,9 @@ class App:
             "tree_column_widths": column_widths
         }
         self.config["ui_recent_colors"] = self._get_recent_colors()
+        self.config["auto_connect_enabled"] = self.is_auto_connect_enabled()
         save_config(self.config)
-        self.set_status("已保存 UI 版面（PanedWindow 像素位置 + 欄寬）")
+        self.set_status("已保存 UI 版面（含自動連線開關）")
 
     def get_hint_note_text(self):
         text = str(self.config.get("hint_note_text", "")).strip()
@@ -3177,7 +3222,7 @@ class App:
 
     def poll_runtime_status(self):
         try:
-            if not self.offline_mode:
+            if self.is_auto_connect_enabled() and (not self.offline_mode):
                 res = self.request_pi({"action": "status"}, write_response=False, channel="status")
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
@@ -3240,7 +3285,8 @@ class App:
         except Exception as e:
             kind = self._classify_request_error(e)
             self._set_channel_error("status", "[status:{}] {}".format(kind, str(e)))
-            self.monitor_reconnect_pending = True
+            if self.is_auto_connect_enabled():
+                self.monitor_reconnect_pending = True
         finally:
             self.root.after(RUNTIME_POLL_INTERVAL_MS, self.poll_runtime_status)
 
@@ -4084,6 +4130,8 @@ class App:
         self.root.after(10, poll_delay_ready)
 
     def auto_connect(self):
+        if not self.is_auto_connect_enabled():
+            return
         self.ping_pi(show_popup=False)
 
     def go_offline(self):
