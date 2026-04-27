@@ -4045,10 +4045,11 @@ class App:
         self.set_status("已保存 Pi IP：{}，送出延遲 {} 秒".format(ip, delay))
         self.set_connected(False, "設定已更新，請重新測試連線")
 
-    def apply_send_delay_if_needed(self, on_ready, delay_override=None):
+    def apply_send_delay_if_needed(self, on_ready, delay_override=None, persist_config=True):
         delay = float(delay_override) if delay_override is not None else self.parse_send_delay_sec()
-        self.config["send_delay_sec"] = delay
-        save_config(self.config)
+        if persist_config:
+            self.config["send_delay_sec"] = delay
+            save_config(self.config)
 
         now_monotonic = time.monotonic()
         scheduled_send_time_monotonic = now_monotonic + max(0.0, delay)
@@ -4939,7 +4940,11 @@ class App:
                     self.show_error("重複傳送失敗", str(e))
 
             delay_override = None if self.front_loop_round == 0 else 0.0
-            self.apply_send_delay_if_needed(do_send, delay_override=delay_override)
+            self.apply_send_delay_if_needed(
+                do_send,
+                delay_override=delay_override,
+                persist_config=(delay_override is None)
+            )
         except Exception as e:
             self._mark_loop_terminal()
             self._update_runtime_control_buttons()
