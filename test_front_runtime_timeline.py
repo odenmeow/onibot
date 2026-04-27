@@ -262,17 +262,26 @@ class RuntimeDisplayTests(unittest.TestCase):
         )
         return app
 
-    def test_poll_runtime_status_skips_when_auto_connect_paused(self):
+    def test_poll_runtime_status_keeps_sync_when_auto_connect_paused(self):
         app = self._new_app()
         app.config["auto_connect_enabled"] = False
-        app.request_pi = mock.Mock(side_effect=AssertionError("status request should not run"))
+        app.request_pi = mock.Mock(return_value={
+            "timeline_runtime": {
+                "run_id": 8,
+                "state": "running",
+                "processed_count": 3,
+                "events": [{"original_index": 1, "status": "ok"}]
+            }
+        })
         app._classify_request_error = lambda *_args, **_kwargs: "request_error"
         app._set_channel_error = lambda *_args, **_kwargs: None
         app.root = _FakeRoot()
 
         app.poll_runtime_status()
 
-        app.request_pi.assert_not_called()
+        app.request_pi.assert_called_once_with({"action": "status"}, write_response=False, channel="status")
+        self.assertEqual(app.timeline_runtime_info.get("state"), "running")
+        self.assertEqual(app.timeline_runtime_info.get("processed_count"), 3)
 
     def test_toggle_auto_connect_persists_and_triggers_auto_connect(self):
         app = self._new_app()
