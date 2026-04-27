@@ -1460,7 +1460,31 @@ class App:
 
     def set_frontend_monitor_alert(self, message):
         self.frontend_monitor_alert = str(message or "").strip()
+        self.frontend_monitor_alert_level = "alert" if self.frontend_monitor_alert else ""
         self._render_frontend_error()
+
+    def _set_frontend_monitor_info(self, message):
+        self.frontend_monitor_alert = str(message or "").strip()
+        self.frontend_monitor_alert_level = "info" if self.frontend_monitor_alert else ""
+        self._render_frontend_error()
+
+    def _is_ack_timeout_message(self, message):
+        text = str(message or "").strip().lower()
+        return ("ack_timeout" in text) or ("ack timeout" in text)
+
+    def _mark_ack_timeout_recovered(self, source):
+        source_label = str(source or "unknown").strip() or "unknown"
+        self.ack_timeout_recovered = True
+        self.ack_timeout_recovered_source = source_label
+        info_message = "ACK timeout 已恢復（{}）".format(source_label)
+        self._set_frontend_monitor_info(info_message)
+        self.runtime_trace_status_note = "ACK timeout 已校正，後端任務持續中"
+        if self._is_ack_timeout_message(self.frontend_error_main):
+            self.frontend_error_main = ""
+        self.write_text({
+            "ack_timeout_recovered": True,
+            "recovered_via": source_label
+        })
 
     def set_backend_error(self, message):
         self.update_error_text(self.backend_error_text, message)
@@ -1497,6 +1521,9 @@ class App:
     def clear_errors(self):
         self.frontend_error_main = ""
         self.frontend_monitor_alert = ""
+        self.frontend_monitor_alert_level = ""
+        self.ack_timeout_recovered = False
+        self.ack_timeout_recovered_source = ""
         self.runtime_trace_diagnostic = ""
         self.last_control_error = ""
         self.last_status_error = ""
@@ -1505,10 +1532,18 @@ class App:
 
     def _render_frontend_error(self):
         lines = []
+        info_lines = []
         if self.frontend_error_main:
-            lines.append(self.frontend_error_main)
+            if bool(getattr(self, "ack_timeout_recovered", False)) and self._is_ack_timeout_message(self.frontend_error_main):
+                info_lines.append("ACK_TIMEOUT 已恢復：{}".format(self.frontend_error_main))
+            else:
+                lines.append(self.frontend_error_main)
         if self.frontend_monitor_alert:
-            lines.append("監控告警（可恢復）：{}".format(self.frontend_monitor_alert))
+            level = str(getattr(self, "frontend_monitor_alert_level", "") or "").strip().lower()
+            if level == "info":
+                info_lines.append("監控告警（已恢復）：{}".format(self.frontend_monitor_alert))
+            else:
+                lines.append("監控告警（可恢復）：{}".format(self.frontend_monitor_alert))
         runtime_trace_diag = str(getattr(self, "runtime_trace_diagnostic", "") or "").strip()
         if runtime_trace_diag:
             lines.append("Runtime trace 診斷：{}".format(runtime_trace_diag))
@@ -1516,7 +1551,16 @@ class App:
             lines.append("最後 control 錯誤：{}".format(self.last_control_error))
         if self.last_status_error:
             lines.append("最後 status 錯誤：{}".format(self.last_status_error))
-        self.update_error_text(self.frontend_error_text, "\n".join(lines))
+        rendered_lines = []
+        rendered_lines.extend(lines)
+        rendered_lines.extend(info_lines)
+        if not rendered_lines:
+            rendered_lines = ["無"]
+        fg_color = "#b30000"
+        if (not lines) and info_lines:
+            fg_color = "#3566b8"
+        self.frontend_error_text.config(fg=fg_color)
+        self.update_error_text(self.frontend_error_text, "\n".join(rendered_lines))
 
     def _set_channel_error(self, channel, message):
         text = str(message or "").strip()
@@ -2025,6 +2069,9 @@ class App:
         self.status_conn_file = None
         self.frontend_error_main = ""
         self.frontend_monitor_alert = ""
+        self.frontend_monitor_alert_level = ""
+        self.ack_timeout_recovered = False
+        self.ack_timeout_recovered_source = ""
         self.runtime_trace_diagnostic = ""
         self.last_control_error = ""
         self.last_status_error = ""
@@ -3393,6 +3440,8 @@ class App:
         self.monitor_reconnect_pending = False
 
     def _arm_task_monitor_wait_ack(self, client_task_id):
+        self.ack_timeout_recovered = False
+        self.ack_timeout_recovered_source = ""
         self.task_monitor = {
             "phase": "wait_ack",
             "client_task_id": str(client_task_id or "").strip(),
@@ -3447,6 +3496,7 @@ class App:
         self.runtime_display_frozen = False
         self.runtime_wait_ack_active = False
         self.monitor_reconnect_pending = True
+        self._mark_ack_timeout_recovered("ack_timeout_adopt")
         self.set_status("ACK 逾時後已完成任務歸屬校正，沿用後端執行中任務")
         return True
 
@@ -3476,6 +3526,7 @@ class App:
             watch["timeout_reported"] = False
             watch["expected_first_event_deadline"] = now + FIRST_EVENT_DEADLINE_GRACE_SEC
             self.first_event_progress_watch = watch
+        self._mark_ack_timeout_recovered("reconnect_calibration")
 
     def _freeze_runtime_for_wait_ack(self, snapshot_events):
         self.wait_ack_snapshot_timeline = self.copy_events(snapshot_events or [])
@@ -3499,11 +3550,15 @@ class App:
         used_threshold_ms=None,
         fallback_mode=False
     ):
+        phase_text = str(phase or "").strip().upper()
+        if phase_text == "ACK_TIMEOUT":
+            self.ack_timeout_recovered = False
+            self.ack_timeout_recovered_source = ""
         monitor_obj = getattr(self, "task_monitor", {})
         monitor = monitor_obj if isinstance(monitor_obj, dict) else {}
         server_task_id = str(monitor.get("server_task_id", "")).strip()
         self.task_monitor = {
-            "phase": str(phase or "").strip().lower(),
+            "phase": phase_text.lower(),
             "client_task_id": str(monitor.get("client_task_id", "")).strip(),
             "server_task_id": server_task_id,
             "phase_started_at": monitor.get("phase_started_at"),
@@ -3515,7 +3570,7 @@ class App:
         }
         message = (
             "任務監控告警（{}）\nserver_task_id={}\nlast_state={}\nelapsed_ms={}\nthreshold_ms={}\npredicted_timeout_ms={}\nused_threshold_ms={}\nfallback_mode={}".format(
-                str(phase or "").upper(),
+                phase_text,
                 server_task_id or "unknown",
                 self.task_monitor["last_state"] or "unknown",
                 int(max(0, elapsed_ms)),
@@ -3525,6 +3580,7 @@ class App:
                 bool(fallback_mode)
             )
         )
+        self.frontend_monitor_alert_level = "alert"
         self.set_frontend_monitor_alert(message)
 
     def _monitor_after_ack(self, ack_response):
