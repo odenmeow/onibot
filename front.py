@@ -1847,6 +1847,26 @@ class App:
     def set_connection_status(self, message):
         self.connection_var.set(message)
 
+    def update_gpio_polarity_from_response(self, response):
+        if not isinstance(response, dict) or not hasattr(self, "gpio_polarity_var"):
+            return
+        info = response.get("gpio_polarity")
+        if not isinstance(info, dict):
+            return
+        label = str(info.get("trigger_label", "")).strip()
+        if not label:
+            trigger = str(info.get("trigger_level", "")).strip().lower()
+            if trigger == "high":
+                label = "高位觸發"
+            elif trigger == "low":
+                label = "低位觸發"
+        press_level = str(info.get("press_level", "")).strip().upper()
+        release_level = str(info.get("release_level", "")).strip().upper()
+        if label and press_level and release_level:
+            self.gpio_polarity_var.set("{}（按下 {} / 釋放 {}）".format(label, press_level, release_level))
+        elif label:
+            self.gpio_polarity_var.set(label)
+
     def is_auto_connect_enabled(self):
         return bool(self.config.get("auto_connect_enabled", True))
 
@@ -1971,6 +1991,8 @@ class App:
                 )
         else:
             self.set_backend_error("")
+
+        self.update_gpio_polarity_from_response(res)
 
         if write_response:
             self.write_text({
@@ -2208,9 +2230,15 @@ class App:
         tk.Label(connection_row, text="狀態同步：").pack(side="left")
         self.status_sync_state_var = tk.StringVar(value="啟用")
         tk.Label(connection_row, textvariable=self.status_sync_state_var, fg="#1a4fb8").pack(side="left", padx=(0, 8))
+        tk.Label(connection_row, text="GPIO觸發：").pack(side="left")
+        self.gpio_polarity_var = tk.StringVar(value="未知")
+        tk.Label(connection_row, textvariable=self.gpio_polarity_var, fg="#1a4fb8").pack(side="left", padx=(0, 8))
 
         connection_btn_row = tk.Frame(info)
         connection_btn_row.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Button(connection_btn_row, text="釋放GPIO", command=self.release_gpio, width=10).pack(side="left", padx=4)
+        tk.Button(connection_btn_row, text="高位觸發", command=lambda: self.set_gpio_polarity("high"), width=10).pack(side="left", padx=4)
+        tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10).pack(side="left", padx=4)
         tk.Button(connection_btn_row, text="測試連線", command=self.ping_pi, width=10).pack(side="left", padx=4)
         tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
         self.auto_connect_toggle_btn = tk.Button(
@@ -4715,6 +4743,38 @@ class App:
         self.tree.selection_set(str(start_idx))
         self.set_status("已自第 {} 列起偏移 {:.3f} 秒，共 {} 列".format(start_idx, offset_sec, len(self.timeline) - start_idx))
 
+    def release_gpio(self):
+        try:
+            self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
+            save_config(self.config)
+            self.update_current_labels()
+            self.offline_mode = False
+            self.set_frontend_error("")
+            res = self.request_pi({"action": "release_gpio"}, success_status="GPIO 已全部釋放")
+            message = res.get("message") if isinstance(res, dict) else ""
+            self.set_status(message or "GPIO 已全部釋放")
+        except Exception as e:
+            self.set_frontend_error(str(e))
+            self.show_error("釋放 GPIO 失敗", str(e))
+
+    def set_gpio_polarity(self, trigger_level):
+        label = "高位觸發" if trigger_level == "high" else "低位觸發"
+        try:
+            self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
+            save_config(self.config)
+            self.update_current_labels()
+            self.offline_mode = False
+            self.set_frontend_error("")
+            res = self.request_pi(
+                {"action": "set_gpio_polarity", "trigger_level": trigger_level},
+                success_status="GPIO 已設定為{}".format(label)
+            )
+            message = res.get("message") if isinstance(res, dict) else ""
+            self.set_status(message or "GPIO 已設定為{}".format(label))
+        except Exception as e:
+            self.set_frontend_error(str(e))
+            self.show_error("設定 GPIO 觸發失敗", str(e))
+
     def ping_pi(self, show_popup=True):
         try:
             self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
@@ -4724,7 +4784,7 @@ class App:
             self.offline_mode = False
             self.set_frontend_error("")
             self.open_connection(timeout=1.5)
-            self.request_pi({"action": "ping"})
+            self.request_pi({"action": "status"}, write_response=False)
             self.set_connected(True, "Pi 連線正常：{}".format(self.config["pi_host"]))
         except Exception as e:
             self.set_frontend_error(str(e))
