@@ -16,7 +16,7 @@ import RPi.GPIO as GPIO
 HOST = "0.0.0.0"
 PORT = 5000
 
-ACTIVE_LOW = True
+ACTIVE_LOW = False
 DEFAULT_PRESS_TIME = 0.25
 BUFF_SKIP_MODE_WALK = "walk"          # 走過：不按，但保留原時間軸（照等）
 BUFF_SKIP_MODE_PASS = "pass"          # 略過：不按，並壓縮時間軸（不等）
@@ -275,6 +275,25 @@ def get_press_level():
 
 def get_release_level():
     return GPIO.HIGH if ACTIVE_LOW else GPIO.LOW
+
+
+def get_gpio_polarity_info():
+    return {
+        "active_low": bool(ACTIVE_LOW),
+        "trigger_level": "low" if ACTIVE_LOW else "high",
+        "trigger_label": "低位觸發" if ACTIVE_LOW else "高位觸發",
+        "press_level": "LOW" if get_press_level() == GPIO.LOW else "HIGH",
+        "release_level": "LOW" if get_release_level() == GPIO.LOW else "HIGH"
+    }
+
+
+def set_active_low(active_low):
+    global ACTIVE_LOW, PRESS_LEVEL, RELEASE_LEVEL
+    ACTIVE_LOW = bool(active_low)
+    PRESS_LEVEL = get_press_level()
+    RELEASE_LEVEL = get_release_level()
+    release_all()
+    return get_gpio_polarity_info()
 
 
 PRESS_LEVEL = get_press_level()
@@ -948,7 +967,7 @@ def handle_request(data):
         "service_name": "onibot-backend",
         "contract_version": RUNTIME_CONTRACT_VERSION,
         "supports_start_task": True,
-        "supported_actions": ["ping", "list_buttons", "status", "hello", "stop", "pause", "resume", "run_macro", "start_task", "reset_runtime"]
+        "supported_actions": ["ping", "list_buttons", "status", "hello", "stop", "pause", "resume", "release_gpio", "set_gpio_polarity", "run_macro", "start_task", "reset_runtime"]
     }
 
     if action == "ping":
@@ -961,13 +980,41 @@ def handle_request(data):
         payload = {
             "status": "ok",
             "run_status": current_run_status,
-            "timeline_runtime": get_timeline_runtime_snapshot()
+            "timeline_runtime": get_timeline_runtime_snapshot(),
+            "gpio_polarity": get_gpio_polarity_info()
         }
         payload.update(service_meta)
         return payload
 
     if action == "hello":
-        return {"status": "ok", **service_meta}
+        return {"status": "ok", "gpio_polarity": get_gpio_polarity_info(), **service_meta}
+
+    if action == "release_gpio":
+        release_all()
+        return {
+            "status": "ok",
+            "message": "GPIO 已全部釋放",
+            "gpio_polarity": get_gpio_polarity_info()
+        }
+
+    if action == "set_gpio_polarity":
+        raw_trigger = str(data.get("trigger_level", "")).strip().lower()
+        if raw_trigger in ("high", "active_high", "高", "高位", "高位觸發"):
+            gpio_polarity = set_active_low(False)
+        elif raw_trigger in ("low", "active_low", "低", "低位", "低位觸發"):
+            gpio_polarity = set_active_low(True)
+        else:
+            return make_error_response(
+                code="bad_request",
+                message="trigger_level 只能是 high 或 low",
+                phase="set_gpio_polarity",
+                status="error"
+            )
+        return {
+            "status": "ok",
+            "message": "GPIO 已設定為{}，並全部釋放".format(gpio_polarity["trigger_label"]),
+            "gpio_polarity": gpio_polarity
+        }
 
     if action == "stop":
         return stop_current_run()

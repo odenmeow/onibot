@@ -3,7 +3,7 @@ import time
 import RPi.GPIO as GPIO
 
 # ========== 設定區 ==========
-ACTIVE_LOW = True   # 如果繼電器相反就改 False
+ACTIVE_LOW = False   # 如果繼電器相反就改 False
 PRESS_TIME = 0.25
 
 BUTTONS = {
