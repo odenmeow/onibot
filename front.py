@@ -114,6 +114,7 @@ def load_config():
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
             "ack_timeout_ms": ACK_TIMEOUT_MS,
+            "gpio_trigger_level": "high",
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -153,6 +154,7 @@ def load_config():
             "buff_skip_mode": normalize_front_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
             "ack_timeout_ms": int(data.get("ack_timeout_ms", ACK_TIMEOUT_MS)),
+            "gpio_trigger_level": normalize_gpio_trigger_level(data.get("gpio_trigger_level", "high")),
             "hint_note_text": str(data.get("hint_note_text", DEFAULT_HINT_NOTE_TEXT)),
             "ui_recent_colors": normalized_recent,
             "ui_layout": {
@@ -176,6 +178,7 @@ def load_config():
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
             "ack_timeout_ms": ACK_TIMEOUT_MS,
+            "gpio_trigger_level": "high",
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
             "ui_layout": {
@@ -586,6 +589,22 @@ def _safe_float(value, default=0.0):
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+
+
+def normalize_gpio_trigger_level(raw_level):
+    level = str(raw_level or "").strip().lower()
+    if level in ("low", "active_low", "低", "低位", "低位觸發"):
+        return "low"
+    return "high"
+
+
+def build_gpio_polarity_text(trigger_level):
+    level = normalize_gpio_trigger_level(trigger_level)
+    if level == "low":
+        return "低位觸發（按下 LOW / 釋放 HIGH）"
+    return "高位觸發（按下 HIGH / 釋放 LOW）"
 
 
 def normalize_front_skip_mode(raw_mode):
@@ -1847,6 +1866,21 @@ class App:
     def set_connection_status(self, message):
         self.connection_var.set(message)
 
+    def set_gpio_polarity_ui(self, trigger_level, persist=False):
+        level = normalize_gpio_trigger_level(trigger_level)
+        self.config["gpio_trigger_level"] = level
+        if hasattr(self, "gpio_polarity_var"):
+            self.gpio_polarity_var.set(build_gpio_polarity_text(level))
+        high_selected = level == "high"
+        high_btn = getattr(self, "gpio_high_btn", None)
+        low_btn = getattr(self, "gpio_low_btn", None)
+        if high_btn is not None:
+            high_btn.config(bg=("#9be58b" if high_selected else "SystemButtonFace"), relief=(tk.SUNKEN if high_selected else tk.RAISED))
+        if low_btn is not None:
+            low_btn.config(bg=("#9be58b" if not high_selected else "SystemButtonFace"), relief=(tk.SUNKEN if not high_selected else tk.RAISED))
+        if persist:
+            save_config(self.config)
+
     def update_gpio_polarity_from_response(self, response):
         if not isinstance(response, dict) or not hasattr(self, "gpio_polarity_var"):
             return
@@ -1862,6 +1896,12 @@ class App:
                 label = "低位觸發"
         press_level = str(info.get("press_level", "")).strip().upper()
         release_level = str(info.get("release_level", "")).strip().upper()
+        trigger = str(info.get("trigger_level", "")).strip().lower()
+        if trigger in ("high", "low"):
+            self.config["gpio_trigger_level"] = trigger
+            save_config(self.config)
+            self.set_gpio_polarity_ui(trigger, persist=False)
+            return
         if label and press_level and release_level:
             self.gpio_polarity_var.set("{}（按下 {} / 釋放 {}）".format(label, press_level, release_level))
         elif label:
@@ -2074,6 +2114,7 @@ class App:
         self.config = load_config()
         if "auto_connect_enabled" not in self.config:
             self.config["auto_connect_enabled"] = True
+        self.config["gpio_trigger_level"] = normalize_gpio_trigger_level(self.config.get("gpio_trigger_level", "high"))
 
         self.root = root
         self.root.title("鍵盤錄製 / Timeline 分析 / 傳送")
@@ -2230,15 +2271,20 @@ class App:
         tk.Label(connection_row, text="狀態同步：").pack(side="left")
         self.status_sync_state_var = tk.StringVar(value="啟用")
         tk.Label(connection_row, textvariable=self.status_sync_state_var, fg="#1a4fb8").pack(side="left", padx=(0, 8))
-        tk.Label(connection_row, text="GPIO觸發：").pack(side="left")
-        self.gpio_polarity_var = tk.StringVar(value="未知")
-        tk.Label(connection_row, textvariable=self.gpio_polarity_var, fg="#1a4fb8").pack(side="left", padx=(0, 8))
+
+        gpio_info_row = tk.Frame(info)
+        gpio_info_row.pack(fill="x", padx=8, pady=(0, 3))
+        tk.Label(gpio_info_row, text="GPIO觸發：").pack(side="left")
+        self.gpio_polarity_var = tk.StringVar(value=build_gpio_polarity_text(self.config.get("gpio_trigger_level", "high")))
+        tk.Label(gpio_info_row, textvariable=self.gpio_polarity_var, fg="#1a4fb8", bg="#fff4b3", anchor="w").pack(side="left", fill="x", expand=True, padx=(0, 8))
 
         connection_btn_row = tk.Frame(info)
         connection_btn_row.pack(fill="x", padx=8, pady=(0, 4))
         tk.Button(connection_btn_row, text="釋放GPIO", command=self.release_gpio, width=10).pack(side="left", padx=4)
-        tk.Button(connection_btn_row, text="高位觸發", command=lambda: self.set_gpio_polarity("high"), width=10).pack(side="left", padx=4)
-        tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10).pack(side="left", padx=4)
+        self.gpio_high_btn = tk.Button(connection_btn_row, text="高位觸發", command=lambda: self.set_gpio_polarity("high"), width=10)
+        self.gpio_high_btn.pack(side="left", padx=4)
+        self.gpio_low_btn = tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10)
+        self.gpio_low_btn.pack(side="left", padx=4)
         tk.Button(connection_btn_row, text="測試連線", command=self.ping_pi, width=10).pack(side="left", padx=4)
         tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
         self.auto_connect_toggle_btn = tk.Button(
@@ -2249,6 +2295,7 @@ class App:
         )
         self.auto_connect_toggle_btn.pack(side="left", padx=4)
         self.update_auto_connect_ui()
+        self.set_gpio_polarity_ui(self.config.get("gpio_trigger_level", "high"), persist=False)
 
         buff_mode_row = tk.Frame(info)
         buff_mode_row.pack(fill="x", padx=8, pady=(0, 5))
@@ -4219,6 +4266,7 @@ class App:
 
         self.config["pi_host"] = ip
         self.config["send_delay_sec"] = delay
+        self.config["gpio_trigger_level"] = normalize_gpio_trigger_level(self.config.get("gpio_trigger_level", "high"))
         save_config(self.config)
         self.update_current_labels()
         self.set_frontend_error("")
@@ -4758,7 +4806,9 @@ class App:
             self.show_error("釋放 GPIO 失敗", str(e))
 
     def set_gpio_polarity(self, trigger_level):
+        trigger_level = normalize_gpio_trigger_level(trigger_level)
         label = "高位觸發" if trigger_level == "high" else "低位觸發"
+        self.set_gpio_polarity_ui(trigger_level, persist=True)
         try:
             self.config["pi_host"] = self.pi_ip_entry.get().strip() or DEFAULT_PI_HOST
             save_config(self.config)

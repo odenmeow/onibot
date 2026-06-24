@@ -30,5 +30,6 @@
       "buff_jitter_sec": 117,
       "group": 103
     }
-  }
+  },
+  "gpio_trigger_level": "high"
 }
