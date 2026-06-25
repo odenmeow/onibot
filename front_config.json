@@ -1,6 +1,7 @@
 {
   "pi_host": "192.168.100.140",
   "send_delay_sec": 0.0,
+  "auto_connect_enabled": true,
   "auto_switch_runtime_on_loop_start": true,
   "last_selected_name": "一拳左右亂打3混合版",
   "buff_skip_mode": "pass",
@@ -11,14 +12,16 @@
     "#ffffff"
   ],
   "ui_layout": {
+    "paned_sash_x": 462,
+    "paned_ratio": 0.4192,
+    "left_paned_sashes": [],
+    "left_paned_ratios": [],
+    "right_paned_sash_y": 378,
+    "right_paned_ratio": 0.6974,
     "window_size": [
       1122,
       680
     ],
-    "paned_sash_x": 462,
-    "paned_ratio": 0.4192,
-    "right_paned_sash_y": 378,
-    "right_paned_ratio": 0.6974,
     "tree_column_widths": {
       "idx": 40,
       "type": 41,
