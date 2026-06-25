@@ -40,7 +40,7 @@ BUTTONS = {
     "right": 16,
     "x": 12,
     "space": 19,
-    "6": 13
+    "a": 13
 }
 
 stop_event = threading.Event()
