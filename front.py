@@ -57,7 +57,7 @@ KEY_MAP = {
     "'g'": "g",
     "'f'": "f",
     "'d'": "d",
-    "'6'": "6",
+    "'a'": "a",
     "Key.shift": "shift",
     "Key.shift_r": "shift",
     "Key.ctrl_l": "ctrl",
@@ -70,10 +70,10 @@ KEY_MAP = {
 }
 SUPPORTED_BUTTONS = {
     "fn", "g", "shift", "f", "c", "v", "d", "alt", "ctrl",
-    "left", "up", "down", "right", "x", "space", "6"
+    "left", "up", "down", "right", "x", "space", "a"
 }
 DEFAULT_HINT_NOTE_TEXT = (
-    "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, 6。\n"
+    "前端可接受按鍵(button)：fn, g, shift, f, c, v, d, alt, ctrl, left, up, down, right, x, space, a。\n"
     "注意：多數電腦的實體 Fn 鍵無法直接被前端鍵盤監聽。\n"
     "建議先用可錄到的替代鍵（例如 Win/Cmd/Alt）錄製，再到 timeline 的 button 欄位手動改成 fn。\n"
     "補充：『套用偏移』是手動把選取列之後的時間整段平移；『糾正複製體』是依 buff_group 負值重算複製體群組的正確 at；『at 交換』可快速對調兩列 at 時間。\n"
