@@ -41,6 +41,36 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
         self.assertTrue(progress["hint_slow_segment"])
         self.assertGreater(progress["heartbeat_interval_ms"], 0)
 
+
+    def test_start_task_parse_and_run_preserve_event_identity(self):
+        events = backend.parse_start_task_timeline([
+            {"idx": 89, "event_id": "r3:idx89:press:left@8900", "at_ms": 0, "action": "press", "btn": "left", "skip_mode": "pass"}
+        ])
+        self.assertEqual(events[0]["runtime_source_index"], 89)
+        self.assertEqual(events[0]["event_id"], "r3:idx89:press:left@8900")
+
+        orig_sleep = backend.safe_sleep
+        orig_press = backend.press_only
+        orig_release = backend.release_only
+        try:
+            backend.safe_sleep = lambda *_args, **_kwargs: None
+            backend.press_only = lambda *_args, **_kwargs: None
+            backend.release_only = lambda *_args, **_kwargs: None
+            results = backend.run_timeline(events)
+            snap = backend.get_timeline_runtime_snapshot()
+        finally:
+            backend.safe_sleep = orig_sleep
+            backend.press_only = orig_press
+            backend.release_only = orig_release
+
+        self.assertEqual(results[0]["event_id"], "r3:idx89:press:left@8900")
+        self.assertEqual(results[0]["original_index"], 89)
+        self.assertEqual(results[0]["type"], "press")
+        self.assertEqual(results[0]["button"], "left")
+        self.assertEqual(results[0]["status"], "ok")
+        self.assertEqual(snap["events"][0]["event_id"], "r3:idx89:press:left@8900")
+        self.assertEqual(snap["events"][0]["original_index"], 89)
+
     def test_same_group_second_event_can_be_skipped_in_same_round(self):
         runtime = {"next_ready_at": {}}
         events = [

@@ -2,7 +2,7 @@
 """
 executor_only 邊界說明：
 - 此模組僅負責「執行」已排程完成的 timeline 事件（press/release + at_ms）。
-- start_task 只接受可執行欄位：idx/at_ms/action/btn/skip_mode。
+- start_task 只接受可執行欄位：idx/event_id/at_ms/action/btn/skip_mode。
 - 任何抽籤/排程語意欄位（例如 randat 指令級資料）一律拒收，避免後端參與排程決策。
 """
 import json
@@ -88,7 +88,7 @@ timeline_cooldown_runtime = {
 # 狀態輪詢防爆：避免 timeline_runtime.events / round_traces 無上限回傳造成卡頓
 STATUS_EVENTS_LIMIT = 120
 STATUS_ROUND_TRACES_LIMIT = 40
-START_TASK_ALLOWED_TIMELINE_FIELDS = {"idx", "at_ms", "action", "btn", "skip_mode"}
+START_TASK_ALLOWED_TIMELINE_FIELDS = {"idx", "event_id", "at_ms", "action", "btn", "skip_mode"}
 
 
 def _now_ms():
@@ -502,7 +502,8 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
             "runtime_landed_index": ev.get("runtime_landed_index"),
             "runtime_anchor_index": ev.get("runtime_anchor_index"),
             "runtime_occupies_original": ev.get("runtime_occupies_original", 0),
-            "runtime_round_trace": ev.get("runtime_round_trace")
+            "runtime_round_trace": ev.get("runtime_round_trace"),
+            "event_id": str(ev.get("event_id", ""))
         })
 
     normalized.sort(key=lambda x: x["at"])
@@ -564,6 +565,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         safe_sleep(wait_time, clock=clock)
                     results.append({
                         "index": i,
+                        "event_id": ev.get("event_id", ""),
                         "original_index": ev["original_index"],
                         "type": ev["type"],
                         "button": ev["button"],
@@ -576,6 +578,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     })
                     append_timeline_runtime_event({
                         "index": i,
+                        "event_id": ev.get("event_id", ""),
                         "original_index": ev["original_index"],
                         "type": ev["type"],
                         "button": ev["button"],
@@ -602,6 +605,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                 actual_now = time.monotonic() - wall_start
                 results.append({
                     "index": i,
+                    "event_id": ev.get("event_id", ""),
                     "original_index": ev["original_index"],
                     "type": ev["type"],
                     "button": ev["button"],
@@ -612,6 +616,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                 })
                 append_timeline_runtime_event({
                     "index": i,
+                    "event_id": ev.get("event_id", ""),
                     "original_index": ev["original_index"],
                     "type": ev["type"],
                     "button": ev["button"],
@@ -762,7 +767,7 @@ def parse_start_task_timeline(raw_timeline):
         extra_keys = sorted([k for k in row.keys() if k not in START_TASK_ALLOWED_TIMELINE_FIELDS])
         if extra_keys:
             raise ValueError(
-                "timeline 第 {} 列包含未允許欄位: {}（僅接受: idx/at_ms/action/btn/skip_mode）".format(
+                "timeline 第 {} 列包含未允許欄位: {}（僅接受: idx/event_id/at_ms/action/btn/skip_mode）".format(
                     i, ",".join(extra_keys)
                 )
             )
@@ -777,10 +782,17 @@ def parse_start_task_timeline(raw_timeline):
             at_ms = int(row.get("at_ms", 0))
         except Exception:
             raise ValueError("timeline 第 {} 列 at_ms 錯誤".format(i))
+        try:
+            runtime_source_index = int(row.get("idx", i))
+        except Exception:
+            runtime_source_index = i
+        event_id = str(row.get("event_id", ""))
         events.append({
             "type": action,
             "button": button,
-            "at": max(0, at_ms) / 1000.0
+            "at": max(0, at_ms) / 1000.0,
+            "runtime_source_index": runtime_source_index,
+            "event_id": event_id
         })
     return events
 
