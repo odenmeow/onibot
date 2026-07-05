@@ -72,6 +72,7 @@ timeline_runtime = {
     "last_event": None,
     "round_traces": [],
     "runtime_diag": {},
+    "debug": {},
     "runtime_version": 0,
     "execution_round": 0,
     "progress": {
@@ -127,6 +128,7 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
         timeline_runtime["last_event"] = None
         timeline_runtime["round_traces"] = []
         timeline_runtime["runtime_diag"] = {}
+        timeline_runtime["debug"] = {}
         timeline_runtime["runtime_version"] = int(runtime_version or 0)
         timeline_runtime["execution_round"] = int(execution_round or 0)
         timeline_runtime["progress"] = {
@@ -224,6 +226,7 @@ def get_timeline_runtime_snapshot():
             "last_event": timeline_runtime.get("last_event"),
             "round_traces": round_traces,
             "runtime_diag": dict(timeline_runtime.get("runtime_diag", {})),
+            "debug": dict(timeline_runtime.get("debug", {})),
             "runtime_version": int(timeline_runtime.get("runtime_version", 0)),
             "execution_round": int(timeline_runtime.get("execution_round", 0)),
             "cooldowns": cooldowns
@@ -643,7 +646,8 @@ def run_timeline_background(
     events,
     buff_skip_mode=BUFF_SKIP_MODE_WALK,
     runtime_version=0,
-    execution_round=0
+    execution_round=0,
+    runtime_debug=None
 ):
     global current_run_status, current_run_clock
     try:
@@ -658,6 +662,8 @@ def run_timeline_background(
             runtime_version=runtime_version,
             execution_round=execution_round
         )
+        if isinstance(runtime_debug, dict):
+            patch_timeline_runtime(debug=runtime_debug)
         current_run_status = {
             "state": "running",
             "mode": "timeline",
@@ -795,6 +801,39 @@ def parse_start_task_timeline(raw_timeline):
             "event_id": event_id
         })
     return events
+
+
+def build_effective_order_debug(events):
+    """Return the exact order the Pi executor will use after backend sorting."""
+    if not isinstance(events, list):
+        events = []
+    ordered = sorted(enumerate(events), key=lambda pair: float(pair[1].get("at", 0.0)))
+    effective_order = []
+    for runtime_order, (received_order, ev) in enumerate(ordered):
+        try:
+            source_index = int(ev.get("runtime_source_index", received_order))
+        except Exception:
+            source_index = received_order
+        try:
+            at_sec = max(0.0, float(ev.get("at", 0.0)))
+        except Exception:
+            at_sec = 0.0
+        effective_order.append({
+            "runtime_order": runtime_order,
+            "received_order": received_order,
+            "idx": source_index,
+            "event_id": str(ev.get("event_id", "")),
+            "at_ms": int(round(at_sec * 1000.0)),
+            "at": round(at_sec, 4),
+            "action": str(ev.get("type", "")),
+            "btn": str(ev.get("button", ""))
+        })
+    return {
+        "note": "Pi backend effective execution order after sorting by at seconds. Python sort is stable for equal at values.",
+        "sort_key": ["at"],
+        "stable_equal_at": True,
+        "effective_order": effective_order
+    }
 
 
 def run_macro_background(steps):
@@ -1119,6 +1158,7 @@ def handle_request(data):
             )
 
         events = parse_start_task_timeline(data.get("timeline", []))
+        effective_order_debug = build_effective_order_debug(events)
         incoming_round_traces, incoming_runtime_diag = _extract_runtime_diag_from_start_task(data)
         incoming_runtime_version = data.get("runtime_version", 0)
         incoming_execution_round = data.get("execution_round", 0)
@@ -1147,7 +1187,7 @@ def handle_request(data):
         pause_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
-            args=(events, buff_skip_mode, max(0, incoming_runtime_version), incoming_execution_round),
+            args=(events, buff_skip_mode, max(0, incoming_runtime_version), incoming_execution_round, effective_order_debug),
             daemon=True
         )
         current_run_thread.start()
@@ -1158,7 +1198,8 @@ def handle_request(data):
         patch_timeline_runtime(
             client_task_id=current_client_task_id,
             runtime_version=max(0, incoming_runtime_version),
-            execution_round=incoming_execution_round
+            execution_round=incoming_execution_round,
+            debug=effective_order_debug
         )
         runtime_snapshot = get_timeline_runtime_snapshot()
         return {

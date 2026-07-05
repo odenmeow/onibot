@@ -345,6 +345,50 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
         self.assertEqual(timeline_runtime["execution_round"], 5)
         self.assertEqual(timeline_runtime["client_task_id"], "ct-2")
 
+    def test_start_task_status_includes_backend_effective_order_debug(self):
+        orig_thread = backend.threading.Thread
+        orig_current_run_thread = backend.current_run_thread
+        try:
+            backend.current_run_thread = None
+
+            class _FakeThread:
+                def __init__(self, target=None, args=(), daemon=None):
+                    self.target = target
+                    self.args = args
+                    self.daemon = daemon
+
+                def start(self):
+                    return None
+
+                def is_alive(self):
+                    return False
+
+            backend.threading.Thread = _FakeThread
+            res = backend.handle_request({
+                "type": "start_task",
+                "contract_version": backend.RUNTIME_CONTRACT_VERSION,
+                "client_task_id": "ct-debug-order",
+                "runtime_version": 7,
+                "execution_round": 2,
+                "timeline": [
+                    {"idx": 9, "event_id": "late", "at_ms": 900, "action": "press", "btn": "right", "skip_mode": "pass"},
+                    {"idx": 3, "event_id": "first", "at_ms": 100, "action": "press", "btn": "fn", "skip_mode": "pass"},
+                    {"idx": 4, "event_id": "same-at", "at_ms": 100, "action": "press", "btn": "down", "skip_mode": "pass"}
+                ]
+            })
+        finally:
+            backend.threading.Thread = orig_thread
+            backend.current_run_thread = orig_current_run_thread
+
+        self.assertEqual(res["status"], "ok")
+        status = backend.handle_request({"action": "status"})
+        debug = status["timeline_runtime"]["debug"]
+        effective_order = debug["effective_order"]
+        self.assertEqual([row["event_id"] for row in effective_order], ["first", "same-at", "late"])
+        self.assertEqual([row["idx"] for row in effective_order], [3, 4, 9])
+        self.assertEqual([row["received_order"] for row in effective_order], [1, 2, 0])
+        self.assertTrue(debug["stable_equal_at"])
+
     def test_start_task_uses_runtime_meta_execution_round_when_top_level_missing(self):
         orig_thread = backend.threading.Thread
         orig_current_run_thread = backend.current_run_thread
