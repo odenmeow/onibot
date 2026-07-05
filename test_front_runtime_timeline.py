@@ -233,6 +233,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.copy_events = App.copy_events.__get__(app, App)
         app._normalize_replicated_row_flag = App._normalize_replicated_row_flag.__get__(app, App)
         app._sync_replicated_row = App._sync_replicated_row.__get__(app, App)
+        app._runtime_event_id = App._runtime_event_id.__get__(app, App)
+        app._runtime_event_id_to_row_map = App._runtime_event_id_to_row_map.__get__(app, App)
+        app._runtime_event_row_index = App._runtime_event_row_index.__get__(app, App)
         app.update_runtime_from_status = App.update_runtime_from_status.__get__(app, App)
         app.render_runtime_analysis = App.render_runtime_analysis.__get__(app, App)
         app._build_runtime_consistency_key = App._build_runtime_consistency_key.__get__(app, App)
@@ -452,6 +455,33 @@ class RuntimeDisplayTests(unittest.TestCase):
         })
         self.assertTrue(changed)
         self.assertEqual(app.runtime_latest_index, 2)
+
+
+    def test_runtime_event_id_mapping_prefers_event_id_after_randat_reorder(self):
+        app = self._new_app()
+        app.timeline = []
+        for i in range(90):
+            if i == 88:
+                app.timeline.append({"type": "randat", "button": "", "at": 8.8, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0})
+            elif i == 89:
+                app.timeline.append({"type": "press", "button": "left", "at": 8.9, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0})
+            else:
+                app.timeline.append({"type": "press", "button": "f", "at": i / 10.0, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0})
+
+        event_id = app._runtime_event_id(3, 89, "press", "left", 8900)
+        changed = app.update_runtime_from_status({
+            "timeline_runtime": {
+                "state": "running",
+                "execution_round": 3,
+                "events": [{"event_id": event_id, "original_index": 88, "type": "press", "button": "left", "status": "ok"}]
+            }
+        })
+
+        self.assertTrue(changed)
+        self.assertIn(89, app.timeline_runtime_by_index)
+        self.assertNotIn(88, app.timeline_runtime_by_index)
+        self.assertEqual(app.runtime_latest_index, 89)
+        self.assertEqual(app.runtime_recent_ok_indices, [89])
 
     def test_update_runtime_keeps_local_round_traces_even_if_backend_reports_new_round(self):
         app = self._new_app()

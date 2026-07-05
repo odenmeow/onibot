@@ -3247,6 +3247,46 @@ class App:
             else:
                 self.text.insert(tk.END, warning_text)
 
+
+    def _runtime_event_id_to_row_map(self, runtime):
+        mapping = {}
+        runtime = runtime if isinstance(runtime, dict) else {}
+        try:
+            execution_round = int(runtime.get("execution_round", 0) or 0)
+        except Exception:
+            execution_round = 0
+        if execution_round <= 0:
+            prepared = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
+            runtime_meta = prepared.get("runtime_meta", {}) if isinstance(prepared.get("runtime_meta", {}), dict) else {}
+            try:
+                execution_round = int(prepared.get("execution_round", runtime_meta.get("execution_round", 0)) or 0)
+            except Exception:
+                execution_round = 0
+        for idx, ev in enumerate(self.timeline if isinstance(getattr(self, "timeline", []), list) else []):
+            if not isinstance(ev, dict):
+                continue
+            action = str(ev.get("type", "")).strip().lower()
+            if action not in ("press", "release"):
+                continue
+            try:
+                at_ms = int(round(max(0.0, float(ev.get("at", 0.0))) * 1000.0))
+            except Exception:
+                at_ms = 0
+            button = str(ev.get("button", "")).strip().lower()
+            mapping[self._runtime_event_id(execution_round, idx, action, button, at_ms)] = idx
+        return mapping
+
+    def _runtime_event_row_index(self, ev, event_id_to_row):
+        if isinstance(ev, dict):
+            event_id = str(ev.get("event_id", "")).strip()
+            if event_id and event_id in event_id_to_row:
+                return int(event_id_to_row[event_id])
+            try:
+                return int(ev.get("original_index"))
+            except Exception:
+                return None
+        return None
+
     def update_runtime_from_status(self, status_response):
         runtime = status_response.get("timeline_runtime", {})
         if not isinstance(runtime, dict):
@@ -3267,6 +3307,7 @@ class App:
         ):
             round_traces = list(self.runtime_round_traces)
 
+        event_id_to_row = self._runtime_event_id_to_row_map(runtime)
         runtime_by_index = {}
         recent_ok = []
         recent_skipped = []
@@ -3280,23 +3321,25 @@ class App:
         except Exception:
             latest_idx = None
             progress_from_backend = False
+        latest_event_idx = None
         for ev in events:
             if not isinstance(ev, dict):
                 continue
-            try:
-                idx = int(ev.get("original_index"))
-            except Exception:
+            idx = self._runtime_event_row_index(ev, event_id_to_row)
+            if idx is None:
                 continue
             runtime_by_index[idx] = ev
+            latest_event_idx = idx
             if not progress_from_backend:
                 latest_idx = idx
+        if latest_event_idx is not None and (latest_idx is None or latest_idx not in runtime_by_index):
+            latest_idx = latest_event_idx
 
         for ev in reversed(events):
             if not isinstance(ev, dict):
                 continue
-            try:
-                idx = int(ev.get("original_index"))
-            except Exception:
+            idx = self._runtime_event_row_index(ev, event_id_to_row)
+            if idx is None:
                 continue
             status = str(ev.get("status", "")).strip().lower()
             if status == "ok" and idx not in recent_ok:
@@ -3307,9 +3350,8 @@ class App:
         for ev in reversed(events):
             if not isinstance(ev, dict):
                 continue
-            try:
-                idx = int(ev.get("original_index"))
-            except Exception:
+            idx = self._runtime_event_row_index(ev, event_id_to_row)
+            if idx is None:
                 continue
             status = str(ev.get("status", "")).strip().lower()
             if status == "skipped_by_cooldown" and idx not in recent_skipped:
@@ -3772,6 +3814,12 @@ class App:
             row = {}
             for key, value in ev.items():
                 text = str(key or "")
+                if text == "runtime_source_index":
+                    try:
+                        row["idx"] = int(value)
+                    except Exception:
+                        pass
+                    continue
                 if text.startswith("runtime_") or text.startswith("__"):
                     continue
                 if text in {"row_color", "replicatedRow"}:
@@ -3785,30 +3833,30 @@ class App:
     def _next_client_task_id(self):
         return "ct-{}-{}".format(int(time.time() * 1000), uuid.uuid4().hex[:10])
 
+    def _runtime_event_id(self, execution_round, idx, action, button, at_ms):
+        try:
+            round_value = int(execution_round or 0)
+        except Exception:
+            round_value = 0
+        try:
+            idx_value = int(idx)
+        except Exception:
+            idx_value = 0
+        try:
+            at_ms_value = int(at_ms)
+        except Exception:
+            at_ms_value = 0
+        return "r{}:idx{}:{}:{}@{}".format(
+            round_value,
+            idx_value,
+            str(action or "").strip().lower(),
+            str(button or "").strip().lower(),
+            at_ms_value
+        )
+
     def _build_start_task_payload(self, backend_events):
         sent_at_ms = int(time.time() * 1000)
         default_skip_mode = normalize_front_skip_mode(self.config.get("buff_skip_mode", BUFF_SKIP_MODE_PASS))
-        timeline = []
-        for idx, ev in enumerate(backend_events or []):
-            try:
-                at_ms = int(round(max(0.0, float(ev.get("at", 0.0))) * 1000.0))
-            except Exception:
-                at_ms = 0
-            skip_mode = normalize_front_skip_mode(ev.get("skip_mode", default_skip_mode))
-            timeline.append({
-                "idx": int(idx),
-                "at_ms": at_ms,
-                "action": str(ev.get("type", "")).strip().lower(),
-                "btn": str(ev.get("button", "")).strip().lower(),
-                "skip_mode": skip_mode
-            })
-        payload = {
-            "type": "start_task",
-            "contract_version": RUNTIME_CONTRACT_VERSION,
-            "client_task_id": self._next_client_task_id(),
-            "sent_at_ms": sent_at_ms,
-            "timeline": timeline
-        }
         prepared = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
         runtime_meta = prepared.get("runtime_meta", {})
         if not isinstance(runtime_meta, dict):
@@ -3823,6 +3871,35 @@ class App:
         except Exception:
             normalized_execution_round = 0
         normalized_execution_round = max(1, normalized_execution_round)
+
+        timeline = []
+        for idx, ev in enumerate(backend_events or []):
+            try:
+                at_ms = int(round(max(0.0, float(ev.get("at", 0.0))) * 1000.0))
+            except Exception:
+                at_ms = 0
+            try:
+                source_idx = int(ev.get("idx", ev.get("runtime_source_index", idx)))
+            except Exception:
+                source_idx = int(idx)
+            action = str(ev.get("type", "")).strip().lower()
+            button = str(ev.get("button", "")).strip().lower()
+            skip_mode = normalize_front_skip_mode(ev.get("skip_mode", default_skip_mode))
+            timeline.append({
+                "idx": source_idx,
+                "event_id": self._runtime_event_id(normalized_execution_round, source_idx, action, button, at_ms),
+                "at_ms": at_ms,
+                "action": action,
+                "btn": button,
+                "skip_mode": skip_mode
+            })
+        payload = {
+            "type": "start_task",
+            "contract_version": RUNTIME_CONTRACT_VERSION,
+            "client_task_id": self._next_client_task_id(),
+            "sent_at_ms": sent_at_ms,
+            "timeline": timeline
+        }
         runtime_version_value = prepared.get("runtime_version")
         if runtime_version_value in (None, ""):
             runtime_version_value = runtime_meta.get("runtime_version")
