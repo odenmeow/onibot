@@ -2127,6 +2127,8 @@ class App:
         self.last_tree_copy_payload = ""
         self.timeline_histories = {}
         self.front_loop_enabled = False
+        self.front_loop_ui_paused = False
+        self.front_loop_display_name = ""
         self.front_loop_after_id = None
         self.front_loop_round = 0
         self.front_round_state = "idle"
@@ -2931,24 +2933,32 @@ class App:
         self.write_text(payload or {"prepared": "尚無資料"})
 
     def _build_preview_payload(self):
+        payload = {
+            "current_name": self.current_name,
+            "pi_host": self.config["pi_host"],
+            "origin_version": int(getattr(self, "origin_version", 0)),
+            "runtime_version": int(getattr(self, "runtime_version", 0)),
+            "simultaneous_groups": build_overlap_summary(self.timeline)
+        }
+        if bool(getattr(self, "front_loop_ui_paused", False)):
+            payload["request_preview"] = None
+            payload["preview_paused"] = True
+            return payload
+
         backend_events = [
             ev for ev in (self.timeline or [])
             if isinstance(ev, dict) and str(ev.get("type", "")).strip().lower() in ("press", "release")
         ]
         sanitized = self._sanitize_events_for_backend(backend_events)
-        return {
-            "current_name": self.current_name,
-            "pi_host": self.config["pi_host"],
-            "origin_version": int(getattr(self, "origin_version", 0)),
-            "runtime_version": int(getattr(self, "runtime_version", 0)),
-            "request_preview": self._build_start_task_payload(sanitized),
-            "simultaneous_groups": build_overlap_summary(self.timeline)
-        }
+        payload["request_preview"] = self._build_start_task_payload(sanitized)
+        return payload
 
     def refresh_preview(self, force=False):
         mode_var = getattr(self, "json_view_mode_var", None)
         mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
         if not force and mode != "preview":
+            return
+        if bool(getattr(self, "front_loop_ui_paused", False)):
             return
         self.write_text(self._build_preview_payload())
 
@@ -5070,9 +5080,13 @@ class App:
 
     def pause_runtime(self):
         state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
-        action = "resume" if state == "paused" else "pause"
+        action = "resume" if state == "paused" or bool(getattr(self, "front_loop_ui_paused", False)) else "pause"
         try:
             res = self.request_pi({"action": action}, write_response=False)
+            self.front_loop_ui_paused = (action == "pause")
+            if action == "resume" and bool(getattr(self, "front_loop_enabled", False)):
+                display_name = str(getattr(self, "front_loop_display_name", "") or self.current_name or "未命名資料")
+                self.front_loop_after_id = self.root.after(0, lambda: self._poll_front_loop_round_done(display_name))
             runtime_brief = self._extract_runtime_progress_brief(res)
             if runtime_brief is not None:
                 round_no, processed_count, events_total = runtime_brief
@@ -5129,6 +5143,8 @@ class App:
 
     def _mark_loop_terminal(self):
         self.front_loop_enabled = False
+        self.front_loop_ui_paused = False
+        self.front_loop_display_name = ""
         self.front_inflight_client_task_id = ""
         self.pending_runtime_version = 0
         self.next_round_prepared_cache = None
@@ -5139,6 +5155,9 @@ class App:
 
     def _schedule_next_round_dispatch(self, display_name):
         if not self.front_loop_enabled:
+            return
+        if bool(getattr(self, "front_loop_ui_paused", False)):
+            self.front_loop_after_id = None
             return
         self._set_front_round_state("preparing_next")
         self._dispatch_front_loop_once(display_name)
@@ -5221,6 +5240,8 @@ class App:
 
         display_name = self.current_name if self.current_name else "未命名資料"
         self.front_loop_enabled = True
+        self.front_loop_ui_paused = False
+        self.front_loop_display_name = display_name
         self.front_loop_round = 0
         self.front_inflight_client_task_id = ""
         self.pending_runtime_version = 0
@@ -5236,6 +5257,8 @@ class App:
 
     def _dispatch_front_loop_once(self, display_name):
         if not self.front_loop_enabled:
+            return
+        if bool(getattr(self, "front_loop_ui_paused", False)):
             return
         if self.front_round_state not in {"preparing", "preparing_next", "idle"}:
             return
@@ -5280,6 +5303,8 @@ class App:
 
             def do_send(delay_meta):
                 if not self.front_loop_enabled:
+                    return
+                if bool(getattr(self, "front_loop_ui_paused", False)):
                     return
                 if self.front_round_state != "waiting_ack":
                     return
@@ -5407,6 +5432,9 @@ class App:
 
     def _poll_front_loop_round_done(self, display_name):
         if not self.front_loop_enabled:
+            return
+        if bool(getattr(self, "front_loop_ui_paused", False)):
+            self.front_loop_after_id = None
             return
         try:
             status_response = self.request_pi({"action": "status"}, write_response=False, channel="status")
