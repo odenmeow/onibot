@@ -121,6 +121,7 @@ def load_config():
                 "left_paned_sashes": [],
                 "left_paned_ratios": [],
                 "right_paned_sash_y": None,
+                "json_split_sash_x": None,
                 "window_size": None,
                 "tree_column_widths": {}
             }
@@ -162,6 +163,8 @@ def load_config():
                 "left_paned_ratios": ui_layout.get("left_paned_ratios", []),
                 "right_paned_sash_y": ui_layout.get("right_paned_sash_y"),
                 "right_paned_ratio": ui_layout.get("right_paned_ratio"),
+                "json_split_sash_x": ui_layout.get("json_split_sash_x"),
+                "json_split_ratio": ui_layout.get("json_split_ratio"),
                 "window_size": ui_layout.get("window_size"),
                 "tree_column_widths": tree_column_widths
             }
@@ -183,6 +186,7 @@ def load_config():
                 "left_paned_sashes": [],
                 "left_paned_ratios": [],
                 "right_paned_sash_y": None,
+                "json_split_sash_x": None,
                 "window_size": None,
                 "tree_column_widths": {}
             }
@@ -2160,7 +2164,7 @@ class App:
         self.left_compact_threshold = 360
         self.left_optional_panes_hidden = False
         body.add(left_panel, minsize=60)
-        body.add(right_panel, minsize=320)
+        body.add(right_panel, minsize=240)
 
         left_content_paned = tk.PanedWindow(left_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED)
         left_content_paned.pack(fill="both", expand=True)
@@ -2249,7 +2253,6 @@ class App:
         self.connection_btn_row = connection_btn_row
         self.connection_buttons = [
             tk.Button(connection_btn_row, text="釋放GPIO", command=self.release_gpio, width=10),
-            tk.Button(connection_btn_row, text="高位觸發", command=lambda: self.set_gpio_polarity("high"), width=10),
             tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10),
             tk.Button(connection_btn_row, text="測試連線", command=self.ping_pi, width=10),
             tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10),
@@ -2311,22 +2314,9 @@ class App:
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
         self.saved_listbox.pack(fill="x", padx=5, pady=5)
 
-        error_frame = tk.LabelFrame(left_content_paned, text="錯誤訊息（前端 / 後端）")
-        self.error_panel = error_frame
-        tk.Label(error_frame, text="前端：", width=8, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="nw")
-        self.frontend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
-        self.frontend_error_text.grid(row=0, column=1, sticky="nsew", padx=(0, 6), pady=2)
-        tk.Label(error_frame, text="後端：", width=8, anchor="w").grid(row=1, column=0, padx=6, pady=2, sticky="nw")
-        self.backend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
-        self.backend_error_text.grid(row=1, column=1, sticky="nsew", padx=(0, 6), pady=(2, 6))
-        error_frame.grid_columnconfigure(1, weight=1)
-        error_frame.grid_rowconfigure(0, weight=1)
-        error_frame.grid_rowconfigure(1, weight=1)
-        self.clear_errors()
         self.left_content_paned.add(top, minsize=110)
         self.left_content_paned.add(info, minsize=120)
         self.left_content_paned.add(save_frame, minsize=120)
-        self.left_content_paned.add(error_frame, minsize=140)
         self.left_panel.bind("<Configure>", self._update_responsive_layout, add="+")
         self.root.after(100, self._update_responsive_layout)
 
@@ -2449,13 +2439,30 @@ class App:
         tk.Button(edit_row, text="下移", command=self.move_selected_down, width=9).pack(side="left", padx=2)
         tk.Button(edit_row, text="刪除列", command=self.delete_selected_rows, width=9).pack(side="left", padx=2)
         tk.Label(edit_row, text="自/手動偏移 :").pack(side="left", padx=(14, 5))
-        self.offset_sec_entry = tk.Entry(edit_row, width=10)
+        self.offset_sec_entry = tk.Entry(edit_row, width=6)
         self.offset_sec_entry.insert(0, "{:.3f}".format(float(self.config.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC))))
         self.offset_sec_entry.pack(side="left", padx=(0, 5))
         tk.Label(edit_row, text="秒").pack(side="left", padx=(0, 5))
         tk.Button(edit_row, text="套用偏移", command=self.apply_offset_from_selected).pack(side="left", padx=2)
 
-        mode_row = tk.Frame(json_panel)
+        json_split = tk.PanedWindow(json_panel, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        json_split.pack(fill="both", expand=True)
+        self.json_split_paned = json_split
+
+        error_frame = tk.LabelFrame(json_split, text="錯誤訊息（前端 / 後端）")
+        self.error_panel = error_frame
+        tk.Label(error_frame, text="前端：", width=6, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="nw")
+        self.frontend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
+        self.frontend_error_text.grid(row=0, column=1, sticky="nsew", padx=(0, 6), pady=2)
+        tk.Label(error_frame, text="後端：", width=6, anchor="w").grid(row=1, column=0, padx=6, pady=2, sticky="nw")
+        self.backend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
+        self.backend_error_text.grid(row=1, column=1, sticky="nsew", padx=(0, 6), pady=(2, 6))
+        error_frame.grid_columnconfigure(1, weight=1)
+        error_frame.grid_rowconfigure(0, weight=1)
+        error_frame.grid_rowconfigure(1, weight=1)
+
+        json_text_panel = tk.Frame(json_split)
+        mode_row = tk.Frame(json_text_panel)
         mode_row.pack(fill="x", pady=(0, 4))
         tk.Label(mode_row, text="JSON 顯示：").pack(side="left")
         for mode, label in (("preview", "Preview"), ("prepared", "Prepared"), ("runtime", "Runtime")):
@@ -2466,8 +2473,11 @@ class App:
                 variable=self.json_view_mode_var,
                 command=self.on_json_mode_change
             ).pack(side="left", padx=(0, 6))
-        self.text = tk.Text(json_panel, height=12)
+        self.text = tk.Text(json_text_panel, height=12)
         self.text.pack(fill="both", expand=True)
+        json_split.add(error_frame, minsize=180)
+        json_split.add(json_text_panel, minsize=220)
+        self.clear_errors()
 
         self.refresh_saved_list()
         self.restore_last_selected()
@@ -2503,6 +2513,14 @@ class App:
             positions.append(max(0, int(sash_y)))
         return positions
 
+    def get_current_json_split_sash_x(self):
+        self.root.update_idletasks()
+        panes = self.json_split_paned.panes()
+        if len(panes) < 2:
+            return None
+        sash_x, _ = self.json_split_paned.sash_coord(0)
+        return max(0, int(sash_x))
+
     def _pack_buttons_horizontal(self, buttons, padx=4):
         for btn in buttons:
             btn.pack_forget()
@@ -2535,9 +2553,6 @@ class App:
         panes = list(self.left_content_paned.panes())
         if str(self.info_panel) not in panes:
             self.left_content_paned.add(self.info_panel, after=self.top_panel, minsize=120)
-        panes = list(self.left_content_paned.panes())
-        if str(self.error_panel) not in panes:
-            self.left_content_paned.add(self.error_panel, after=self.save_panel, minsize=140)
         self.left_optional_panes_hidden = False
 
     def _layout_left_controls_compact(self):
@@ -2557,8 +2572,6 @@ class App:
         if str(self.info_panel) in panes:
             self.left_content_paned.forget(self.info_panel)
         panes = list(self.left_content_paned.panes())
-        if str(self.error_panel) in panes:
-            self.left_content_paned.forget(self.error_panel)
         self.left_optional_panes_hidden = True
 
     def _update_responsive_layout(self, event=None):
@@ -2590,8 +2603,8 @@ class App:
             and len(window_size) == 2
             and all(isinstance(v, (int, float)) for v in window_size)
         ):
-            width = max(900, int(window_size[0]))
-            height = max(620, int(window_size[1]))
+            width = max(700, int(window_size[0]))
+            height = max(520, int(window_size[1]))
             self.root.geometry(f"{width}x{height}")
             self.root.update_idletasks()
 
@@ -2618,7 +2631,7 @@ class App:
                 return
 
         min_x = 60
-        right_min_x = 320
+        right_min_x = 240
         max_x = max(min_x, total_width - right_min_x)
         self.body.sash_place(0, min(max_x, max(min_x, target_x)), 0)
         self.root.update_idletasks()
@@ -2633,10 +2646,26 @@ class App:
             if isinstance(right_ratio, (int, float)):
                 target_y = int(right_total * right_ratio)
             else:
-                return
-        min_y = 120
-        max_y = max(min_y, right_total - 120)
-        self.right_content_paned.sash_place(0, 0, min(max_y, max(min_y, target_y)))
+                target_y = None
+        if target_y is not None:
+            min_y = 120
+            max_y = max(min_y, right_total - 120)
+            self.right_content_paned.sash_place(0, 0, min(max_y, max(min_y, target_y)))
+
+        json_total = self.json_split_paned.winfo_width()
+        if json_total > 0:
+            json_sash_x = ui_layout.get("json_split_sash_x")
+            if isinstance(json_sash_x, (int, float)):
+                json_target_x = int(json_sash_x)
+            else:
+                json_ratio = ui_layout.get("json_split_ratio")
+                if isinstance(json_ratio, (int, float)):
+                    json_target_x = int(json_total * float(json_ratio))
+                else:
+                    json_target_x = int(json_total * 0.5)
+            json_min_x = 180
+            json_max_x = max(json_min_x, json_total - 220)
+            self.json_split_paned.sash_place(0, min(json_max_x, max(json_min_x, json_target_x)), 0)
 
         left_saved_sashes = ui_layout.get("left_paned_sashes", [])
         left_saved_ratios = ui_layout.get("left_paned_ratios", [])
@@ -2662,6 +2691,7 @@ class App:
     def save_ui_layout(self):
         sash_x = self.get_current_paned_sash_x()
         right_sash_y = self.get_current_right_paned_sash_y()
+        json_split_sash_x = self.get_current_json_split_sash_x()
         left_sashes = self.get_current_left_paned_sashes()
         if sash_x is None or right_sash_y is None:
             self.show_warning("提醒", "目前無法取得 UI 版面資訊，請稍後再試")
@@ -2677,6 +2707,7 @@ class App:
 
         body_width = max(1, int(self.body.winfo_width()))
         right_height = max(1, int(self.right_content_paned.winfo_height()))
+        json_split_width = max(1, int(self.json_split_paned.winfo_width()))
         left_height = max(1, int(self.left_content_paned.winfo_height()))
         left_sash_ratios = [round(float(y) / float(left_height), 4) for y in left_sashes]
         self.config["ui_layout"] = {
@@ -2687,6 +2718,11 @@ class App:
             "left_paned_ratios": left_sash_ratios,
             "right_paned_sash_y": int(right_sash_y),
             "right_paned_ratio": round(float(right_sash_y) / float(right_height), 4),
+            "json_split_sash_x": int(json_split_sash_x) if json_split_sash_x is not None else None,
+            "json_split_ratio": (
+                round(float(json_split_sash_x) / float(json_split_width), 4)
+                if json_split_sash_x is not None else None
+            ),
             "tree_column_widths": column_widths
         }
         self.config["ui_recent_colors"] = self._get_recent_colors()
