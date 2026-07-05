@@ -2155,7 +2155,11 @@ class App:
 
         left_panel = tk.Frame(body)
         right_panel = tk.Frame(body)
-        body.add(left_panel, minsize=440)
+        self.left_panel = left_panel
+        self.left_responsive_mode = None
+        self.left_compact_threshold = 360
+        self.left_optional_panes_hidden = False
+        body.add(left_panel, minsize=60)
         body.add(right_panel, minsize=320)
 
         left_content_paned = tk.PanedWindow(left_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED)
@@ -2172,9 +2176,11 @@ class App:
             ("停止", self.stop_pi, "#ff8c69"),
         ]
         btn_count = len(btn_specs)
+        self.top_control_buttons = []
 
         self.status_var = tk.StringVar(value="尚未錄製")
-        tk.Label(top, textvariable=self.status_var, anchor="w").grid(
+        self.status_label = tk.Label(top, textvariable=self.status_var, anchor="w")
+        self.status_label.grid(
             row=0, column=0, columnspan=btn_count, sticky="we", padx=8, pady=(6, 2)
         )
         self.record_button = None
@@ -2186,6 +2192,7 @@ class App:
             if color:
                 kwargs["bg"] = color
             btn = tk.Button(top, **kwargs)
+            self.top_control_buttons.append(btn)
             btn.grid(row=1, column=idx, padx=4, pady=(2, 8))
             if idx == 1:
                 self.record_button = btn
@@ -2198,14 +2205,17 @@ class App:
         self._update_runtime_control_buttons()
 
         self.current_script_var = tk.StringVar(value="【目前腳本：未命名 / 未儲存】")
-        tk.Label(
+        self.current_script_label = tk.Label(
             top,
             textvariable=self.current_script_var,
             anchor="w",
             fg="#1a4fb8"
-        ).grid(row=2, column=0, columnspan=btn_count, sticky="w", padx=8, pady=(0, 8))
+        )
+        self.current_script_label.grid(row=2, column=0, columnspan=btn_count, sticky="w", padx=8, pady=(0, 8))
 
+        self.top_panel = top
         info = tk.LabelFrame(left_content_paned, text="目前套用資訊")
+        self.info_panel = info
         row = tk.Frame(info)
         row.pack(fill="x", padx=8, pady=2)
 
@@ -2236,18 +2246,23 @@ class App:
 
         connection_btn_row = tk.Frame(info)
         connection_btn_row.pack(fill="x", padx=8, pady=(0, 4))
-        tk.Button(connection_btn_row, text="釋放GPIO", command=self.release_gpio, width=10).pack(side="left", padx=4)
-        tk.Button(connection_btn_row, text="高位觸發", command=lambda: self.set_gpio_polarity("high"), width=10).pack(side="left", padx=4)
-        tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10).pack(side="left", padx=4)
-        tk.Button(connection_btn_row, text="測試連線", command=self.ping_pi, width=10).pack(side="left", padx=4)
-        tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10).pack(side="left", padx=4)
+        self.connection_btn_row = connection_btn_row
+        self.connection_buttons = [
+            tk.Button(connection_btn_row, text="釋放GPIO", command=self.release_gpio, width=10),
+            tk.Button(connection_btn_row, text="高位觸發", command=lambda: self.set_gpio_polarity("high"), width=10),
+            tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10),
+            tk.Button(connection_btn_row, text="測試連線", command=self.ping_pi, width=10),
+            tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10),
+        ]
         self.auto_connect_toggle_btn = tk.Button(
             connection_btn_row,
             text="暫停自動重連",
             command=self.toggle_auto_connect,
             width=12
         )
-        self.auto_connect_toggle_btn.pack(side="left", padx=4)
+        self.connection_buttons.append(self.auto_connect_toggle_btn)
+        for btn in self.connection_buttons:
+            btn.pack(side="left", padx=4)
         self.update_auto_connect_ui()
 
         buff_mode_row = tk.Frame(info)
@@ -2270,6 +2285,7 @@ class App:
         self.buff_skip_mode_combo.pack(side="left", padx=5)
         self.buff_skip_mode_combo.bind("<<ComboboxSelected>>", self.on_buff_skip_mode_change)
         save_frame = tk.LabelFrame(left_content_paned, text="儲存 / 載入")
+        self.save_panel = save_frame
 
         name_row = tk.Frame(save_frame)
         name_row.pack(fill="x", padx=8, pady=(5, 3))
@@ -2279,16 +2295,24 @@ class App:
 
         save_btn_row = tk.Frame(save_frame)
         save_btn_row.pack(fill="x", padx=8, pady=(0, 5))
-        tk.Button(save_btn_row, text="保存目前 Timeline", command=self.save_current_timeline).pack(side="left", padx=(0, 3))
-        tk.Button(save_btn_row, text="重新整理", command=self.refresh_saved_list).pack(side="left", padx=3)
-        tk.Button(save_btn_row, text="重新命名", command=self.rename_selected_timeline).pack(side="left", padx=3)
-        tk.Button(save_btn_row, text="載入選取項目", command=self.load_selected_timeline).pack(side="left", padx=3)
-        tk.Button(save_btn_row, text="刪除選取項目", command=self.delete_selected_timeline).pack(side="left", padx=3)
+        self.save_btn_row = save_btn_row
+        self.save_primary_buttons = [
+            tk.Button(save_btn_row, text="保存目前 Timeline", command=self.save_current_timeline),
+            tk.Button(save_btn_row, text="載入選取項目", command=self.load_selected_timeline),
+        ]
+        self.save_secondary_buttons = [
+            tk.Button(save_btn_row, text="重新整理", command=self.refresh_saved_list),
+            tk.Button(save_btn_row, text="重新命名", command=self.rename_selected_timeline),
+            tk.Button(save_btn_row, text="刪除選取項目", command=self.delete_selected_timeline),
+        ]
+        for btn in [self.save_primary_buttons[0], *self.save_secondary_buttons[:2], self.save_primary_buttons[1], self.save_secondary_buttons[2]]:
+            btn.pack(side="left", padx=3)
 
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
         self.saved_listbox.pack(fill="x", padx=5, pady=5)
 
         error_frame = tk.LabelFrame(left_content_paned, text="錯誤訊息（前端 / 後端）")
+        self.error_panel = error_frame
         tk.Label(error_frame, text="前端：", width=8, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="nw")
         self.frontend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
         self.frontend_error_text.grid(row=0, column=1, sticky="nsew", padx=(0, 6), pady=2)
@@ -2303,6 +2327,8 @@ class App:
         self.left_content_paned.add(info, minsize=120)
         self.left_content_paned.add(save_frame, minsize=120)
         self.left_content_paned.add(error_frame, minsize=140)
+        self.left_panel.bind("<Configure>", self._update_responsive_layout, add="+")
+        self.root.after(100, self._update_responsive_layout)
 
         jitter_frame = tk.LabelFrame(right_panel, text="timeline 設定")
         jitter_frame.pack(fill="x", pady=(0, 8))
@@ -2397,8 +2423,8 @@ class App:
         self.tree.pack(fill="both", expand=True, pady=(0, 8))
         self.tree.tag_configure("bg_applied", background="#d8ecff")
         self.tree.tag_configure("bg_candidate", background="#fff4b3")
-        self.tree.tag_configure("ring_running")
-        self.tree.tag_configure("focus_hint")
+        self.tree.tag_configure("ring_running", foreground="#c00000")
+        self.tree.tag_configure("focus_hint", font=("TkDefaultFont", 9, "bold"))
         self.tree.tag_configure("runtime_ok_1", background="#bfe8bf")
         self.tree.tag_configure("runtime_ok_2", background="#d9f2d9")
         self.tree.tag_configure("runtime_ok_3", background="#edf9ed")
@@ -2477,6 +2503,82 @@ class App:
             positions.append(max(0, int(sash_y)))
         return positions
 
+    def _pack_buttons_horizontal(self, buttons, padx=4):
+        for btn in buttons:
+            btn.pack_forget()
+            btn.pack(side="left", padx=padx, pady=0)
+
+    def _pack_buttons_vertical(self, buttons, padx=0):
+        for btn in buttons:
+            btn.pack_forget()
+            btn.pack(fill="x", padx=padx, pady=2)
+
+    def _layout_left_controls_wide(self):
+        btn_count = max(1, len(getattr(self, "top_control_buttons", [])))
+        self.status_label.grid_configure(columnspan=btn_count)
+        self.current_script_label.grid_configure(row=2, column=0, columnspan=btn_count, sticky="w")
+        for idx, btn in enumerate(self.top_control_buttons):
+            btn.grid_forget()
+            btn.grid(row=1, column=idx, padx=4, pady=(2, 8))
+        for idx in range(btn_count):
+            self.top_panel.grid_columnconfigure(idx, weight=0)
+
+        self._pack_buttons_horizontal(getattr(self, "connection_buttons", []), padx=4)
+        ordered_save_buttons = [
+            self.save_primary_buttons[0],
+            *self.save_secondary_buttons[:2],
+            self.save_primary_buttons[1],
+            self.save_secondary_buttons[2],
+        ]
+        self._pack_buttons_horizontal(ordered_save_buttons, padx=3)
+
+        panes = list(self.left_content_paned.panes())
+        if str(self.info_panel) not in panes:
+            self.left_content_paned.add(self.info_panel, after=self.top_panel, minsize=120)
+        panes = list(self.left_content_paned.panes())
+        if str(self.error_panel) not in panes:
+            self.left_content_paned.add(self.error_panel, after=self.save_panel, minsize=140)
+        self.left_optional_panes_hidden = False
+
+    def _layout_left_controls_compact(self):
+        self.status_label.grid_configure(columnspan=1)
+        self.current_script_label.grid_configure(row=1 + len(self.top_control_buttons), column=0, columnspan=1, sticky="we")
+        for idx, btn in enumerate(self.top_control_buttons):
+            btn.grid_forget()
+            btn.grid(row=1 + idx, column=0, padx=8, pady=2, sticky="we")
+        self.top_panel.grid_columnconfigure(0, weight=1)
+
+        self._pack_buttons_vertical(getattr(self, "connection_buttons", []), padx=0)
+        for btn in self.save_secondary_buttons:
+            btn.pack_forget()
+        self._pack_buttons_vertical(self.save_primary_buttons, padx=0)
+
+        panes = list(self.left_content_paned.panes())
+        if str(self.info_panel) in panes:
+            self.left_content_paned.forget(self.info_panel)
+        panes = list(self.left_content_paned.panes())
+        if str(self.error_panel) in panes:
+            self.left_content_paned.forget(self.error_panel)
+        self.left_optional_panes_hidden = True
+
+    def _update_responsive_layout(self, event=None):
+        if not hasattr(self, "left_panel"):
+            return
+        width = self.left_panel.winfo_width()
+        if event is not None and getattr(event, "widget", None) is self.left_panel:
+            width = event.width
+        if width <= 1:
+            self.root.after(50, self._update_responsive_layout)
+            return
+        mode = "compact" if width < self.left_compact_threshold else "wide"
+        if mode == self.left_responsive_mode:
+            return
+        if mode == "compact":
+            self._layout_left_controls_compact()
+        else:
+            self._layout_left_controls_wide()
+        self.left_responsive_mode = mode
+
     def apply_saved_ui_layout(self):
         ui_layout = self.config.get("ui_layout", {})
         if not isinstance(ui_layout, dict):
@@ -2515,8 +2617,9 @@ class App:
             else:
                 return
 
-        min_x = 120
-        max_x = max(min_x, total_width - 120)
+        min_x = 60
+        right_min_x = 320
+        max_x = max(min_x, total_width - right_min_x)
         self.body.sash_place(0, min(max_x, max(min_x, target_x)), 0)
         self.root.update_idletasks()
         right_total = self.right_content_paned.winfo_height()
@@ -4010,6 +4113,25 @@ class App:
         if not self.tree.exists(row_id):
             return
         self.tree.see(row_id)
+        self.root.update_idletasks()
+        children = list(self.tree.get_children(""))
+        if row_id not in children:
+            return
+        total_rows = len(children)
+        if total_rows <= 1:
+            return
+        row_index = children.index(row_id)
+        visible_rows = max(1, int(self.tree.winfo_height() / 20))
+        try:
+            bbox = self.tree.bbox(row_id)
+            if bbox and len(bbox) >= 4 and bbox[3] > 0:
+                visible_rows = max(1, int(self.tree.winfo_height() / bbox[3]))
+        except Exception:
+            pass
+        target_top_index = row_index - int(visible_rows * 0.4)
+        max_top_index = max(0, total_rows - visible_rows)
+        target_top_index = min(max_top_index, max(0, target_top_index))
+        self.tree.yview_moveto(target_top_index / max(1, total_rows))
 
     def _ensure_tree_color_tag(self, color_code):
         color = self._normalize_row_color(color_code)
@@ -4167,6 +4289,8 @@ class App:
                         is_applied = bool(landing) and not self_picked
             is_running = runtime_state in {"running", "resumed"} and i == self.runtime_latest_index
             is_focus = i == self.runtime_latest_index
+            if is_running:
+                grp_display = "執行中"
             tags.extend(get_buff_cell_visual_state(
                 is_candidate=is_candidate,
                 is_applied=is_applied,
