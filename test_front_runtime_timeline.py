@@ -2,6 +2,7 @@ import unittest
 import sys
 import types
 import random
+import json
 from unittest import mock
 
 if "pynput" not in sys.modules:
@@ -228,7 +229,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.origin_snapshot_before_loop = []
         app.origin_version = 0
         app.runtime_version = 0
+        app.current_name = ""
         app.last_prepared_payload = {}
+        app.config = {"pi_host": "127.0.0.1"}
         app.front_inflight_client_task_id = ""
         app.copy_events = App.copy_events.__get__(app, App)
         app._normalize_replicated_row_flag = App._normalize_replicated_row_flag.__get__(app, App)
@@ -237,7 +240,14 @@ class RuntimeDisplayTests(unittest.TestCase):
         app._runtime_event_id_to_row_map = App._runtime_event_id_to_row_map.__get__(app, App)
         app._runtime_event_row_index = App._runtime_event_row_index.__get__(app, App)
         app.update_runtime_from_status = App.update_runtime_from_status.__get__(app, App)
+        app.write_text = App.write_text.__get__(app, App)
+        app._build_preview_payload = App._build_preview_payload.__get__(app, App)
+        app._build_prepared_payload = App._build_prepared_payload.__get__(app, App)
+        app._build_runtime_payload = App._build_runtime_payload.__get__(app, App)
+        app._build_debug_payload = App._build_debug_payload.__get__(app, App)
+        app.render_prepared_payload = App.render_prepared_payload.__get__(app, App)
         app.render_runtime_analysis = App.render_runtime_analysis.__get__(app, App)
+        app.render_debug_payload = App.render_debug_payload.__get__(app, App)
         app._build_runtime_consistency_key = App._build_runtime_consistency_key.__get__(app, App)
         app._consistency_key_from_runtime_meta = App._consistency_key_from_runtime_meta.__get__(app, App)
         app._consistency_key_from_runtime_status = App._consistency_key_from_runtime_status.__get__(app, App)
@@ -507,6 +517,60 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertEqual(app.runtime_round_traces[0]["execution_round"], 1)
         self.assertEqual(app.runtime_round_traces[0]["buffGroup"], "A")
         self.assertEqual(app.runtime_trace_owner, {"run_id": 0, "server_task_id": "srv-round2"})
+
+
+    def test_json_display_builders_keep_preview_prepared_runtime_debug_keys_separate(self):
+        app = self._new_app()
+        app.timeline = [
+            {"type": "press", "button": "a", "at": 0.0, "buff_group": "A"},
+            {"type": "release", "button": "a", "at": 0.1, "buff_group": "A"},
+        ]
+        app.timeline_runtime_info = {"run_id": 7, "state": "running", "processed_count": 1, "events_total": 2, "execution_round": 1}
+        app.runtime_round_traces = [
+            {"execution_round": 1, "draw_order": 1, "buffGroup": "A", "pickedReason": "random_pick", "picked_slot": 0}
+        ]
+        app.last_prepared_payload = {
+            "action_reason": "test",
+            "backend_events": [{"type": "press", "button": "a"}],
+            "runtime_meta": {
+                "run_id": 7,
+                "runtime_version": 1,
+                "execution_round": 1,
+                "rslot_count": 1,
+                "randat_executed": True,
+                "draw_result": [{"group": "A"}],
+                "mix_slot_mapping": {"A": [0, False]},
+                "placement_ledger": [{"group_id": "A"}],
+                "group_final_positions": {"A": {"final_b_range": [0, 1]}},
+            },
+        }
+
+        preview = app._build_preview_payload()
+        prepared = app._build_prepared_payload()
+        runtime = app._build_runtime_payload()
+        debug = app._build_debug_payload()
+
+        self.assertIn("request_preview", preview)
+        self.assertNotIn("backend_events", preview)
+        self.assertNotIn("mix_slot_mapping", json.dumps(preview))
+
+        self.assertIn("backend_events", prepared)
+        self.assertNotIn("mix_slot_mapping", prepared.get("runtime_meta", {}))
+        self.assertNotIn("placement_ledger", prepared.get("runtime_meta", {}))
+
+        self.assertIn("state", runtime)
+        self.assertIn("round_traces", runtime)
+        self.assertNotIn("mix_slot_mapping", runtime)
+        self.assertNotIn("placement_ledger", runtime)
+        self.assertNotIn("backend_events", runtime)
+
+        self.assertIn("randat", debug)
+        self.assertIn("mapper", debug)
+        self.assertIn("ledger", debug)
+        self.assertIn("mix_slot_mapping", debug["mapper"])
+        self.assertEqual(debug["ledger"], [{"group_id": "A"}])
+        self.assertNotIn("request_preview", debug)
+        self.assertNotIn("backend_events", debug)
 
     def test_render_runtime_analysis_shows_distinct_execution_rounds(self):
         app = self._new_app()

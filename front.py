@@ -2467,7 +2467,7 @@ class App:
         mode_row = tk.Frame(json_text_panel)
         mode_row.pack(fill="x", pady=(0, 4))
         tk.Label(mode_row, text="JSON 顯示：").pack(side="left")
-        for mode, label in (("preview", "Preview"), ("prepared", "Prepared"), ("runtime", "Runtime")):
+        for mode, label in (("preview", "Preview"), ("prepared", "Prepared"), ("runtime", "Runtime"), ("debug", "Debug")):
             tk.Radiobutton(
                 mode_row,
                 text=label,
@@ -2921,16 +2921,36 @@ class App:
             self.render_runtime_analysis(force=True)
         elif mode == "prepared":
             self.render_prepared_payload(force=True)
+        elif mode == "debug":
+            self.render_debug_payload(force=True)
         else:
             self.refresh_preview(force=True)
+
+    def _build_prepared_payload(self):
+        prepared = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
+        if not prepared:
+            return {"prepared": "尚無資料"}
+        payload = copy.deepcopy(prepared)
+        runtime_meta = payload.get("runtime_meta", {})
+        if isinstance(runtime_meta, dict):
+            debug_keys = {
+                "table_b_preview", "mix_slot_show", "mix_slot_mapping", "mix_slot_mapping_done",
+                "bslot_map", "b_group_mapper", "linker_to_mix_slot_show", "b_to_a_mapper",
+                "apply_order", "placement_ledger", "group_final_positions", "at_rebase"
+            }
+            payload["runtime_meta"] = {
+                key: copy.deepcopy(value)
+                for key, value in runtime_meta.items()
+                if key not in debug_keys
+            }
+        return payload
 
     def render_prepared_payload(self, force=False):
         mode_var = getattr(self, "json_view_mode_var", None)
         mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
         if not force and mode != "prepared":
             return
-        payload = self.last_prepared_payload if isinstance(self.last_prepared_payload, dict) else {}
-        self.write_text(payload or {"prepared": "尚無資料"})
+        self.write_text(self._build_prepared_payload())
 
     def _build_preview_payload(self):
         payload = {
@@ -3095,11 +3115,7 @@ class App:
             })
         return display_rounds
 
-    def render_runtime_analysis(self, force=False):
-        mode_var = getattr(self, "json_view_mode_var", None)
-        mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
-        if not force and mode != "runtime":
-            return
+    def _build_runtime_payload(self):
         runtime_info = getattr(self, "timeline_runtime_info", {})
         runtime = runtime_info if isinstance(runtime_info, dict) else {}
         runtime_traces = getattr(self, "runtime_round_traces", [])
@@ -3123,19 +3139,7 @@ class App:
                 "expected_groups": 0,
                 "actual_draws": 0,
                 "is_consistent": True
-            },
-            "table_b_preview": [],
-            "mix_slot_show": [],
-            "mix_slot_mapping": {},
-            "mix_slot_mapping_done": [],
-            "bslot_map": {},
-            "b_group_mapper": {},
-            "linker_to_mix_slot_show": {},
-            "b_to_a_mapper": {},
-            "apply_order": [],
-            "placement_ledger": [],
-            "group_final_positions": {},
-            "at_rebase": {}
+            }
         }
         lines = []
         warning_lines = []
@@ -3149,41 +3153,8 @@ class App:
                 return "?"
             return str(data)
 
-        prepared_payload = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
-        prepared_runtime_meta = prepared_payload.get("runtime_meta", {})
-        prepared_key_fallback = self._build_runtime_consistency_key(
-            run_id=runtime.get("run_id", 0),
-            server_task_id=runtime.get("server_task_id", ""),
-            runtime_version=prepared_payload.get("runtime_version", 0),
-            execution_round=prepared_payload.get("execution_round", 0)
-        )
-        prepared_consistency_key = self._consistency_key_from_runtime_meta(prepared_runtime_meta, fallback=prepared_key_fallback)
         trace_consistency_key = self._consistency_key_from_runtime_status(runtime, traces=traces)
-        backend_runtime_round_traces = runtime.get("round_traces", []) if isinstance(runtime, dict) else []
-        has_backend_round_traces = bool(
-            isinstance(backend_runtime_round_traces, list)
-            and any(isinstance(item, dict) for item in backend_runtime_round_traces)
-        )
-        trace_meta_match = True if not has_backend_round_traces else self._is_runtime_key_compatible(trace_consistency_key, prepared_consistency_key)
         payload["consistency"]["trace_key"] = copy.deepcopy(trace_consistency_key)
-        payload["consistency"]["prepared_key"] = copy.deepcopy(prepared_consistency_key)
-        payload["consistency"]["trace_meta_match"] = bool(trace_meta_match)
-
-        if isinstance(prepared_runtime_meta, dict) and (not traces or trace_meta_match):
-            payload["table_b_preview"] = copy.deepcopy(prepared_runtime_meta.get("table_b_preview", []))
-            payload["mix_slot_show"] = copy.deepcopy(prepared_runtime_meta.get("mix_slot_show", []))
-            payload["mix_slot_mapping"] = copy.deepcopy(prepared_runtime_meta.get("mix_slot_mapping", {}))
-            payload["mix_slot_mapping_done"] = copy.deepcopy(prepared_runtime_meta.get("mix_slot_mapping_done", []))
-            payload["bslot_map"] = copy.deepcopy(prepared_runtime_meta.get("bslot_map", {}))
-            payload["b_group_mapper"] = copy.deepcopy(prepared_runtime_meta.get("b_group_mapper", {}))
-            payload["linker_to_mix_slot_show"] = copy.deepcopy(prepared_runtime_meta.get("linker_to_mix_slot_show", {}))
-            payload["b_to_a_mapper"] = copy.deepcopy(prepared_runtime_meta.get("b_to_a_mapper", {}))
-            payload["apply_order"] = copy.deepcopy(prepared_runtime_meta.get("apply_order", []))
-            payload["placement_ledger"] = copy.deepcopy(prepared_runtime_meta.get("placement_ledger", []))
-            payload["group_final_positions"] = copy.deepcopy(prepared_runtime_meta.get("group_final_positions", {}))
-            payload["at_rebase"] = copy.deepcopy(prepared_runtime_meta.get("at_rebase", {}))
-        elif isinstance(prepared_runtime_meta, dict) and traces and not trace_meta_match:
-            warning_lines.append("⚠ Runtime traces 與 prepared runtime_meta key 不一致，已僅顯示 traces。")
         status_note = str(getattr(self, "runtime_trace_status_note", "") or "").strip()
         if status_note:
             lines.append("狀態：{}".format(status_note))
@@ -3334,28 +3305,6 @@ class App:
                         )
                     )
                     lines.append("  reason={}".format(self._round_trace_reason_label(reason)))
-                show_final_positions = bool(
-                    payload.get("group_final_positions")
-                    and trace_meta_match
-                    and int(prepared_consistency_key.get("execution_round", 0) or 0) in {0, int(execution_round)}
-                )
-                if show_final_positions:
-                    lines.append("Current round final positions ({}):".format(execution_label))
-                    for group_id in payload.get("apply_order", []):
-                        info = payload["group_final_positions"].get(str(group_id), {})
-                        if not isinstance(info, dict):
-                            continue
-                        a_slot = info.get("picked_slot_a_idx", -1)
-                        base_b = info.get("base_b_idx_before_offset", -1)
-                        range_text = _format_index_range(
-                            info.get("final_b_range_slot"),
-                            fallback_value=info.get("final_b_range")
-                        )
-                        row_range_text = _format_index_range(
-                            info.get("final_runtime_row_range"),
-                            fallback_value=info.get("final_b_range")
-                        )
-                        lines.append("  group{}: A{} -> base B{} -> final slot B{} -> final row idx {}".format(group_id, a_slot, base_b, range_text, row_range_text))
                 lines.append(
                     "Consistency: expected_groups={} / actual_draws={}".format(
                         expected_groups,
@@ -3379,22 +3328,52 @@ class App:
                 self._render_frontend_error()
             except Exception:
                 pass
-        self.text.delete("1.0", tk.END)
-        if lines:
-            summary_text = "\n".join(lines)
-        else:
-            summary_text = "暫無 runtime 回合資料"
-        self.text.insert(tk.END, summary_text)
-        if warning_lines:
-            warning_text = "\n{}\n".format("\n".join(warning_lines))
-            if all(hasattr(self.text, attr) for attr in ("index", "tag_configure", "tag_add")):
-                warning_start = self.text.index(tk.END)
-                self.text.insert(tk.END, warning_text)
-                warning_end = self.text.index(tk.END)
-                self.text.tag_configure("runtime_consistency_warning", foreground="#cc0000")
-                self.text.tag_add("runtime_consistency_warning", warning_start, warning_end)
-            else:
-                self.text.insert(tk.END, warning_text)
+        payload["summary"] = "\n".join(lines) if lines else "暫無 runtime 回合資料"
+        payload["warnings"] = list(warning_lines)
+        payload["diagnostic"] = self.runtime_trace_diagnostic
+        return payload
+
+    def render_runtime_analysis(self, force=False):
+        mode_var = getattr(self, "json_view_mode_var", None)
+        mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
+        if not force and mode != "runtime":
+            return
+        self.write_text(self._build_runtime_payload())
+
+    def _build_debug_payload(self):
+        prepared = self.last_prepared_payload if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
+        runtime_meta = prepared.get("runtime_meta", {}) if isinstance(prepared, dict) else {}
+        if not isinstance(runtime_meta, dict):
+            runtime_meta = {}
+        debug_keys = (
+            "table_b_preview", "mix_slot_show", "mix_slot_mapping", "mix_slot_mapping_done",
+            "bslot_map", "b_group_mapper", "linker_to_mix_slot_show", "b_to_a_mapper",
+            "apply_order", "placement_ledger", "group_final_positions", "at_rebase"
+        )
+        return {
+            "runtime_meta_key": self._consistency_key_from_runtime_meta(runtime_meta),
+            "randat": {
+                "rslot_count": runtime_meta.get("rslot_count", prepared.get("rslot_count", 0) if isinstance(prepared, dict) else 0),
+                "randat_executed": bool(runtime_meta.get("randat_executed", False)),
+                "draw_result": copy.deepcopy(runtime_meta.get("draw_result", [])),
+                "round_traces": copy.deepcopy(prepared.get("round_traces", []) if isinstance(prepared, dict) else [])
+            },
+            "mapper": {key: copy.deepcopy(runtime_meta.get(key)) for key in debug_keys if key != "placement_ledger" and key in runtime_meta},
+            "ledger": copy.deepcopy(runtime_meta.get("placement_ledger", [])),
+            "raw_diagnostic": {
+                "runtime_trace_status_note": str(getattr(self, "runtime_trace_status_note", "") or ""),
+                "runtime_trace_diagnostic": str(getattr(self, "runtime_trace_diagnostic", "") or ""),
+                "timeline_runtime_info": copy.deepcopy(getattr(self, "timeline_runtime_info", {})),
+                "runtime_round_traces": copy.deepcopy(getattr(self, "runtime_round_traces", []))
+            }
+        }
+
+    def render_debug_payload(self, force=False):
+        mode_var = getattr(self, "json_view_mode_var", None)
+        mode = mode_var.get().strip().lower() if mode_var is not None else "preview"
+        if not force and mode != "debug":
+            return
+        self.write_text(self._build_debug_payload())
 
 
     def _runtime_event_id_to_row_map(self, runtime):
