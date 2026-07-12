@@ -1,2 +1,2 @@
 chcp 65001
-python3 front.py
+start "" pythonw.exe "%~dp0front.py"
