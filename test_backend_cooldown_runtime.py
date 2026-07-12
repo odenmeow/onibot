@@ -71,6 +71,51 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
         self.assertEqual(snap["events"][0]["event_id"], "r3:idx89:press:left@8900")
         self.assertEqual(snap["events"][0]["original_index"], 89)
 
+
+    def test_status_summary_omits_heavy_debug_and_keeps_event_identity(self):
+        backend.set_timeline_runtime("timeline", "running", events_total=1, loop_count=1, server_task_id="srv-1", runtime_version=5, execution_round=2)
+        backend.patch_timeline_runtime(
+            round_traces=[{"heavy": True}],
+            runtime_diag={"draw_result": [1], "placement_ledger": [2]},
+            debug={"effective_order": [3]}
+        )
+        backend.append_timeline_runtime_event({
+            "index": 7,
+            "event_id": "r2:idx25:release:left@5860",
+            "original_index": 25,
+            "source_target_at": 5.86,
+            "target_at": 5.86,
+            "actual_at": 5.8575,
+            "type": "release",
+            "button": "left",
+            "status": "ok",
+            "runtime_landed_index": 4,
+            "runtime_anchor_index": 3,
+            "runtime_occupies_original": 0,
+        })
+
+        summary = backend.handle_request({"action": "status", "view": "summary"})["timeline_runtime"]
+
+        for key in ("events", "round_traces", "runtime_diag", "debug", "draw_result", "placement_ledger", "candidateIdxList", "freeCandidateIdxList"):
+            self.assertNotIn(key, summary)
+        for event_key in ("current_event", "last_event"):
+            event = summary[event_key]
+            for key in ("event_id", "original_index", "source_target_at", "target_at", "actual_at", "runtime_landed_index", "runtime_anchor_index", "runtime_occupies_original", "type", "button", "status"):
+                self.assertIn(key, event)
+            self.assertEqual(event["runtime_index"], 7)
+
+    def test_status_full_preserves_existing_snapshot_payload(self):
+        backend.set_timeline_runtime("timeline", "running", events_total=1, loop_count=1, server_task_id="srv-1")
+        backend.patch_timeline_runtime(round_traces=[{"trace": 1}], runtime_diag={"diag": 1}, debug={"debug": 1})
+        backend.append_timeline_runtime_event({"index": 0, "event_id": "e", "original_index": 0, "type": "press", "button": "left", "status": "ok"})
+
+        full = backend.handle_request({"action": "status", "view": "full"})["timeline_runtime"]
+
+        self.assertIn("events", full)
+        self.assertIn("round_traces", full)
+        self.assertIn("runtime_diag", full)
+        self.assertIn("debug", full)
+
     def test_same_group_second_event_can_be_skipped_in_same_round(self):
         runtime = {"next_ready_at": {}}
         events = [
@@ -370,6 +415,7 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
                 "client_task_id": "ct-debug-order",
                 "runtime_version": 7,
                 "execution_round": 2,
+                "runtime_debug_enabled": True,
                 "timeline": [
                     {"idx": 9, "event_id": "late", "at_ms": 900, "action": "press", "btn": "right", "skip_mode": "pass"},
                     {"idx": 3, "event_id": "first", "at_ms": 100, "action": "press", "btn": "fn", "skip_mode": "pass"},

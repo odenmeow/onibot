@@ -89,7 +89,15 @@ timeline_cooldown_runtime = {
 # 狀態輪詢防爆：避免 timeline_runtime.events / round_traces 無上限回傳造成卡頓
 STATUS_EVENTS_LIMIT = 120
 STATUS_ROUND_TRACES_LIMIT = 40
-START_TASK_ALLOWED_TIMELINE_FIELDS = {"idx", "event_id", "at_ms", "action", "btn", "skip_mode"}
+START_TASK_ALLOWED_TIMELINE_FIELDS = {
+    "idx", "event_id", "at_ms", "action", "btn", "skip_mode",
+    "runtime_landed_index", "runtime_anchor_index", "runtime_occupies_original"
+}
+RUNTIME_SUMMARY_EVENT_FIELDS = (
+    "event_id", "index", "runtime_index", "original_index", "source_target_at", "target_at",
+    "actual_at", "type", "button", "status", "runtime_landed_index",
+    "runtime_anchor_index", "runtime_occupies_original"
+)
 
 
 def _now_ms():
@@ -185,6 +193,40 @@ def patch_timeline_runtime(**kwargs):
 def append_timeline_round_trace(trace_payload):
     with runtime_lock:
         timeline_runtime["round_traces"].append(trace_payload)
+
+
+def _summarize_runtime_event(event_payload):
+    if not isinstance(event_payload, dict):
+        return None
+    summary = {}
+    for key in RUNTIME_SUMMARY_EVENT_FIELDS:
+        if key in event_payload:
+            summary[key] = event_payload.get(key)
+    if "runtime_index" not in summary and "index" in summary:
+        summary["runtime_index"] = summary.get("index")
+    summary.pop("index", None)
+    return summary
+
+
+def get_timeline_runtime_summary():
+    with runtime_lock:
+        last_event = _summarize_runtime_event(timeline_runtime.get("last_event"))
+        current_event = last_event
+        return {
+            "run_id": int(timeline_runtime.get("run_id", 0)),
+            "server_task_id": str(timeline_runtime.get("server_task_id", "")),
+            "client_task_id": str(timeline_runtime.get("client_task_id", "")),
+            "state": timeline_runtime.get("state", "idle"),
+            "mode": timeline_runtime.get("mode", ""),
+            "loop_count": int(timeline_runtime.get("loop_count", 0)),
+            "events_total": int(timeline_runtime.get("events_total", 0)),
+            "processed_count": int(timeline_runtime.get("processed_count", 0)),
+            "progress": dict(timeline_runtime.get("progress", {})),
+            "current_event": current_event,
+            "last_event": last_event,
+            "runtime_version": int(timeline_runtime.get("runtime_version", 0)),
+            "execution_round": int(timeline_runtime.get("execution_round", 0)),
+        }
 
 
 def get_timeline_runtime_snapshot():
@@ -773,7 +815,7 @@ def parse_start_task_timeline(raw_timeline):
         extra_keys = sorted([k for k in row.keys() if k not in START_TASK_ALLOWED_TIMELINE_FIELDS])
         if extra_keys:
             raise ValueError(
-                "timeline 第 {} 列包含未允許欄位: {}（僅接受: idx/event_id/at_ms/action/btn/skip_mode）".format(
+                "timeline 第 {} 列包含未允許欄位: {}（僅接受: idx/event_id/at_ms/action/btn/skip_mode/runtime_landed_index/runtime_anchor_index/runtime_occupies_original）".format(
                     i, ",".join(extra_keys)
                 )
             )
@@ -798,7 +840,10 @@ def parse_start_task_timeline(raw_timeline):
             "button": button,
             "at": max(0, at_ms) / 1000.0,
             "runtime_source_index": runtime_source_index,
-            "event_id": event_id
+            "event_id": event_id,
+            "runtime_landed_index": row.get("runtime_landed_index"),
+            "runtime_anchor_index": row.get("runtime_anchor_index"),
+            "runtime_occupies_original": row.get("runtime_occupies_original", 0)
         })
     return events
 
@@ -1028,10 +1073,12 @@ def handle_request(data):
         return {"status": "ok", "buttons": BUTTONS}
 
     if action == "status":
+        view = str(data.get("view", "full") or "full").strip().lower()
+        runtime_payload = get_timeline_runtime_summary() if view == "summary" else get_timeline_runtime_snapshot()
         payload = {
             "status": "ok",
             "run_status": current_run_status,
-            "timeline_runtime": get_timeline_runtime_snapshot(),
+            "timeline_runtime": runtime_payload,
             "gpio_polarity": get_gpio_polarity_info()
         }
         payload.update(service_meta)
@@ -1158,8 +1205,9 @@ def handle_request(data):
             )
 
         events = parse_start_task_timeline(data.get("timeline", []))
-        effective_order_debug = build_effective_order_debug(events)
-        incoming_round_traces, incoming_runtime_diag = _extract_runtime_diag_from_start_task(data)
+        runtime_debug_enabled = bool(data.get("runtime_debug_enabled", False))
+        effective_order_debug = build_effective_order_debug(events) if runtime_debug_enabled else {}
+        incoming_round_traces, incoming_runtime_diag = _extract_runtime_diag_from_start_task(data) if runtime_debug_enabled else ([], {})
         incoming_runtime_version = data.get("runtime_version", 0)
         incoming_execution_round = data.get("execution_round", 0)
         try:
@@ -1187,7 +1235,7 @@ def handle_request(data):
         pause_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
-            args=(events, buff_skip_mode, max(0, incoming_runtime_version), incoming_execution_round, effective_order_debug),
+            args=(events, buff_skip_mode, max(0, incoming_runtime_version), incoming_execution_round, effective_order_debug if runtime_debug_enabled else None),
             daemon=True
         )
         current_run_thread.start()
@@ -1199,7 +1247,7 @@ def handle_request(data):
             client_task_id=current_client_task_id,
             runtime_version=max(0, incoming_runtime_version),
             execution_round=incoming_execution_round,
-            debug=effective_order_debug
+            debug=effective_order_debug if runtime_debug_enabled else {}
         )
         runtime_snapshot = get_timeline_runtime_snapshot()
         return {

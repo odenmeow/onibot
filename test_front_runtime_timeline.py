@@ -400,9 +400,67 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         app.poll_runtime_status()
 
-        app.request_pi.assert_called_once_with({"action": "status"}, write_response=False, channel="status")
+        app.request_pi.assert_called_once_with({"action": "status", "view": "summary"}, write_response=False, channel="status")
         self.assertEqual(app.timeline_runtime_info.get("state"), "running")
         self.assertEqual(app.timeline_runtime_info.get("processed_count"), 3)
+
+
+    def test_update_runtime_from_summary_resolves_moved_event_before_original_fallback(self):
+        app = self._new_app()
+        app.timeline = [
+            {"type": "press", "button": "left", "at": 1.0},
+            {"type": "release", "button": "left", "at": 2.0},
+            {"type": "press", "button": "left", "at": 5.86},
+        ]
+        runtime = {
+            "state": "running",
+            "execution_round": 1,
+            "processed_count": 1,
+            "current_event": {
+                "event_id": "",
+                "original_index": 99,
+                "target_at": 5.86,
+                "source_target_at": 5.00,
+                "type": "press",
+                "button": "left",
+                "status": "ok",
+                "runtime_landed_index": 1,
+                "runtime_anchor_index": 0,
+                "runtime_occupies_original": 0,
+            },
+        }
+
+        app.update_runtime_from_status({"timeline_runtime": runtime})
+
+        self.assertIn(2, app.timeline_runtime_by_index)
+        self.assertNotIn(99, app.timeline_runtime_by_index)
+        self.assertEqual(app.runtime_latest_index, 2)
+
+    def test_build_start_task_payload_debug_disabled_omits_heavy_runtime_meta(self):
+        app = self._new_app()
+        app.config["runtime_debug_enabled"] = False
+        app.last_prepared_payload = {
+            "execution_round": 3,
+            "runtime_version": 9,
+            "runtime_meta": {
+                "execution_round": 3,
+                "runtime_version": 9,
+                "rslot_count": 2,
+                "draw_result": [1],
+                "table_b_preview": [2],
+                "mix_slot_mapping": {"A": [1]},
+                "placement_ledger": [3],
+                "group_final_positions": {"A": {}},
+                "at_rebase": {"x": 1},
+            },
+        }
+
+        payload = app._build_start_task_payload([{"type": "press", "button": "left", "at": 1.0, "runtime_landed_index": 4}])
+
+        self.assertFalse(payload["runtime_debug_enabled"])
+        self.assertEqual(payload["timeline"][0]["runtime_landed_index"], 4)
+        for key in ("draw_result", "table_b_preview", "mix_slot_mapping", "placement_ledger", "group_final_positions", "at_rebase"):
+            self.assertNotIn(key, payload.get("runtime_meta", {}))
 
     def test_toggle_auto_connect_persists_and_triggers_auto_connect(self):
         app = self._new_app()
@@ -1700,6 +1758,7 @@ class TimelineWorkflowTests(unittest.TestCase):
         app = self._new_workflow_app()
         app._build_start_task_payload = App._build_start_task_payload.__get__(app, App)
         app._next_client_task_id = lambda: "ct-1"
+        app.config["runtime_debug_enabled"] = True
         app.front_loop_round = 0
         app.last_prepared_payload = {
             "runtime_version": 9,
