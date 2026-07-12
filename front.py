@@ -1153,21 +1153,17 @@ def allocate_randat_blocks(events, execution_round=1, assignment_override=None):
         prev_at = round(first_at, 4)
 
         slot_gap_by_anchor = {}
-        for origin, row in enumerate(table_a):
-            group = str(row.get("__runtime_gid", "")).strip()
-            if group in block_gap_map and origin != int(block_gap_map[group]["first"]):
+        descriptors = build_randat_slot_descriptors(table_a)
+        for slot in descriptors.get("slots", []):
+            try:
+                origin = int(slot.get("slot"))
+            except Exception:
                 continue
-            if group in block_gap_map:
-                first = int(block_gap_map[group]["first"])
-                last = int(block_gap_map[group]["last"])
-                front_gap = original_gap_by_pair.get((first - 1, first), 0.0) if first > 0 else 0.0
-                back_gap = original_gap_by_pair.get((last, last + 1), 0.0) if last + 1 < len(table_a) else 0.0
-            else:
-                front_gap = original_gap_by_pair.get((origin - 1, origin), 0.0) if origin > 0 else 0.0
-                back_gap = original_gap_by_pair.get((origin, origin + 1), 0.0) if origin + 1 < len(table_a) else 0.0
             slot_gap_by_anchor[origin] = {
-                "front_gap": round(max(0.0, _safe_float(front_gap, 0.0)), 4),
-                "back_gap": round(max(0.0, _safe_float(back_gap, 0.0)), 4),
+                "front_gap": round(max(0.0, _safe_float(slot.get("front_gap", 0.0), 0.0)), 4),
+                "back_gap": round(max(0.0, _safe_float(slot.get("back_gap", 0.0), 0.0)), 4),
+                "kind": str(slot.get("kind", "")),
+                "total_gap": round(max(0.0, _safe_float(slot.get("total_gap", slot.get("empty_gap", 0.0)), 0.0)), 4),
             }
 
         def _block_group_for_origin(origin):
@@ -1304,24 +1300,21 @@ def _randat_jitter_limit(a, b=None):
     return round(max(values), 4)
 
 
+def _randat_group_sort_key(group_id):
+    text = str(group_id).strip()
+    try:
+        return (0, int(text))
+    except Exception:
+        return (1, text)
+
+
 def collect_randat_safety_slots(events):
-    groups = {}
-    rslots = []
-    for idx, ev in enumerate(events if isinstance(events, list) else []):
-        if not isinstance(ev, dict):
-            continue
-        if str(ev.get("type", "")).strip().lower() == "randat":
-            rslots.append(idx)
-        group = str(ev.get("buff_group", "")).strip()
-        if group and not is_slot_excluded_buff_group(group):
-            groups.setdefault(group, []).append(idx)
-    bslots = [indices[0] for _group, indices in sorted(groups.items(), key=lambda item: str(item[0])) if indices]
-    slots = []
-    seen = set()
-    for idx in rslots + bslots:
-        if idx not in seen:
-            seen.add(idx)
-            slots.append(idx)
+    descriptors = build_randat_slot_descriptors(events)
+    groups = {
+        str(block.get("group")): list(block.get("indices", []))
+        for block in descriptors.get("blocks", [])
+    }
+    slots = [int(slot.get("slot")) for slot in descriptors.get("slots", [])]
     return groups, slots
 
 
@@ -1332,6 +1325,114 @@ def _randat_runtime_identity(ev):
         str((ev or {}).get("event_id", "")).strip(),
         str((ev or {}).get("buff_group", "")).strip(),
     )
+
+
+def build_randat_slot_descriptors(events):
+    original = events if isinstance(events, list) else []
+    groups = {}
+    rslots = []
+    for idx, ev in enumerate(original):
+        if not isinstance(ev, dict):
+            continue
+        if str(ev.get("type", "")).strip().lower() == "randat":
+            rslots.append(idx)
+        group = str(ev.get("buff_group", "")).strip()
+        if group and not is_slot_excluded_buff_group(group):
+            groups.setdefault(group, []).append(idx)
+
+    blocks = []
+    block_by_anchor = {}
+    covered = set()
+    for group in sorted(groups.keys(), key=_randat_group_sort_key):
+        indices = list(groups[group])
+        exec_indices = [
+            idx for idx in indices
+            if str((original[idx] or {}).get("type", "")).strip().lower() in ("press", "release")
+        ]
+        if not indices or not exec_indices:
+            continue
+        first = exec_indices[0]
+        last = exec_indices[-1]
+        block = {
+            "group": str(group),
+            "indices": indices,
+            "first": first,
+            "last": last,
+            "anchor": indices[0],
+            "first_event": original[first],
+            "last_event": original[last],
+            "internal_pairs": [
+                (exec_indices[pos - 1], exec_indices[pos])
+                for pos in range(1, len(exec_indices))
+            ],
+        }
+        blocks.append(block)
+        block_by_anchor[int(indices[0])] = block
+        covered.update(indices)
+
+    exec_indices_all = [idx for idx, _ev in _randat_executable_events(original)]
+
+    def prev_external(anchor):
+        for idx in reversed(exec_indices_all):
+            if idx < anchor and idx not in covered:
+                return idx
+        return None
+
+    def next_external(anchor):
+        for idx in exec_indices_all:
+            if idx > anchor and idx not in covered:
+                return idx
+        return None
+
+    slots = []
+    seen = set()
+    for idx in rslots + [int(block.get("anchor")) for block in blocks]:
+        if idx in seen:
+            continue
+        seen.add(idx)
+        if idx in block_by_anchor:
+            block = block_by_anchor[idx]
+            left_idx = prev_external(int(block["first"]))
+            right_idx = next_external(int(block["last"]))
+            first_at = _safe_float(original[int(block["first"])].get("at", 0.0), 0.0)
+            last_at = _safe_float(original[int(block["last"])].get("at", 0.0), 0.0)
+            front_gap = round(first_at - _safe_float(original[left_idx].get("at", 0.0), 0.0), 4) if left_idx is not None else 0.0
+            back_gap = round(_safe_float(original[right_idx].get("at", 0.0), 0.0) - last_at, 4) if right_idx is not None else 0.0
+            slots.append({
+                "slot": idx,
+                "kind": "buff",
+                "source_group": str(block.get("group", "")),
+                "left_idx": left_idx,
+                "right_idx": right_idx,
+                "front_gap": max(0.0, front_gap),
+                "back_gap": max(0.0, back_gap),
+                "empty_gap": round(max(0.0, front_gap) + max(0.0, back_gap), 4),
+            })
+        else:
+            left_idx = next((i for i in reversed(exec_indices_all) if i < idx), None)
+            right_idx = next((i for i in exec_indices_all if i > idx), None)
+            total_gap = 0.0
+            if left_idx is not None and right_idx is not None:
+                total_gap = round(_safe_float(original[right_idx].get("at", 0.0), 0.0) - _safe_float(original[left_idx].get("at", 0.0), 0.0), 4)
+            elif left_idx is not None:
+                total_gap = round(_safe_float(original[idx].get("at", 0.0), 0.0) - _safe_float(original[left_idx].get("at", 0.0), 0.0), 4)
+                right_idx = idx
+            elif right_idx is not None:
+                total_gap = round(_safe_float(original[right_idx].get("at", 0.0), 0.0) - _safe_float(original[idx].get("at", 0.0), 0.0), 4)
+                left_idx = idx
+            one_sided = (left_idx == idx or right_idx == idx)
+            slots.append({
+                "slot": idx,
+                "kind": "randat",
+                "source_group": "",
+                "left_idx": left_idx,
+                "right_idx": right_idx,
+                "front_gap": round(max(0.0, total_gap) if one_sided else max(0.0, total_gap) / 2.0, 4),
+                "back_gap": round(max(0.0, total_gap) if one_sided else max(0.0, total_gap) / 2.0, 4),
+                "total_gap": max(0.0, total_gap),
+                "empty_gap": max(0.0, total_gap),
+            })
+    return {"blocks": blocks, "slots": slots}
 
 
 def validate_randat_runtime_table(original_events, runtime_events, assignment=None, minimum_gap=0.0):
@@ -1345,19 +1446,7 @@ def validate_randat_runtime_table(original_events, runtime_events, assignment=No
         limit = _randat_jitter_limit(prev, cur)
         min_gap_seen = gap if min_gap_seen is None else min(min_gap_seen, gap)
         if gap < 0 or gap <= limit:
-            risks.append({
-                "kind": "table_b_gap",
-                "group": str(cur.get("buff_group", prev.get("buff_group", ""))).strip(),
-                "slot": (assignment or {}).get(str(cur.get("buff_group", "")).strip()),
-                "row_a": prev_idx,
-                "row_b": cur_idx,
-                "button_a": str(prev.get("button", "")),
-                "button_b": str(cur.get("button", "")),
-                "type_a": str(prev.get("type", "")),
-                "type_b": str(cur.get("type", "")),
-                "gap": gap,
-                "jitter": limit,
-            })
+            risks.append({"kind": "table_b_gap", "group": str(cur.get("buff_group", prev.get("buff_group", ""))).strip(), "slot": (assignment or {}).get(str(cur.get("buff_group", "")).strip()), "row_a": prev_idx, "row_b": cur_idx, "button_a": str(prev.get("button", "")), "button_b": str(cur.get("button", "")), "type_a": str(prev.get("type", "")), "type_b": str(cur.get("type", "")), "gap": gap, "jitter": limit})
     original_exec = [_randat_runtime_identity(ev) for _idx, ev in _randat_executable_events(original_events)]
     runtime_exec = [_randat_runtime_identity(ev) for _idx, ev in executable]
     if sorted(original_exec) != sorted(runtime_exec):
@@ -1381,74 +1470,86 @@ def validate_randat_runtime_table(original_events, runtime_events, assignment=No
 def analyze_randat_safety_timeline(events, minimum_gap, max_assignments=50000, allocator=allocate_randat_blocks):
     original = copy.deepcopy(events if isinstance(events, list) else [])
     min_gap = max(0.0, _safe_float(minimum_gap, 0.0))
-    groups, slots = collect_randat_safety_slots(original)
-    result = {
-        "safe": True,
-        "risk_count": 0,
-        "risks": [],
-        "buff_group_count": len(groups),
-        "slot_count": len(slots),
-        "minimum_gap": round(min_gap, 4),
-        "max_at_jitter": 0.0,
-        "jitter_rule": "gap > max(current.at_jitter, next.at_jitter)",
-        "checked_assignments": 0,
-        "complete_enumeration": True,
-        "block_internal_min_gap": None,
-        "slot_boundary_min_gap": None,
-        "table_b_min_gap": None,
-        "message": "",
-    }
+    descriptors = build_randat_slot_descriptors(original)
+    blocks = descriptors.get("blocks", [])
+    slots = descriptors.get("slots", [])
+    result = {"safe": True, "risk_count": 0, "risks": [], "buff_group_count": len(blocks), "slot_count": len(slots), "minimum_gap": round(min_gap, 4), "max_at_jitter": 0.0, "jitter_rule": "gap > max(current.at_jitter, next.at_jitter)", "checked_assignments": 0, "complete_enumeration": False, "block_internal_min_gap": None, "slot_boundary_min_gap": None, "table_b_min_gap": None, "unsafe_group_slot_count": 0, "unsafe_empty_slot_count": 0, "block_internal_risk_count": 0, "message": ""}
     jitters = [max(0.0, _safe_float(ev.get("at_jitter", 0.0), 0.0)) for ev in original if isinstance(ev, dict)]
     result["max_at_jitter"] = round(max(jitters) if jitters else 0.0, 4)
-    if not groups and not any(str((ev or {}).get("type", "")).strip().lower() == "randat" for ev in original if isinstance(ev, dict)):
+    if not blocks and not slots:
         result["message"] = "無 randat／無需分析"
         return result
     if min_gap <= result["max_at_jitter"]:
         result["risks"].append({"kind": "minimum_gap", "gap": min_gap, "jitter": result["max_at_jitter"], "message": "minimum gap 必須嚴格大於最大 at_jitter"})
-    for group, indices in groups.items():
-        exec_rows = [(idx, original[idx]) for idx in indices if str(original[idx].get("type", "")).strip().lower() in ("press", "release")]
-        for pos in range(1, len(exec_rows)):
-            a_idx, a = exec_rows[pos - 1]
-            b_idx, b = exec_rows[pos]
+    for slot in slots:
+        left_idx = slot.get("left_idx")
+        right_idx = slot.get("right_idx")
+        if left_idx is None or right_idx is None:
+            continue
+        if slot.get("kind") == "randat" and int(left_idx) != int(slot.get("slot", -1)):
+            gap = round(_safe_float(original[int(slot.get("slot"))].get("at", 0.0), 0.0) - _safe_float(original[int(left_idx)].get("at", 0.0), 0.0), 4)
+            limit = _randat_jitter_limit(original[int(left_idx)], original[int(slot.get("slot"))])
+            if gap < min_gap or gap <= limit:
+                result["risks"].append({"kind": "slot_boundary", "slot": slot.get("slot"), "side": "front", "row_a": left_idx, "row_b": slot.get("slot"), "gap": gap, "jitter": limit, "group": ""})
+        if slot.get("kind") == "randat" and int(right_idx) != int(slot.get("slot", -1)):
+            gap = round(_safe_float(original[int(right_idx)].get("at", 0.0), 0.0) - _safe_float(original[int(slot.get("slot"))].get("at", 0.0), 0.0), 4)
+            limit = _randat_jitter_limit(original[int(slot.get("slot"))], original[int(right_idx)])
+            if gap < min_gap or gap <= limit:
+                result["risks"].append({"kind": "slot_boundary", "slot": slot.get("slot"), "side": "back", "row_a": slot.get("slot"), "row_b": right_idx, "gap": gap, "jitter": limit, "group": ""})
+    for block in blocks:
+        group = str(block.get("group", ""))
+        for a_idx, b_idx in block.get("internal_pairs", []):
+            a, b = original[a_idx], original[b_idx]
             gap = round(_safe_float(b.get("at", 0.0), 0.0) - _safe_float(a.get("at", 0.0), 0.0), 4)
             limit = _randat_jitter_limit(a, b)
             result["block_internal_min_gap"] = gap if result["block_internal_min_gap"] is None else min(result["block_internal_min_gap"], gap)
             if gap <= limit:
                 result["risks"].append({"kind": "block_internal", "group": group, "row_a": a_idx, "row_b": b_idx, "button_a": a.get("button", ""), "button_b": b.get("button", ""), "type_a": a.get("type", ""), "type_b": b.get("type", ""), "gap": gap, "jitter": limit})
-    exec_indices = {idx for idx, _ev in _randat_executable_events(original)}
-    for slot in slots:
-        prev_idx = next((i for i in range(slot - 1, -1, -1) if i in exec_indices), None)
-        next_idx = next((i for i in range(slot + 1, len(original)) if i in exec_indices), None)
-        for side, a_idx, b_idx in (("front", prev_idx, slot), ("back", slot, next_idx)):
-            if a_idx is None or b_idx is None or a_idx < 0 or b_idx < 0 or a_idx >= len(original) or b_idx >= len(original):
+                result["block_internal_risk_count"] += 1
+    for block in blocks:
+        group = str(block.get("group", ""))
+        first_ev = original[int(block.get("first"))]
+        last_ev = original[int(block.get("last"))]
+        for slot in slots:
+            left_idx = slot.get("left_idx")
+            right_idx = slot.get("right_idx")
+            if left_idx is None or right_idx is None:
                 continue
-            a, b = original[a_idx], original[b_idx]
-            gap = round(abs(_safe_float(b.get("at", 0.0), 0.0) - _safe_float(a.get("at", 0.0), 0.0)), 4)
-            limit = _randat_jitter_limit(a, b)
-            result["slot_boundary_min_gap"] = gap if result["slot_boundary_min_gap"] is None else min(result["slot_boundary_min_gap"], gap)
-            if gap < min_gap or gap <= limit:
-                result["risks"].append({"kind": "slot_boundary", "slot": slot, "side": side, "row_a": a_idx, "row_b": b_idx, "gap": gap, "jitter": limit, "group": ""})
-    import itertools
-    group_ids = list(groups.keys())
-    assignments = []
-    total = 1
-    for n in range(max(0, len(slots) - len(group_ids) + 1), len(slots) + 1):
-        total *= n
-    if len(group_ids) <= len(slots) and total <= max_assignments:
-        assignments = [dict(zip(group_ids, perm)) for perm in itertools.permutations(slots, len(group_ids))]
-    else:
-        result["complete_enumeration"] = False
-        assignments = [dict(zip(group_ids, perm)) for perm in itertools.islice(itertools.permutations(slots, min(len(group_ids), len(slots))), 200)]
-        for group in group_ids:
-            for slot in slots:
-                assignments.append({group: slot})
-    for assignment in assignments:
+            left_ev, right_ev = original[int(left_idx)], original[int(right_idx)]
+            if slot.get("kind") == "randat" and _safe_float(slot.get("total_gap", 0.0), 0.0) < (2.0 * min_gap):
+                result["risks"].append({"kind": "group_slot", "group": group, "slot": slot.get("slot"), "side": "randat", "gap": slot.get("total_gap", 0.0), "jitter": min_gap, "message": "randat 總空間不足"})
+                result["unsafe_group_slot_count"] += 1
+                continue
+            checks = (("front", slot.get("front_gap", 0.0), left_idx, int(block.get("first")), _randat_jitter_limit(left_ev, first_ev)), ("back", slot.get("back_gap", 0.0), int(block.get("last")), right_idx, _randat_jitter_limit(last_ev, right_ev)))
+            unsafe = False
+            for side, gap, row_a, row_b, limit in checks:
+                gap = round(_safe_float(gap, 0.0), 4)
+                result["slot_boundary_min_gap"] = gap if result["slot_boundary_min_gap"] is None else min(result["slot_boundary_min_gap"], gap)
+                if gap < min_gap or gap <= limit:
+                    result["risks"].append({"kind": "group_slot", "group": group, "slot": slot.get("slot"), "side": side, "row_a": row_a, "row_b": row_b, "gap": gap, "jitter": limit})
+                    unsafe = True
+            if unsafe:
+                result["unsafe_group_slot_count"] += 1
+            result["checked_assignments"] += 1
+    for slot in slots:
+        if slot.get("kind") != "buff":
+            continue
+        left_idx = slot.get("left_idx")
+        right_idx = slot.get("right_idx")
+        if left_idx is None or right_idx is None:
+            continue
+        gap = round(_safe_float(slot.get("empty_gap", 0.0), 0.0), 4)
+        limit = _randat_jitter_limit(original[int(left_idx)], original[int(right_idx)])
+        if gap < min_gap or gap <= limit:
+            result["risks"].append({"kind": "empty_slot", "slot": slot.get("slot"), "row_a": left_idx, "row_b": right_idx, "gap": gap, "jitter": limit})
+            result["unsafe_empty_slot_count"] += 1
+    if allocator is not allocate_randat_blocks and blocks:
+        assignment = {str(block.get("group")): int(slots[pos % len(slots)].get("slot")) for pos, block in enumerate(blocks)} if slots else {}
         runtime, _assign, _traces, _debug = allocator(copy.deepcopy(original), execution_round=1, assignment_override=assignment)
         validation = validate_randat_runtime_table(original, runtime, assignment, min_gap)
         result["checked_assignments"] += 1
         if validation.get("min_gap") is not None:
-            gap = validation["min_gap"]
-            result["table_b_min_gap"] = gap if result["table_b_min_gap"] is None else min(result["table_b_min_gap"], gap)
+            result["table_b_min_gap"] = validation.get("min_gap")
         result["risks"].extend(validation.get("risks", []))
     result["risk_count"] = len(result["risks"])
     result["safe"] = result["risk_count"] == 0
@@ -6148,6 +6249,14 @@ class App:
                         self._update_runtime_control_buttons()
                         return
                     self._set_active_round_snapshot(runtime_display_events, backend_events, self.last_prepared_payload, payload, res)
+                    ack_runtime = res.get("timeline_runtime") if isinstance(res, dict) else None
+                    if isinstance(ack_runtime, dict):
+                        self.timeline_runtime_info = copy.deepcopy(ack_runtime)
+                        self.timeline_runtime_status_updated_at = float(time.monotonic())
+                    else:
+                        self.timeline_runtime_info = {}
+                        self.timeline_runtime_status_updated_at = 0.0
+                    self.front_round_seen_active_running = False
                     self.pending_round_snapshot = {}
                     self.runtime_version = int(self.pending_runtime_version or self.runtime_version)
                     self.current_round_runtime_version = int(self.runtime_version)
@@ -6234,12 +6343,28 @@ class App:
             self.render_runtime_analysis(force=True)
             self.show_error("重複傳送失敗", str(e))
 
+    def _front_loop_runtime_identity_matches_active(self, runtime):
+        if not isinstance(runtime, dict):
+            return False
+        snapshot = getattr(self, "active_round_snapshot", {})
+        if not isinstance(snapshot, dict) or not snapshot:
+            return False
+        checks = ("client_task_id", "server_task_id", "execution_round", "runtime_version")
+        for key in checks:
+            expected = snapshot.get(key)
+            if expected in (None, "", 0):
+                continue
+            actual = runtime.get(key)
+            if str(actual) != str(expected):
+                return False
+        return True
+
     def _get_cached_front_loop_runtime_state(self):
         runtime = getattr(self, "timeline_runtime_info", {})
         if not isinstance(runtime, dict):
             return ""
         state = str(runtime.get("state", "")).strip().lower()
-        if not state:
+        if not state or not self._front_loop_runtime_identity_matches_active(runtime):
             return ""
         try:
             updated_at = float(getattr(self, "timeline_runtime_status_updated_at", 0.0) or 0.0)
@@ -6255,7 +6380,11 @@ class App:
             return cached_state
         status_response = self.request_pi({"action": "status"}, write_response=False, channel="status")
         runtime = status_response.get("timeline_runtime", {}) if isinstance(status_response, dict) else {}
-        return str(runtime.get("state", "")).strip().lower()
+        if isinstance(runtime, dict) and self._front_loop_runtime_identity_matches_active(runtime):
+            self.timeline_runtime_info = copy.deepcopy(runtime)
+            self.timeline_runtime_status_updated_at = float(time.monotonic())
+            return str(runtime.get("state", "")).strip().lower()
+        return ""
 
     def _poll_front_loop_round_done(self, display_name):
         if not self.front_loop_enabled:
@@ -6266,6 +6395,7 @@ class App:
         try:
             state = self._read_front_loop_runtime_state()
             if state in ("running", "paused", "resumed"):
+                self.front_round_seen_active_running = True
                 self._set_front_round_state("running")
                 self.front_loop_after_id = self.root.after(
                     250,
@@ -6273,6 +6403,12 @@ class App:
                 )
                 return
             if state == "finished":
+                if not bool(getattr(self, "front_round_seen_active_running", False)):
+                    self.front_loop_after_id = self.root.after(
+                        80,
+                        lambda: self._poll_front_loop_round_done(display_name)
+                    )
+                    return
                 now = float(time.monotonic())
                 last_running = getattr(self, "front_round_last_running_at", None)
                 if last_running is not None:
