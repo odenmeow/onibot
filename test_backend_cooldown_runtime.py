@@ -86,6 +86,7 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             "source_target_at": 5.86,
             "target_at": 5.86,
             "actual_at": 5.8575,
+            "wall_actual_at": 6.125,
             "type": "release",
             "button": "left",
             "status": "ok",
@@ -100,7 +101,7 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             self.assertNotIn(key, summary)
         for event_key in ("current_event", "last_event"):
             event = summary[event_key]
-            for key in ("event_id", "original_index", "source_target_at", "target_at", "actual_at", "runtime_landed_index", "runtime_anchor_index", "runtime_occupies_original", "type", "button", "status"):
+            for key in ("event_id", "original_index", "source_target_at", "target_at", "actual_at", "wall_actual_at", "runtime_landed_index", "runtime_anchor_index", "runtime_occupies_original", "type", "button", "status"):
                 self.assertIn(key, event)
             self.assertEqual(event["runtime_index"], 7)
 
@@ -316,8 +317,10 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             backend.release_only = orig_release
 
         self.assertTrue(pause_state["done"])
-        self.assertAlmostEqual(results[0]["actual_at"], 1.0 + pause_sec, delta=0.05)
-        self.assertAlmostEqual(results[1]["actual_at"], 2.0 + pause_sec, delta=0.05)
+        self.assertAlmostEqual(results[0]["actual_at"], 1.0, delta=0.05)
+        self.assertAlmostEqual(results[1]["actual_at"], 2.0, delta=0.05)
+        self.assertAlmostEqual(results[0]["wall_actual_at"], 1.0 + pause_sec, delta=0.05)
+        self.assertAlmostEqual(results[1]["wall_actual_at"], 2.0 + pause_sec, delta=0.05)
         self.assertAlmostEqual(results[1]["actual_at"] - results[0]["actual_at"], 1.0, delta=0.05)
 
     def test_handle_request_maps_legacy_compress_to_pass(self):
