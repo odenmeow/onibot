@@ -1852,9 +1852,15 @@ class App:
         self.connection_var.set(message)
 
     def update_gpio_polarity_from_response(self, response):
-        if not isinstance(response, dict) or not hasattr(self, "gpio_polarity_var"):
+        if not isinstance(response, dict):
             return
         info = response.get("gpio_polarity")
+        if isinstance(info, dict):
+            trigger = str(info.get("trigger_level", "")).strip().lower()
+            if trigger in {"low", "high"}:
+                self.gpio_trigger_level = trigger
+        if not hasattr(self, "gpio_polarity_var"):
+            return
         if not isinstance(info, dict):
             return
         label = str(info.get("trigger_label", "")).strip()
@@ -1900,6 +1906,8 @@ class App:
 
     def set_connected(self, connected, message=""):
         self.connected = connected
+        if not connected:
+            self.applied_gpio_trigger_level = ""
         if connected:
             self.offline_mode = False
             self.set_connection_status("已連線（{}）".format(self.config["pi_host"]))
@@ -2087,6 +2095,7 @@ class App:
         self.current_loaded_from_saved = False
         self.connected = False
         self.offline_mode = True
+        self.applied_gpio_trigger_level = ""
         self.control_request_lock = threading.Lock()
         self.status_request_lock = threading.Lock()
         self.control_conn = None
@@ -4985,6 +4994,10 @@ class App:
                 {"action": "set_gpio_polarity", "trigger_level": trigger_level},
                 success_status="GPIO 已設定為{}".format(label)
             )
+            if trigger_level in {"low", "high"}:
+                self.applied_gpio_trigger_level = trigger_level
+                self.gpio_trigger_level = trigger_level
+            self.update_gpio_polarity_from_response(res)
             message = res.get("message") if isinstance(res, dict) else ""
             self.set_status(message or "GPIO 已設定為{}".format(label))
         except Exception as e:
@@ -5131,6 +5144,33 @@ class App:
         self._set_front_round_state("preparing_next")
         self._dispatch_front_loop_once(display_name)
 
+
+    def _has_applied_low_gpio_trigger(self):
+        applied_level = str(getattr(self, "applied_gpio_trigger_level", "") or "").strip().lower()
+        if applied_level:
+            return applied_level == "low"
+        trigger_level = str(getattr(self, "gpio_trigger_level", "") or "").strip().lower()
+        if trigger_level:
+            return trigger_level == "low"
+        gpio_var = getattr(self, "gpio_polarity_var", None)
+        try:
+            gpio_label = str(gpio_var.get() or "")
+        except Exception:
+            gpio_label = ""
+        return "低位觸發" in gpio_label
+
+    def _ensure_ready_for_script_execution(self):
+        warning_message = "請先測試連線、套用低位觸發，再載入腳本執行。"
+        if (
+            not bool(getattr(self, "connected", False))
+            or bool(getattr(self, "offline_mode", True))
+            or not self._has_applied_low_gpio_trigger()
+        ):
+            self.show_warning("提醒", warning_message)
+            self.set_frontend_error(warning_message)
+            return False
+        return True
+
     def _auto_switch_runtime_view_on_loop_start(self):
         cfg = self.config if isinstance(getattr(self, "config", None), dict) else {}
         if not bool(cfg.get("auto_switch_runtime_on_loop_start", True)):
@@ -5145,6 +5185,8 @@ class App:
         self.on_json_mode_change()
 
     def send_timeline_loop(self):
+        if not self._ensure_ready_for_script_execution():
+            return
         if not self.timeline:
             self.show_warning("提醒", "請先錄製並分析，或載入已保存項目")
             return

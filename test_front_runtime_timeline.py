@@ -300,6 +300,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.offline_mode = False
         app.conn = object()
         app.connected = True
+        app.applied_gpio_trigger_level = "low"
         app.frontend_error_main = ""
         app.last_control_error = ""
         app.last_status_error = ""
@@ -1134,6 +1135,9 @@ class RuntimeDisplayTests(unittest.TestCase):
         app.send_timeline_loop = App.send_timeline_loop.__get__(app, App)
         app.on_json_mode_change = App.on_json_mode_change.__get__(app, App)
         app._auto_switch_runtime_view_on_loop_start = App._auto_switch_runtime_view_on_loop_start.__get__(app, App)
+        app._ensure_ready_for_script_execution = App._ensure_ready_for_script_execution.__get__(app, App)
+        app._has_applied_low_gpio_trigger = App._has_applied_low_gpio_trigger.__get__(app, App)
+        app.applied_gpio_trigger_level = "low"
         app.timeline = [{"type": "press", "button": "space", "at": 1.0}]
         app.loop_preview_pending = False
         app.front_loop_enabled = False
@@ -1155,6 +1159,85 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertEqual(app.json_view_mode_var.get(), "runtime")
         self.assertGreaterEqual(render_calls["runtime"], 1)
+
+    def test_loop_requires_connection_before_preview_or_send(self):
+        app = self._new_app()
+        app.send_timeline_loop = App.send_timeline_loop.__get__(app, App)
+        app._ensure_ready_for_script_execution = App._ensure_ready_for_script_execution.__get__(app, App)
+        app._has_applied_low_gpio_trigger = App._has_applied_low_gpio_trigger.__get__(app, App)
+        app.timeline = [{"type": "press", "button": "space", "at": 1.0}]
+        app.connected = False
+        app.offline_mode = True
+        app.applied_gpio_trigger_level = "low"
+        warnings = []
+        frontend_errors = []
+        app.show_warning = lambda title, msg: warnings.append((title, msg))
+        app.set_frontend_error = lambda msg: frontend_errors.append(msg)
+        app._auto_switch_runtime_view_on_loop_start = mock.Mock()
+        app.prepare_events_for_send = mock.Mock()
+
+        app.send_timeline_loop()
+
+        expected = "請先測試連線、套用低位觸發，再載入腳本執行。"
+        self.assertEqual(warnings, [("提醒", expected)])
+        self.assertEqual(frontend_errors, [expected])
+        app._auto_switch_runtime_view_on_loop_start.assert_not_called()
+        app.prepare_events_for_send.assert_not_called()
+
+    def test_loop_requires_applied_low_gpio_trigger(self):
+        app = self._new_app()
+        app.send_timeline_loop = App.send_timeline_loop.__get__(app, App)
+        app._ensure_ready_for_script_execution = App._ensure_ready_for_script_execution.__get__(app, App)
+        app._has_applied_low_gpio_trigger = App._has_applied_low_gpio_trigger.__get__(app, App)
+        app.timeline = [{"type": "press", "button": "space", "at": 1.0}]
+        app.connected = True
+        app.offline_mode = False
+        app.applied_gpio_trigger_level = "high"
+        warnings = []
+        app.show_warning = lambda title, msg: warnings.append((title, msg))
+        app.set_frontend_error = mock.Mock()
+        app._auto_switch_runtime_view_on_loop_start = mock.Mock()
+        app.prepare_events_for_send = mock.Mock()
+
+        app.send_timeline_loop()
+
+        expected = "請先測試連線、套用低位觸發，再載入腳本執行。"
+        self.assertEqual(warnings, [("提醒", expected)])
+        app.set_frontend_error.assert_called_once_with(expected)
+        app._auto_switch_runtime_view_on_loop_start.assert_not_called()
+        app.prepare_events_for_send.assert_not_called()
+
+    def test_loop_allows_existing_flow_after_connection_and_low_gpio(self):
+        app = self._new_app()
+        app.send_timeline_loop = App.send_timeline_loop.__get__(app, App)
+        app._ensure_ready_for_script_execution = App._ensure_ready_for_script_execution.__get__(app, App)
+        app._has_applied_low_gpio_trigger = App._has_applied_low_gpio_trigger.__get__(app, App)
+        app.timeline = [{"type": "press", "button": "space", "at": 1.0}]
+        app.connected = True
+        app.offline_mode = False
+        app.applied_gpio_trigger_level = "low"
+        app.front_loop_enabled = False
+        app.loop_preview_pending = False
+        app.loop_preview_cached_payload = None
+        app.loop_preview_origin_snapshot = []
+        app.show_warning = mock.Mock()
+        app.set_frontend_error = mock.Mock()
+        app._auto_switch_runtime_view_on_loop_start = mock.Mock()
+        app._update_runtime_control_buttons = lambda: None
+        app.render_runtime_analysis = lambda force=False: None
+        app.prepare_events_for_send = mock.Mock(return_value=(
+            [{"type": "press", "button": "space", "at": 1.0}],
+            [{"type": "press", "button": "space", "at": 1.0}],
+            ""
+        ))
+
+        app.send_timeline_loop()
+
+        app._auto_switch_runtime_view_on_loop_start.assert_called_once_with()
+        app.prepare_events_for_send.assert_called_once()
+        self.assertTrue(app.loop_preview_pending)
+        app.show_warning.assert_not_called()
+
 
 
 class RuntimeProgressTimeoutPredictionTests(unittest.TestCase):
@@ -1490,6 +1573,11 @@ class TimelineWorkflowTests(unittest.TestCase):
         app._update_runtime_control_buttons = lambda: None
         app.confirm = lambda *_args, **_kwargs: True
         app.request_pi = lambda *_args, **_kwargs: {"status": "ok"}
+        app.connected = True
+        app.offline_mode = False
+        app.applied_gpio_trigger_level = "low"
+        app._ensure_ready_for_script_execution = App._ensure_ready_for_script_execution.__get__(app, App)
+        app._has_applied_low_gpio_trigger = App._has_applied_low_gpio_trigger.__get__(app, App)
         app.set_status = lambda *_args, **_kwargs: None
         app.set_frontend_error = lambda *_args, **_kwargs: None
         app.validate_negative_group_monotonic_by_index = App.validate_negative_group_monotonic_by_index.__get__(app, App)
