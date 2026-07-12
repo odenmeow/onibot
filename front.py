@@ -44,6 +44,7 @@ ROUND_TRACE_REASON_LABELS = {
 }
 
 SAVE_DIR = "saved_timelines"
+LOG_DIR = "LogFile"
 CONFIG_FILE = "front_config.json"
 
 KEY_MAP = {
@@ -99,9 +100,37 @@ class PiRequestError(Exception):
         self.kind = str(kind or "request_error")
 
 
+def get_app_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def ensure_log_dir():
+    log_dir = os.path.join(get_app_dir(), LOG_DIR)
+    os.makedirs(log_dir, exist_ok=True)
+    return log_dir
+
+
+def append_daily_log(category, message):
+    text = str(message or "").strip()
+    if not text or text == "無":
+        return
+    try:
+        log_dir = ensure_log_dir()
+        log_path = os.path.join(log_dir, time.strftime("%Y-%m-%d.log"))
+        label = str(category or "未分類").strip() or "未分類"
+        lines = text.splitlines() or [text]
+        formatted_message = lines[0]
+        if len(lines) > 1:
+            formatted_message += "\n" + "\n".join("    " + line for line in lines[1:])
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("[{}] [{}] {}\n".format(time.strftime("%H:%M:%S"), label, formatted_message))
+    except Exception:
+        pass
+
+
 def ensure_dirs():
-    if not os.path.exists(SAVE_DIR):
-        os.makedirs(SAVE_DIR)
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    ensure_log_dir()
 
 
 def load_config():
@@ -1459,17 +1488,26 @@ class App:
         widget.insert(tk.END, message or "無")
         widget.config(state="disabled")
 
+    def _log_message(self, category, message):
+        append_daily_log(category, message)
+
     def set_frontend_error(self, message):
         self.frontend_error_main = str(message or "").strip()
+        if self.frontend_error_main:
+            self._log_message("前端", self.frontend_error_main)
         self._render_frontend_error()
 
     def set_frontend_monitor_alert(self, message):
         self.frontend_monitor_alert = str(message or "").strip()
+        if self.frontend_monitor_alert:
+            self._log_message("前端", self.frontend_monitor_alert)
         self.frontend_monitor_alert_level = "alert" if self.frontend_monitor_alert else ""
         self._render_frontend_error()
 
     def _set_frontend_monitor_info(self, message):
         self.frontend_monitor_alert = str(message or "").strip()
+        if self.frontend_monitor_alert:
+            self._log_message("前端", self.frontend_monitor_alert)
         self.frontend_monitor_alert_level = "info" if self.frontend_monitor_alert else ""
         self._render_frontend_error()
 
@@ -1491,7 +1529,10 @@ class App:
             "recovered_via": source_label
         })
 
-    def set_backend_error(self, message):
+    def set_backend_error(self, message, log=True):
+        text = str(message or "").strip()
+        if log and text:
+            self._log_message("後端", text)
         self.update_error_text(self.backend_error_text, message)
 
     def _format_backend_error(self, response):
@@ -1571,8 +1612,12 @@ class App:
         text = str(message or "").strip()
         if channel == "status":
             self.last_status_error = text
+            category = "前端/status"
         else:
             self.last_control_error = text
+            category = "操作區/control"
+        if text:
+            self._log_message(category, text)
         self._render_frontend_error()
 
     def _clear_channel_error(self, channel):
@@ -1832,6 +1877,7 @@ class App:
         return self._show_app_dialog(title, message, dialog_type="question", buttons="yesnocancel")
 
     def set_status(self, message):
+        self._log_message("Message", message)
         self.status_var.set(message)
 
     def _is_script_switch_for_load(self, target_name):
@@ -1988,7 +2034,9 @@ class App:
             self.set_connected(True)
         status = res.get("status")
         if status in ("error", "busy"):
-            self.set_backend_error(self._format_backend_error(res))
+            backend_message = self._format_backend_error(res)
+            self._log_message("後端", backend_message)
+            self.set_backend_error(backend_message, log=False)
             backend_code = str(res.get("code", "")).strip().lower()
             if backend_code in {"unknown_action", "exception", "invalid_request", "bad_request"}:
                 raise PiRequestError(
