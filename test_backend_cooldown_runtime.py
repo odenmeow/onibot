@@ -316,8 +316,10 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             backend.release_only = orig_release
 
         self.assertTrue(pause_state["done"])
-        self.assertAlmostEqual(results[0]["actual_at"], 1.0 + pause_sec, delta=0.05)
-        self.assertAlmostEqual(results[1]["actual_at"], 2.0 + pause_sec, delta=0.05)
+        self.assertAlmostEqual(results[0]["actual_at"], 1.0, delta=0.05)
+        self.assertAlmostEqual(results[1]["actual_at"], 2.0, delta=0.05)
+        self.assertAlmostEqual(results[0]["wall_actual_at"], 1.0 + pause_sec, delta=0.05)
+        self.assertAlmostEqual(results[1]["wall_actual_at"], 2.0 + pause_sec, delta=0.05)
         self.assertAlmostEqual(results[1]["actual_at"] - results[0]["actual_at"], 1.0, delta=0.05)
 
     def test_handle_request_maps_legacy_compress_to_pass(self):

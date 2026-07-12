@@ -550,7 +550,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         at_values = [float(row.get("at", 0.0)) for row in working]
         self.assertEqual(at_values, sorted(at_values))
         self.assertAlmostEqual(at_values[2] - at_values[1], 0.2, places=4)
-        self.assertAlmostEqual(at_values[3] - at_values[2], 0.8, places=4)
+        self.assertAlmostEqual(at_values[3] - at_values[2], 1.0, places=4)
         self.assertNotEqual(assignments["1"]["landed_index"], assignments["1"]["anchor_index"])
         self.assertEqual(debug.get("apply_order"), ["2", "1"])
         self.assertEqual([item.get("group_id") for item in debug.get("placement_ledger", [])], ["2", "1"])
@@ -561,6 +561,64 @@ class RuntimeDisplayTests(unittest.TestCase):
         self.assertIn("final_runtime_row_range", group1_info)
         self.assertEqual(group1_info.get("final_b_range"), group1_info.get("final_b_range_slot"))
         self.assertTrue(isinstance(group1_info.get("final_runtime_row_range"), list))
+
+    def test_allocate_randat_blocks_uses_external_gaps_for_vacated_block_seam(self):
+        events = [
+            {"type": "press", "button": "before", "at": 19.76, "buff_group": ""},
+            {"type": "press", "button": "g6a", "at": 20.26, "buff_group": "6"},
+            {"type": "release", "button": "g6a", "at": 27.60, "buff_group": "6"},
+            {"type": "press", "button": "after", "at": 27.70, "buff_group": ""},
+            {"type": "randat", "button": "", "at": 28.00, "buff_group": ""},
+        ]
+
+        with mock.patch("front.random.randrange", return_value=0):
+            working, assignments, _traces, _debug = allocate_randat_blocks(events)
+
+        self.assertNotEqual(assignments["6"]["landed_index"], assignments["6"]["anchor_index"])
+        before_idx = next(i for i, row in enumerate(working) if row.get("button") == "before")
+        after_idx = next(i for i, row in enumerate(working) if row.get("button") == "after")
+        self.assertEqual(after_idx, before_idx + 1)
+        seam_gap = round(float(working[after_idx]["at"]) - float(working[before_idx]["at"]), 4)
+        self.assertAlmostEqual(seam_gap, 0.60, places=4)
+        self.assertNotAlmostEqual(seam_gap, 7.94, places=4)
+
+    def test_allocate_randat_blocks_start_block_moved_to_middle_uses_destination_gap(self):
+        events = [
+            {"type": "press", "button": "start-a", "at": 0.00, "buff_group": "1"},
+            {"type": "release", "button": "start-a", "at": 0.25, "buff_group": "1"},
+            {"type": "press", "button": "middle", "at": 1.00, "buff_group": ""},
+            {"type": "randat", "button": "", "at": 2.00, "buff_group": ""},
+        ]
+
+        with mock.patch("front.random.randrange", return_value=0):
+            working, assignments, _traces, _debug = allocate_randat_blocks(events)
+
+        self.assertNotEqual(assignments["1"]["landed_index"], assignments["1"]["anchor_index"])
+        middle_idx = next(i for i, row in enumerate(working) if row.get("button") == "middle")
+        block_idx = next(i for i, row in enumerate(working) if row.get("button") == "start-a" and row.get("type") == "press")
+        self.assertEqual(block_idx, middle_idx + 1)
+        destination_gap = round(float(working[block_idx]["at"]) - float(working[middle_idx]["at"]), 4)
+        self.assertAlmostEqual(destination_gap, 1.00, places=4)
+        self.assertNotEqual(destination_gap, 0.0)
+
+    def test_allocate_randat_blocks_adjacent_blocks_do_not_override_entry_gap(self):
+        events = [
+            {"type": "press", "button": "a", "at": 0.00, "buff_group": "1"},
+            {"type": "release", "button": "a", "at": 0.20, "buff_group": "1"},
+            {"type": "press", "button": "b", "at": 0.70, "buff_group": "2"},
+            {"type": "release", "button": "b", "at": 0.90, "buff_group": "2"},
+            {"type": "press", "button": "slot-prev", "at": 1.30, "buff_group": ""},
+            {"type": "randat", "button": "", "at": 2.00, "buff_group": ""},
+        ]
+
+        with mock.patch("front.random.randrange", side_effect=[1, 1]):
+            working, _assignments, _traces, _debug = allocate_randat_blocks(events)
+
+        g1_last_idx = next(i for i, row in enumerate(working) if row.get("buff_group") == "1" and row.get("type") == "release")
+        g2_first_idx = next(i for i, row in enumerate(working) if row.get("buff_group") == "2" and row.get("type") == "press")
+        self.assertEqual(g2_first_idx, g1_last_idx + 1)
+        entry_gap = round(float(working[g2_first_idx]["at"]) - float(working[g1_last_idx]["at"]), 4)
+        self.assertAlmostEqual(entry_gap, 0.50, places=4)
 
     def test_allocate_randat_blocks_excludes_numeric_groups_greater_than_100(self):
         random.seed(11)

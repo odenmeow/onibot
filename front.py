@@ -1140,22 +1140,58 @@ def allocate_randat_blocks(events, execution_round=1):
             first_origin = int(reordered[0].get("__origin_idx", 0))
             first_at = original_at_by_idx.get(first_origin, 0.0)
         prev_at = round(first_at, 4)
+
+        def _runtime_gap(prev_row, cur_row):
+            prev_group = str(prev_row.get("__runtime_gid", "")).strip()
+            cur_group = str(cur_row.get("__runtime_gid", "")).strip()
+            prev_origin = int(prev_row.get("__origin_idx", -1))
+            cur_origin = int(cur_row.get("__origin_idx", -1))
+
+            if prev_group == cur_group and cur_group in block_gap_map:
+                gap = original_gap_by_pair.get((prev_origin, cur_origin))
+                if gap is not None:
+                    return gap
+
+            gap = original_gap_by_pair.get((prev_origin, cur_origin))
+            if gap is not None:
+                return gap
+
+            if prev_group != cur_group and cur_group in block_gap_map and cur_origin == int(block_gap_map[cur_group]["first"]):
+                picked_slot = int(block_assignments.get(cur_group, {}).get("picked_slot", cur_origin))
+                if picked_slot == 0:
+                    return 0.0
+                gap = original_gap_by_pair.get((picked_slot - 1, picked_slot))
+                if gap is not None:
+                    return gap
+
+            if prev_origin + 1 < cur_origin:
+                skipped = list(range(prev_origin + 1, cur_origin))
+                skipped_groups = {
+                    str(table_a[origin].get("__runtime_gid", "")).strip()
+                    for origin in skipped
+                    if 0 <= origin < len(table_a)
+                }
+                skipped_groups.discard("")
+                if (
+                    len(skipped_groups) == 1
+                    and next(iter(skipped_groups)) in block_gap_map
+                    and all(
+                        str(table_a[origin].get("__runtime_gid", "")).strip() == next(iter(skipped_groups))
+                        for origin in skipped
+                    )
+                ):
+                    front_gap = original_gap_by_pair.get((prev_origin, prev_origin + 1), 0.0)
+                    back_gap = original_gap_by_pair.get((cur_origin - 1, cur_origin), 0.0)
+                    return round(max(0.0, _safe_float(front_gap, 0.0)) + max(0.0, _safe_float(back_gap, 0.0)), 4)
+
+            return 0.0
+
         for idx, row in enumerate(reordered):
             if idx == 0:
                 row["at"] = prev_at
                 continue
             prev_row = reordered[idx - 1]
-            prev_group = str(prev_row.get("__runtime_gid", "")).strip()
-            cur_group = str(row.get("__runtime_gid", "")).strip()
-            prev_origin = int(prev_row.get("__origin_idx", -1))
-            cur_origin = int(row.get("__origin_idx", -1))
-            gap = original_gap_by_pair.get((prev_origin, cur_origin))
-            if prev_group != cur_group and cur_group in block_gap_map and cur_origin == int(block_gap_map[cur_group]["first"]):
-                gap = block_gap_map[cur_group]["front_gap"]
-            if prev_group != cur_group and prev_group in block_gap_map and prev_origin == int(block_gap_map[prev_group]["last"]):
-                gap = block_gap_map[prev_group]["back_gap"]
-            if gap is None:
-                gap = round(max(0.0, original_at_by_idx.get(cur_origin, prev_at) - original_at_by_idx.get(prev_origin, prev_at)), 4)
+            gap = _runtime_gap(prev_row, row)
             prev_at = round(prev_at + max(0.0, _safe_float(gap, 0.0)), 4)
             row["at"] = prev_at
 
