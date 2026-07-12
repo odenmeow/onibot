@@ -2265,6 +2265,9 @@ class App:
                         "timeline_runtime.events_total": runtime.get("events_total"),
                         "timeline_runtime.runtime_version": runtime.get("runtime_version"),
                         "timeline_runtime.execution_round": runtime.get("execution_round"),
+                        "timeline_runtime.current_event.event_id": (runtime.get("current_event") or {}).get("event_id") if isinstance(runtime.get("current_event"), dict) else None,
+                        "timeline_runtime.current_event.target_at": (runtime.get("current_event") or {}).get("target_at") if isinstance(runtime.get("current_event"), dict) else None,
+                        "timeline_runtime.current_event.actual_at": (runtime.get("current_event") or {}).get("actual_at") if isinstance(runtime.get("current_event"), dict) else None,
                     })
                     break
                 except Exception as e:
@@ -3733,6 +3736,7 @@ class App:
                 execution_round = int(prepared.get("execution_round", runtime_meta.get("execution_round", 0)) or 0)
             except Exception:
                 execution_round = 0
+        timing_map = {}
         for idx, ev in enumerate(self.timeline if isinstance(getattr(self, "timeline", []), list) else []):
             if not isinstance(ev, dict):
                 continue
@@ -3745,6 +3749,8 @@ class App:
                 at_ms = 0
             button = str(ev.get("button", "")).strip().lower()
             mapping[self._runtime_event_id(execution_round, idx, action, button, at_ms)] = idx
+            timing_map.setdefault((at_ms, action, button), idx)
+        mapping["__timing__"] = timing_map
         return mapping
 
     def _runtime_event_row_index(self, ev, event_id_to_row):
@@ -3752,6 +3758,22 @@ class App:
             event_id = str(ev.get("event_id", "")).strip()
             if event_id and event_id in event_id_to_row:
                 return int(event_id_to_row[event_id])
+            timing_map = event_id_to_row.get("__timing__", {}) if isinstance(event_id_to_row, dict) else {}
+            action = str(ev.get("type", "")).strip().lower()
+            button = str(ev.get("button", "")).strip().lower()
+            for at_key in ("target_at", "source_target_at"):
+                try:
+                    at_ms = int(round(max(0.0, float(ev.get(at_key, 0.0))) * 1000.0))
+                except Exception:
+                    continue
+                if (at_ms, action, button) in timing_map:
+                    return int(timing_map[(at_ms, action, button)])
+            try:
+                landed = ev.get("runtime_landed_index")
+                if landed is not None:
+                    return int(landed)
+            except Exception:
+                pass
             try:
                 return int(ev.get("original_index"))
             except Exception:
@@ -3765,6 +3787,13 @@ class App:
         events = runtime.get("events", [])
         if not isinstance(events, list):
             events = []
+        if not events:
+            summary_events = []
+            for key in ("last_event", "current_event"):
+                item = runtime.get(key)
+                if isinstance(item, dict) and item not in summary_events:
+                    summary_events.append(item)
+            events = summary_events
         round_traces = list(self.runtime_round_traces) if isinstance(self.runtime_round_traces, list) else []
         self.runtime_trace_status_note = ""
         runtime_state = str(runtime.get("state", "")).strip().lower()
@@ -3864,7 +3893,7 @@ class App:
         self.runtime_status_poll_sequence_id = int(getattr(self, "runtime_status_poll_sequence_id", 0) or 0) + 1
         try:
             if not self.offline_mode:
-                res = self.request_pi({"action": "status"}, write_response=False, channel="status")
+                res = self.request_pi({"action": "status", "view": "summary"}, write_response=False, channel="status")
                 if isinstance(res, dict):
                     changed = self.update_runtime_from_status(res)
                     state = str(self.timeline_runtime_info.get("state", "")).strip().lower()
@@ -4365,14 +4394,18 @@ class App:
                 "at_ms": at_ms,
                 "action": action,
                 "btn": button,
-                "skip_mode": skip_mode
+                "skip_mode": skip_mode,
+                "runtime_landed_index": ev.get("runtime_landed_index"),
+                "runtime_anchor_index": ev.get("runtime_anchor_index"),
+                "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
             })
         payload = {
             "type": "start_task",
             "contract_version": RUNTIME_CONTRACT_VERSION,
             "client_task_id": self._next_client_task_id(),
             "sent_at_ms": sent_at_ms,
-            "timeline": timeline
+            "timeline": timeline,
+            "runtime_debug_enabled": bool(self.config.get("runtime_debug_enabled", False))
         }
         runtime_version_value = prepared.get("runtime_version")
         if runtime_version_value in (None, ""):
@@ -4391,7 +4424,10 @@ class App:
             }
         runtime_meta = copy.deepcopy(runtime_meta) if isinstance(runtime_meta, dict) else {}
         sanitized_runtime_meta = {}
-        for key in ("rslot_count", "randat_executed", "picked_reason", "draw_result"):
+        meta_keys = ("rslot_count", "randat_executed", "picked_reason")
+        if bool(self.config.get("runtime_debug_enabled", False)):
+            meta_keys = meta_keys + ("draw_result", "table_b_preview", "mix_slot_show", "mix_slot_mapping", "mix_slot_mapping_done", "bslot_map", "b_group_mapper", "linker_to_mix_slot_show", "b_to_a_mapper", "apply_order", "group_final_positions", "at_rebase")
+        for key in meta_keys:
             if key in runtime_meta:
                 sanitized_runtime_meta[key] = copy.deepcopy(runtime_meta.get(key))
         sanitized_runtime_meta["execution_round"] = normalized_execution_round
