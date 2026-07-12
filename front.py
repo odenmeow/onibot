@@ -2027,6 +2027,9 @@ class App:
             "type": action,
             "thread_name": thread.name,
             "thread_id": thread.ident,
+            "poll_sequence_id": int(getattr(self, "runtime_status_poll_sequence_id", 0) or 0),
+            "scheduled_after_ms": getattr(self, "runtime_status_poll_scheduled_after_ms", None),
+            "poll_loop_generation": int(getattr(self, "runtime_status_poll_loop_generation", 0) or 0),
         }
         if elapsed_ms is not None:
             entry["elapsed_ms"] = int(max(0.0, elapsed_ms))
@@ -2249,6 +2252,10 @@ class App:
         self.communication_log_queue = queue.Queue()
         self.communication_log_thread = None
         self._start_communication_log_writer()
+        self.runtime_status_poll_scheduled = False
+        self.runtime_status_poll_sequence_id = 0
+        self.runtime_status_poll_loop_generation = 0
+        self.runtime_status_poll_scheduled_after_ms = None
         self.control_conn = None
         self.control_conn_file = None
         self.status_conn = None
@@ -2639,7 +2646,16 @@ class App:
         self.restore_last_selected()
         self.on_json_mode_change()
         self.root.after(50, self.apply_saved_ui_layout)
-        self.root.after(200, self.poll_runtime_status)
+        self._schedule_runtime_status_poll(200)
+
+    def _schedule_runtime_status_poll(self, delay_ms):
+        if bool(getattr(self, "runtime_status_poll_scheduled", False)):
+            return None
+        delay_ms = int(max(0, delay_ms))
+        self.runtime_status_poll_scheduled = True
+        self.runtime_status_poll_scheduled_after_ms = delay_ms
+        self.runtime_status_poll_loop_generation = int(getattr(self, "runtime_status_poll_loop_generation", 0) or 0) + 1
+        return self.root.after(delay_ms, self.poll_runtime_status)
 
     def get_current_paned_sash_x(self):
         self.root.update_idletasks()
@@ -3667,6 +3683,8 @@ class App:
         return changed
 
     def poll_runtime_status(self):
+        self.runtime_status_poll_scheduled = False
+        self.runtime_status_poll_sequence_id = int(getattr(self, "runtime_status_poll_sequence_id", 0) or 0) + 1
         try:
             if not self.offline_mode:
                 res = self.request_pi({"action": "status"}, write_response=False, channel="status")
@@ -3734,7 +3752,8 @@ class App:
             if self.is_auto_connect_enabled():
                 self.monitor_reconnect_pending = True
         finally:
-            self.root.after(RUNTIME_POLL_INTERVAL_MS, self.poll_runtime_status)
+            if not bool(getattr(self, "runtime_status_poll_scheduled", False)):
+                self._schedule_runtime_status_poll(RUNTIME_POLL_INTERVAL_MS)
 
     def clear_runtime_highlight(self, preserve_round_traces=False):
         self.timeline_runtime_info = {"events": []}
