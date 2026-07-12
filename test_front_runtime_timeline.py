@@ -219,6 +219,35 @@ class FrontendMessageRoutingTests(unittest.TestCase):
         self.assertEqual(status_messages, [])
 
 
+    def test_status_and_current_script_are_rendered_in_frontend_field(self):
+        app = self._new_message_app()
+
+        class _FakeVar:
+            def __init__(self, value=""):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = str(value)
+
+        app.status_var = _FakeVar("尚未錄製")
+        app.current_script_var = _FakeVar("")
+        app.current_name = "虛空2_劍豪"
+        app.current_loaded_from_saved = True
+        app._format_current_script_text = App._format_current_script_text.__get__(app, App)
+        app._sync_frontend_context = App._sync_frontend_context.__get__(app, App)
+        app.set_status = App.set_status.__get__(app, App)
+        app.update_current_labels = App.update_current_labels.__get__(app, App)
+
+        app.update_current_labels()
+        app.set_status("已載入：虛空2_劍豪，Runtime 已清空")
+
+        self.assertIn("狀態：已載入：虛空2_劍豪，Runtime 已清空", app.frontend_error_text.value)
+        self.assertIn("腳本：【目前腳本：虛空2_劍豪（已儲存）】", app.frontend_error_text.value)
+
+
 class RuntimeDisplayTests(unittest.TestCase):
     def setUp(self):
         self._orig_showwarning = sys.modules["front"].messagebox.showwarning
