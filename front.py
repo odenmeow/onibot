@@ -2086,7 +2086,7 @@ class App:
         self.current_name = ""
         self.current_loaded_from_saved = False
         self.connected = False
-        self.offline_mode = False
+        self.offline_mode = True
         self.control_request_lock = threading.Lock()
         self.status_request_lock = threading.Lock()
         self.control_conn = None
@@ -2254,18 +2254,11 @@ class App:
         connection_btn_row.pack(fill="x", padx=8, pady=(0, 4))
         self.connection_btn_row = connection_btn_row
         self.connection_buttons = [
-            tk.Button(connection_btn_row, text="釋放GPIO", command=self.release_gpio, width=10),
-            tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10),
             tk.Button(connection_btn_row, text="測試連線", command=self.ping_pi, width=10),
             tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10),
+            tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10),
+            tk.Button(connection_btn_row, text="釋放GPIO", command=self.release_gpio, width=10),
         ]
-        self.auto_connect_toggle_btn = tk.Button(
-            connection_btn_row,
-            text="暫停自動重連",
-            command=self.toggle_auto_connect,
-            width=12
-        )
-        self.connection_buttons.append(self.auto_connect_toggle_btn)
         for btn in self.connection_buttons:
             btn.pack(side="left", padx=4)
         self.update_auto_connect_ui()
@@ -2485,7 +2478,6 @@ class App:
         self.restore_last_selected()
         self.on_json_mode_change()
         self.root.after(50, self.apply_saved_ui_layout)
-        self.root.after(150, self.auto_connect)
         self.root.after(200, self.poll_runtime_status)
 
     def get_current_paned_sash_x(self):
