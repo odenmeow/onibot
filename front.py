@@ -112,6 +112,20 @@ def ensure_log_dir():
     return log_dir
 
 
+def format_daily_log_line(entry):
+    try:
+        timestamp = float(entry.get("timestamp", time.time()))
+    except Exception:
+        timestamp = time.time()
+    text = str(entry.get("message") or "").strip()
+    label = str(entry.get("category") or "未分類").strip() or "未分類"
+    lines = text.splitlines() or [text]
+    formatted_message = lines[0]
+    if len(lines) > 1:
+        formatted_message += "\n" + "\n".join("    " + line for line in lines[1:])
+    return "[{}] [{}] {}\n".format(time.strftime("%H:%M:%S", time.localtime(timestamp)), label, formatted_message)
+
+
 def append_daily_log(category, message):
     text = str(message or "").strip()
     if not text or text == "無":
@@ -119,13 +133,13 @@ def append_daily_log(category, message):
     try:
         log_dir = ensure_log_dir()
         log_path = os.path.join(log_dir, time.strftime("%Y-%m-%d.log"))
-        label = str(category or "未分類").strip() or "未分類"
-        lines = text.splitlines() or [text]
-        formatted_message = lines[0]
-        if len(lines) > 1:
-            formatted_message += "\n" + "\n".join("    " + line for line in lines[1:])
+        entry = {
+            "timestamp": time.time(),
+            "category": category,
+            "message": text,
+        }
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write("[{}] [{}] {}\n".format(time.strftime("%H:%M:%S"), label, formatted_message))
+            f.write(format_daily_log_line(entry))
     except Exception:
         pass
 
@@ -1494,8 +1508,116 @@ class App:
         widget.insert(tk.END, message or "無")
         widget.config(state="disabled")
 
+    def _start_daily_log_writer(self):
+        if getattr(self, "daily_log_thread", None) is not None:
+            return
+        self.daily_log_thread = threading.Thread(
+            target=self._daily_log_writer_loop,
+            name="daily-log-writer",
+            daemon=True
+        )
+        self.daily_log_thread.start()
+
+    def _flush_daily_log_entries(self, entries):
+        if not entries:
+            return
+        try:
+            lines_by_path = {}
+            for entry in entries:
+                try:
+                    timestamp = float(entry.get("timestamp", time.time()))
+                    log_path = os.path.join(ensure_log_dir(), time.strftime("%Y-%m-%d.log", time.localtime(timestamp)))
+                    lines_by_path.setdefault(log_path, []).append(format_daily_log_line(entry))
+                except Exception:
+                    pass
+            for log_path, lines in lines_by_path.items():
+                if not lines:
+                    continue
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write("".join(lines))
+        except Exception:
+            pass
+
+    def _daily_log_writer_loop(self):
+        buffer = []
+        last_flush = time.monotonic()
+        flush_interval_sec = 5.0
+        max_batch_size = 500
+        while not self.daily_log_stop_event.is_set():
+            timeout = max(0.1, flush_interval_sec - (time.monotonic() - last_flush))
+            got_entry = False
+            try:
+                entry = self.daily_log_queue.get(timeout=timeout)
+                got_entry = True
+                if entry is not None:
+                    buffer.append(entry)
+            except queue.Empty:
+                pass
+            except Exception:
+                pass
+
+            now = time.monotonic()
+            should_flush = buffer and ((now - last_flush) >= flush_interval_sec or len(buffer) >= max_batch_size)
+            if should_flush:
+                to_write = buffer[:max_batch_size]
+                del buffer[:max_batch_size]
+                self._flush_daily_log_entries(to_write)
+                last_flush = time.monotonic()
+
+            if got_entry:
+                try:
+                    self.daily_log_queue.task_done()
+                except Exception:
+                    pass
+
+        while True:
+            try:
+                entry = self.daily_log_queue.get_nowait()
+                if entry is not None:
+                    buffer.append(entry)
+                try:
+                    self.daily_log_queue.task_done()
+                except Exception:
+                    pass
+            except queue.Empty:
+                break
+            except Exception:
+                break
+        self._flush_daily_log_entries(buffer)
+
     def _log_message(self, category, message):
-        append_daily_log(category, message)
+        text = str(message or "").strip()
+        if not text or text == "無":
+            return
+        try:
+            self.daily_log_queue.put_nowait({
+                "timestamp": time.time(),
+                "category": category,
+                "message": text,
+            })
+        except Exception:
+            pass
+
+    def on_close(self):
+        try:
+            self.daily_log_stop_event.set()
+            if getattr(self, "daily_log_queue", None) is not None:
+                self.daily_log_queue.put_nowait(None)
+            if getattr(self, "daily_log_thread", None) is not None:
+                self.daily_log_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            if getattr(self, "communication_log_queue", None) is not None:
+                self.communication_log_queue.put_nowait(None)
+            if getattr(self, "communication_log_thread", None) is not None:
+                self.communication_log_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def set_frontend_error(self, message):
         self.frontend_error_main = str(message or "").strip()
@@ -1991,28 +2113,78 @@ class App:
         self.communication_log_thread.start()
 
     def _communication_log_writer_loop(self):
+        buffer = []
+        last_flush = time.monotonic()
+        flush_interval_sec = 5.0
+        max_batch_size = 1000
         while True:
-            entry = self.communication_log_queue.get()
+            timeout = max(0.1, flush_interval_sec - (time.monotonic() - last_flush))
+            got_entry = False
+            stop_requested = False
             try:
+                entry = self.communication_log_queue.get(timeout=timeout)
+                got_entry = True
                 if entry is None:
-                    return
-                os.makedirs(os.path.dirname(self.communication_log_path), exist_ok=True)
-                line = json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
-                with open(self.communication_log_path, "a", encoding="utf-8") as f:
-                    f.write(line)
+                    stop_requested = True
+                else:
+                    buffer.append(entry)
+            except queue.Empty:
+                pass
             except Exception:
                 pass
-            finally:
+
+            now = time.monotonic()
+            should_flush = buffer and (
+                stop_requested
+                or (now - last_flush) >= flush_interval_sec
+                or len(buffer) >= max_batch_size
+            )
+            if should_flush:
+                to_write = buffer[:max_batch_size]
+                del buffer[:max_batch_size]
+                self._flush_communication_log_entries(to_write)
+                last_flush = time.monotonic()
+
+            if got_entry:
                 try:
                     self.communication_log_queue.task_done()
                 except Exception:
                     pass
+            if stop_requested:
+                self._flush_communication_log_entries(buffer)
+                return
+
+    def _flush_communication_log_entries(self, entries):
+        if not entries:
+            return
+        try:
+            log_dir = os.path.dirname(self.communication_log_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            lines = [
+                json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+                for entry in entries
+            ]
+            with open(self.communication_log_path, "a", encoding="utf-8") as f:
+                f.write("".join(lines))
+        except Exception:
+            pass
+
+    def _truncate_communication_log_field(self, copied, field_name, max_chars=8192):
+        value = copied.get(field_name)
+        if not isinstance(value, str):
+            return
+        copied[field_name + "_byte_length_original"] = len(value.encode("utf-8"))
+        if len(value) > max_chars:
+            copied[field_name] = value[:max_chars]
 
     def _enqueue_communication_log(self, entry):
         try:
             if not getattr(self, "communication_log_enabled", True):
                 return
-            copied = copy.deepcopy(entry)
+            copied = dict(entry)
+            self._truncate_communication_log_field(copied, "payload_json_text")
+            self._truncate_communication_log_field(copied, "raw_response_text")
             self.communication_log_queue.put_nowait(copied)
         except Exception:
             pass
@@ -2252,6 +2424,11 @@ class App:
         self.communication_log_queue = queue.Queue()
         self.communication_log_thread = None
         self._start_communication_log_writer()
+        self.daily_log_queue = queue.Queue()
+        self.daily_log_thread = None
+        self.daily_log_stop_event = threading.Event()
+        self._start_daily_log_writer()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.runtime_status_poll_scheduled = False
         self.runtime_status_poll_sequence_id = 0
         self.runtime_status_poll_loop_generation = 0
