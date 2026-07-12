@@ -1806,20 +1806,19 @@ class App:
         return result["value"]
 
     def show_warning(self, title, message, **kwargs):
-        self.set_status(str(message or title or "提醒"))
+        self.set_frontend_error(str(message or title or "提醒"))
         if not hasattr(self.root, "tk"):
             return self._show_app_dialog(title, message, dialog_type="warning", buttons="ok")
         return "ok"
 
     def show_info(self, title, message, **kwargs):
-        self.set_status(str(message or title or "提示"))
+        self.set_frontend_error(str(message or title or "提示"))
         if not hasattr(self.root, "tk"):
             return self._show_app_dialog(title, message, dialog_type="info", buttons="ok")
         return "ok"
 
     def show_error(self, title, message, **kwargs):
         text = str(message or title or "錯誤")
-        self.set_status(text)
         self.set_frontend_error(text)
         if not hasattr(self.root, "tk"):
             return self._show_app_dialog(title, text, dialog_type="error", buttons="ok")
@@ -2175,11 +2174,11 @@ class App:
         top = tk.LabelFrame(left_content_paned, text="操作區")
 
         btn_specs = [
+            ("停止", self.stop_pi, "#ff8c69"),
             ("重新分析", self.analyze, "#fff4b3"),
             ("開始錄製", self.toggle_record, "#9be58b"),
             ("重複執行", self.send_timeline_loop, "#b7f0ad"),
             ("暫停", self.pause_runtime, "#ffd98c"),
-            ("停止", self.stop_pi, "#ff8c69"),
         ]
         btn_count = len(btn_specs)
         self.top_control_buttons = []
@@ -2187,7 +2186,7 @@ class App:
         self.status_var = tk.StringVar(value="尚未錄製")
         self.status_label = tk.Label(top, textvariable=self.status_var, anchor="w")
         self.status_label.grid(
-            row=0, column=0, columnspan=btn_count, sticky="we", padx=8, pady=(6, 2)
+            row=1, column=0, columnspan=btn_count, sticky="we", padx=8, pady=(2, 2)
         )
         self.record_button = None
         self.loop_button = None
@@ -2199,8 +2198,8 @@ class App:
                 kwargs["bg"] = color
             btn = tk.Button(top, **kwargs)
             self.top_control_buttons.append(btn)
-            btn.grid(row=1, column=idx, padx=4, pady=(2, 8))
-            if idx == 1:
+            btn.grid(row=0, column=idx, padx=4, pady=(6, 2))
+            if txt == "開始錄製":
                 self.record_button = btn
             elif txt == "重複執行":
                 self.loop_button = btn
@@ -2527,11 +2526,11 @@ class App:
 
     def _layout_left_controls_wide(self):
         btn_count = max(1, len(getattr(self, "top_control_buttons", [])))
-        self.status_label.grid_configure(columnspan=btn_count)
+        self.status_label.grid_configure(row=1, column=0, columnspan=btn_count, sticky="we", padx=8, pady=(2, 2))
         self.current_script_label.grid_configure(row=2, column=0, columnspan=btn_count, sticky="w")
         for idx, btn in enumerate(self.top_control_buttons):
             btn.grid_forget()
-            btn.grid(row=1, column=idx, padx=4, pady=(2, 8))
+            btn.grid(row=0, column=idx, padx=4, pady=(6, 2))
         for idx in range(btn_count):
             self.top_panel.grid_columnconfigure(idx, weight=0)
 
@@ -2550,11 +2549,12 @@ class App:
         self.left_optional_panes_hidden = False
 
     def _layout_left_controls_compact(self):
-        self.status_label.grid_configure(columnspan=1)
-        self.current_script_label.grid_configure(row=1 + len(self.top_control_buttons), column=0, columnspan=1, sticky="we")
+        btn_count = len(self.top_control_buttons)
+        self.status_label.grid_configure(row=btn_count, column=0, columnspan=1, sticky="we", padx=8, pady=(2, 2))
+        self.current_script_label.grid_configure(row=btn_count + 1, column=0, columnspan=1, sticky="we")
         for idx, btn in enumerate(self.top_control_buttons):
             btn.grid_forget()
-            btn.grid(row=1 + idx, column=0, padx=8, pady=2, sticky="we")
+            btn.grid(row=idx, column=0, padx=8, pady=2, sticky="we")
         self.top_panel.grid_columnconfigure(0, weight=1)
 
         self._pack_buttons_vertical(getattr(self, "connection_buttons", []), padx=0)

@@ -185,6 +185,40 @@ class _FakeTextWidget:
         self.value = str(text)
 
 
+class FrontendMessageRoutingTests(unittest.TestCase):
+    def _new_message_app(self):
+        app = App.__new__(App)
+        app.root = types.SimpleNamespace(tk=True)
+        app.frontend_error_text = _FakeTextWidget()
+        app.frontend_error_main = ""
+        app.frontend_monitor_alert = ""
+        app.frontend_monitor_alert_level = ""
+        app.last_control_error = ""
+        app.last_status_error = ""
+        app.ack_timeout_recovered = False
+        app.update_error_text = App.update_error_text.__get__(app, App)
+        app._render_frontend_error = App._render_frontend_error.__get__(app, App)
+        app._is_ack_timeout_message = App._is_ack_timeout_message.__get__(app, App)
+        return app
+
+    def test_dialog_messages_route_to_frontend_error_panel_not_operation_status(self):
+        app = self._new_message_app()
+        status_messages = []
+        app.set_status = lambda msg: status_messages.append(msg)
+
+        self.assertEqual(app.show_warning("提醒", "警告訊息"), "ok")
+        self.assertEqual(app.frontend_error_text.value, "警告訊息")
+        self.assertEqual(status_messages, [])
+
+        self.assertEqual(app.show_info("提示", "一般訊息"), "ok")
+        self.assertEqual(app.frontend_error_text.value, "一般訊息")
+        self.assertEqual(status_messages, [])
+
+        self.assertEqual(app.show_error("錯誤", "錯誤訊息"), "ok")
+        self.assertEqual(app.frontend_error_text.value, "錯誤訊息")
+        self.assertEqual(status_messages, [])
+
+
 class RuntimeDisplayTests(unittest.TestCase):
     def setUp(self):
         self._orig_showwarning = sys.modules["front"].messagebox.showwarning
