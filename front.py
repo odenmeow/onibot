@@ -720,6 +720,25 @@ def build_pr_segment_summary(pairs, segments=None):
     return summary
 
 
+def parse_pr_range_text(text, max_rank=99):
+    upper = max(0, int(max_rank or 0))
+    raw = str(text or "").strip().lower().replace(" ", "")
+    if not raw:
+        return (0, upper)
+    numbers = [int(value) for value in re.findall(r"\d+", raw)]
+    if not numbers:
+        return (0, upper)
+    if len(numbers) == 1:
+        start = end = numbers[0]
+    else:
+        start, end = numbers[0], numbers[1]
+    start = min(max(0, start), upper)
+    end = min(max(0, end), upper)
+    if start > end:
+        start, end = end, start
+    return (start, end)
+
+
 def analyze_pr_gap_events(events, top_n=100):
     ordered, pairs = build_pr_gap_pairs(events)
     if top_n is None:
@@ -812,6 +831,66 @@ def apply_positive_jitter(base_value, jitter):
     base = max(0.0, _safe_float(base_value, 0.0))
     j = max(0.0, _safe_float(jitter, 0.0))
     return round(base + random.uniform(0.0, j), 4)
+
+
+RUNTIME_MIN_GAP_EPSILON = 1e-9
+
+
+def _is_executable_runtime_event(ev):
+    return str((ev or {}).get("type", "")).strip().lower() in ("press", "release")
+
+
+def enforce_runtime_min_gap_by_row_order(events, minimum_gap):
+    min_gap = max(0.0, _safe_float(minimum_gap, 0.0))
+    working = copy.deepcopy(events if isinstance(events, list) else [])
+    adjustments = []
+    previous_exec_idx = None
+    for idx, ev in enumerate(working):
+        if not _is_executable_runtime_event(ev):
+            continue
+        current_at = _safe_float(ev.get("at", 0.0), 0.0)
+        if previous_exec_idx is not None:
+            prev = working[previous_exec_idx]
+            prev_at = _safe_float(prev.get("at", 0.0), 0.0)
+            required_at = prev_at + min_gap
+            if current_at + RUNTIME_MIN_GAP_EPSILON < required_at:
+                delta = required_at - current_at
+                for shift_idx in range(idx, len(working)):
+                    shifted_at = _safe_float(working[shift_idx].get("at", 0.0), 0.0) + delta
+                    working[shift_idx]["at"] = round(shifted_at, 4)
+                adjustments.append({
+                    "prev_runtime_idx": int(previous_exec_idx),
+                    "runtime_idx": int(idx),
+                    "prev_type": str(prev.get("type", "")),
+                    "prev_button": str(prev.get("button", prev.get("button_id", ""))),
+                    "type": str(ev.get("type", "")),
+                    "button": str(ev.get("button", ev.get("button_id", ""))),
+                    "at_before": round(current_at, 4),
+                    "required_at": round(required_at, 4),
+                    "at_after": round(_safe_float(working[idx].get("at", 0.0), 0.0), 4),
+                    "delta": round(delta, 4),
+                })
+        previous_exec_idx = idx
+    return working, adjustments
+
+
+def validate_runtime_min_gap_by_row_order(events, minimum_gap):
+    min_gap = max(0.0, _safe_float(minimum_gap, 0.0))
+    executable = [(idx, ev) for idx, ev in enumerate(events if isinstance(events, list) else []) if _is_executable_runtime_event(ev)]
+    for pos in range(1, len(executable)):
+        prev_idx, prev = executable[pos - 1]
+        cur_idx, cur = executable[pos]
+        prev_at = _safe_float(prev.get("at", 0.0), 0.0)
+        cur_at = _safe_float(cur.get("at", 0.0), 0.0)
+        if prev_at + min_gap > cur_at + RUNTIME_MIN_GAP_EPSILON:
+            return {
+                "valid": False,
+                "previous": {"runtime_idx": prev_idx, "type": prev.get("type", ""), "button": prev.get("button", ""), "at": round(prev_at, 4)},
+                "current": {"runtime_idx": cur_idx, "type": cur.get("type", ""), "button": cur.get("button", ""), "at": round(cur_at, 4)},
+                "minimum_gap": round(min_gap, 4),
+                "gap": round(cur_at - prev_at, 4),
+            }
+    return {"valid": True, "minimum_gap": round(min_gap, 4)}
 
 
 def is_slot_excluded_buff_group(value):
@@ -1467,92 +1546,119 @@ def validate_randat_runtime_table(original_events, runtime_events, assignment=No
     return {"risks": risks, "min_gap": min_gap_seen}
 
 
-def analyze_randat_safety_timeline(events, minimum_gap, max_assignments=50000, allocator=allocate_randat_blocks):
+def _build_press_release_pairs(events):
+    pairs = []
+    warnings = []
+    open_by_button = {}
+    for row, ev in enumerate(events if isinstance(events, list) else []):
+        ev_type = str((ev or {}).get("type", "")).strip().lower()
+        if ev_type not in ("press", "release"):
+            continue
+        button = str((ev or {}).get("button", (ev or {}).get("button_id", ""))).strip()
+        if not button:
+            warnings.append({"kind": "missing_button", "row": row, "type": ev_type})
+            continue
+        if ev_type == "press":
+            if button in open_by_button:
+                warnings.append({"kind": "duplicate_press", "button": button, "previous_press_row": open_by_button[button], "row": row})
+            open_by_button[button] = row
+        else:
+            press_row = open_by_button.pop(button, None)
+            if press_row is None:
+                warnings.append({"kind": "release_without_press", "button": button, "release_row": row})
+            else:
+                pairs.append({"button": button, "press_row": int(press_row), "release_row": int(row)})
+    for button, press_row in sorted(open_by_button.items(), key=lambda item: item[1]):
+        warnings.append({"kind": "press_without_release", "button": button, "press_row": int(press_row)})
+    return pairs, warnings
+
+
+def _build_buff_group_blocks(events):
+    rows_by_group = {}
+    for row, ev in enumerate(events if isinstance(events, list) else []):
+        group = str((ev or {}).get("buff_group", "")).strip()
+        if not group or is_slot_excluded_buff_group(group):
+            continue
+        rows_by_group.setdefault(group, []).append(row)
+    blocks = []
+    warnings = []
+    for group, rows in sorted(rows_by_group.items(), key=lambda item: (str(item[0]), item[1][0])):
+        first = min(rows)
+        last = max(rows)
+        expected = list(range(first, last + 1))
+        if rows != expected:
+            warnings.append({"kind": "non_contiguous_buff_group", "group": group, "rows": list(rows), "first_row": first, "last_row": last})
+            continue
+        blocks.append({"group": group, "first_row": int(first), "last_row": int(last), "rows": list(rows)})
+    return blocks, warnings
+
+
+def analyze_randat_safety_timeline(events, minimum_gap=0.0, max_assignments=None, allocator=None):
     original = copy.deepcopy(events if isinstance(events, list) else [])
-    min_gap = max(0.0, _safe_float(minimum_gap, 0.0))
-    descriptors = build_randat_slot_descriptors(original)
-    blocks = descriptors.get("blocks", [])
-    slots = descriptors.get("slots", [])
-    result = {"safe": True, "risk_count": 0, "risks": [], "buff_group_count": len(blocks), "slot_count": len(slots), "minimum_gap": round(min_gap, 4), "max_at_jitter": 0.0, "jitter_rule": "gap > max(current.at_jitter, next.at_jitter)", "checked_assignments": 0, "complete_enumeration": False, "block_internal_min_gap": None, "slot_boundary_min_gap": None, "table_b_min_gap": None, "unsafe_group_slot_count": 0, "unsafe_empty_slot_count": 0, "block_internal_risk_count": 0, "message": ""}
-    jitters = [max(0.0, _safe_float(ev.get("at_jitter", 0.0), 0.0)) for ev in original if isinstance(ev, dict)]
-    result["max_at_jitter"] = round(max(jitters) if jitters else 0.0, 4)
-    if not blocks and not slots:
-        result["message"] = "無 randat／無需分析"
-        return result
-    if min_gap <= result["max_at_jitter"]:
-        result["risks"].append({"kind": "minimum_gap", "gap": min_gap, "jitter": result["max_at_jitter"], "message": "minimum gap 必須嚴格大於最大 at_jitter"})
-    for slot in slots:
-        left_idx = slot.get("left_idx")
-        right_idx = slot.get("right_idx")
-        if left_idx is None or right_idx is None:
-            continue
-        if slot.get("kind") == "randat" and int(left_idx) != int(slot.get("slot", -1)):
-            gap = round(_safe_float(original[int(slot.get("slot"))].get("at", 0.0), 0.0) - _safe_float(original[int(left_idx)].get("at", 0.0), 0.0), 4)
-            limit = _randat_jitter_limit(original[int(left_idx)], original[int(slot.get("slot"))])
-            if gap < min_gap or gap <= limit:
-                result["risks"].append({"kind": "slot_boundary", "slot": slot.get("slot"), "side": "front", "row_a": left_idx, "row_b": slot.get("slot"), "gap": gap, "jitter": limit, "group": ""})
-        if slot.get("kind") == "randat" and int(right_idx) != int(slot.get("slot", -1)):
-            gap = round(_safe_float(original[int(right_idx)].get("at", 0.0), 0.0) - _safe_float(original[int(slot.get("slot"))].get("at", 0.0), 0.0), 4)
-            limit = _randat_jitter_limit(original[int(slot.get("slot"))], original[int(right_idx)])
-            if gap < min_gap or gap <= limit:
-                result["risks"].append({"kind": "slot_boundary", "slot": slot.get("slot"), "side": "back", "row_a": slot.get("slot"), "row_b": right_idx, "gap": gap, "jitter": limit, "group": ""})
+    pairs, pair_warnings = _build_press_release_pairs(original)
+    blocks, block_warnings = _build_buff_group_blocks(original)
+    randat_rows = [
+        row for row, ev in enumerate(original)
+        if str((ev or {}).get("type", "")).strip().lower() == "randat"
+    ]
+    risks = []
+    for row in randat_rows:
+        for pair in pairs:
+            if int(pair["press_row"]) < row < int(pair["release_row"]):
+                risks.append({
+                    "kind": "randat_slot_inside_pair",
+                    "slot_type": "randat",
+                    "slot": int(row),
+                    "row": int(row),
+                    "button": pair.get("button", ""),
+                    "press_row": int(pair.get("press_row", -1)),
+                    "release_row": int(pair.get("release_row", -1)),
+                })
     for block in blocks:
+        first = int(block["first_row"])
+        last = int(block["last_row"])
         group = str(block.get("group", ""))
-        for a_idx, b_idx in block.get("internal_pairs", []):
-            a, b = original[a_idx], original[b_idx]
-            gap = round(_safe_float(b.get("at", 0.0), 0.0) - _safe_float(a.get("at", 0.0), 0.0), 4)
-            limit = _randat_jitter_limit(a, b)
-            result["block_internal_min_gap"] = gap if result["block_internal_min_gap"] is None else min(result["block_internal_min_gap"], gap)
-            if gap <= limit:
-                result["risks"].append({"kind": "block_internal", "group": group, "row_a": a_idx, "row_b": b_idx, "button_a": a.get("button", ""), "button_b": b.get("button", ""), "type_a": a.get("type", ""), "type_b": b.get("type", ""), "gap": gap, "jitter": limit})
-                result["block_internal_risk_count"] += 1
-    for block in blocks:
-        group = str(block.get("group", ""))
-        first_ev = original[int(block.get("first"))]
-        last_ev = original[int(block.get("last"))]
-        for slot in slots:
-            left_idx = slot.get("left_idx")
-            right_idx = slot.get("right_idx")
-            if left_idx is None or right_idx is None:
+        for pair in pairs:
+            press_row = int(pair.get("press_row", -1))
+            release_row = int(pair.get("release_row", -1))
+            press_ev = original[press_row] if 0 <= press_row < len(original) else {}
+            release_ev = original[release_row] if 0 <= release_row < len(original) else {}
+            pair_inside_same_group = (
+                first <= press_row <= last
+                and first <= release_row <= last
+                and str(press_ev.get("buff_group", "")).strip() == group
+                and str(release_ev.get("buff_group", "")).strip() == group
+            )
+            if pair_inside_same_group:
                 continue
-            left_ev, right_ev = original[int(left_idx)], original[int(right_idx)]
-            if slot.get("kind") == "randat" and _safe_float(slot.get("total_gap", 0.0), 0.0) < (2.0 * min_gap):
-                result["risks"].append({"kind": "group_slot", "group": group, "slot": slot.get("slot"), "side": "randat", "gap": slot.get("total_gap", 0.0), "jitter": min_gap, "message": "randat 總空間不足"})
-                result["unsafe_group_slot_count"] += 1
-                continue
-            checks = (("front", slot.get("front_gap", 0.0), left_idx, int(block.get("first")), _randat_jitter_limit(left_ev, first_ev)), ("back", slot.get("back_gap", 0.0), int(block.get("last")), right_idx, _randat_jitter_limit(last_ev, right_ev)))
-            unsafe = False
-            for side, gap, row_a, row_b, limit in checks:
-                gap = round(_safe_float(gap, 0.0), 4)
-                result["slot_boundary_min_gap"] = gap if result["slot_boundary_min_gap"] is None else min(result["slot_boundary_min_gap"], gap)
-                if gap < min_gap or gap <= limit:
-                    result["risks"].append({"kind": "group_slot", "group": group, "slot": slot.get("slot"), "side": side, "row_a": row_a, "row_b": row_b, "gap": gap, "jitter": limit})
-                    unsafe = True
-            if unsafe:
-                result["unsafe_group_slot_count"] += 1
-            result["checked_assignments"] += 1
-    for slot in slots:
-        if slot.get("kind") != "buff":
-            continue
-        left_idx = slot.get("left_idx")
-        right_idx = slot.get("right_idx")
-        if left_idx is None or right_idx is None:
-            continue
-        gap = round(_safe_float(slot.get("empty_gap", 0.0), 0.0), 4)
-        limit = _randat_jitter_limit(original[int(left_idx)], original[int(right_idx)])
-        if gap < min_gap or gap <= limit:
-            result["risks"].append({"kind": "empty_slot", "slot": slot.get("slot"), "row_a": left_idx, "row_b": right_idx, "gap": gap, "jitter": limit})
-            result["unsafe_empty_slot_count"] += 1
-    if allocator is not allocate_randat_blocks and blocks:
-        assignment = {str(block.get("group")): int(slots[pos % len(slots)].get("slot")) for pos, block in enumerate(blocks)} if slots else {}
-        runtime, _assign, _traces, _debug = allocator(copy.deepcopy(original), execution_round=1, assignment_override=assignment)
-        validation = validate_randat_runtime_table(original, runtime, assignment, min_gap)
-        result["checked_assignments"] += 1
-        if validation.get("min_gap") is not None:
-            result["table_b_min_gap"] = validation.get("min_gap")
-        result["risks"].extend(validation.get("risks", []))
-    result["risk_count"] = len(result["risks"])
-    result["safe"] = result["risk_count"] == 0
+            crosses_boundary = press_row < first < release_row or press_row < last < release_row or (first <= press_row <= last < release_row)
+            if crosses_boundary:
+                risks.append({
+                    "kind": "buff_slot_crossed_by_pair",
+                    "slot_type": "buff",
+                    "group": group,
+                    "first_row": first,
+                    "last_row": last,
+                    "button": pair.get("button", ""),
+                    "press_row": press_row,
+                    "release_row": release_row,
+                })
+    structure_warnings = pair_warnings + block_warnings
+    result = {
+        "safe": not risks,
+        "risk_count": len(risks),
+        "risks": risks,
+        "structure_warning_count": len(structure_warnings),
+        "structure_warnings": structure_warnings,
+        "randat_slot_count": len(randat_rows),
+        "buff_slot_count": len(blocks),
+        "buff_group_count": len(blocks),
+        "slot_count": len(randat_rows) + len(blocks),
+        "pair_count": len(pairs),
+        "pairs": pairs,
+        "minimum_gap": round(max(0.0, _safe_float(minimum_gap, 0.0)), 4),
+        "message": "" if (randat_rows or blocks) else "無 randat／buff slot，無需分析",
+    }
     return result
 
 
@@ -6628,6 +6734,35 @@ class App:
             ev["buff_jitter_sec"] = round(jitter, 4)
             ev["at_random_sec"] = 0.0
             ev["skip_mode"] = normalize_front_skip_mode(ev.get("skip_mode", self.config.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)))
+        try:
+            runtime_min_gap = max(0.0, _safe_float(self.minimum_gap_entry.get().strip(), 0.05))
+        except Exception:
+            runtime_min_gap = 0.05
+        events, runtime_min_gap_adjustments = enforce_runtime_min_gap_by_row_order(events, runtime_min_gap)
+        runtime_min_gap_validation = validate_runtime_min_gap_by_row_order(events, runtime_min_gap)
+        runtime_min_gap_diagnostic = {
+            "configured_minimum_gap": round(runtime_min_gap, 4),
+            "adjusted_pair_count": len(runtime_min_gap_adjustments),
+            "total_shift_sec": round(sum(_safe_float(row.get("delta", 0.0), 0.0) for row in runtime_min_gap_adjustments), 4),
+            "adjustments": copy.deepcopy(runtime_min_gap_adjustments[:50]),
+        }
+        if not runtime_min_gap_validation.get("valid", False):
+            runtime_min_gap_diagnostic["validation_error"] = copy.deepcopy(runtime_min_gap_validation)
+            msg = "runtime minimum gap 驗證失敗：row {prev} {ptype} {pbtn} at={pat:.4f} → row {cur} {ctype} {cbtn} at={cat:.4f}，gap={gap:.4f} < minimum_gap={min_gap:.4f}".format(
+                prev=runtime_min_gap_validation.get("previous", {}).get("runtime_idx", ""),
+                ptype=runtime_min_gap_validation.get("previous", {}).get("type", ""),
+                pbtn=runtime_min_gap_validation.get("previous", {}).get("button", ""),
+                pat=_safe_float(runtime_min_gap_validation.get("previous", {}).get("at", 0.0), 0.0),
+                cur=runtime_min_gap_validation.get("current", {}).get("runtime_idx", ""),
+                ctype=runtime_min_gap_validation.get("current", {}).get("type", ""),
+                cbtn=runtime_min_gap_validation.get("current", {}).get("button", ""),
+                cat=_safe_float(runtime_min_gap_validation.get("current", {}).get("at", 0.0), 0.0),
+                gap=_safe_float(runtime_min_gap_validation.get("gap", 0.0), 0.0),
+                min_gap=runtime_min_gap,
+            )
+            self.set_frontend_error(msg)
+            self.show_warning("送出已阻擋", msg)
+            return (None, None, "") if return_backend else (None, "")
         runtime_display_events = self.copy_events(events)
         for idx, ev in enumerate(runtime_display_events):
             ev["runtime_source_index"] = idx
@@ -6680,7 +6815,8 @@ class App:
                 "apply_order": copy.deepcopy(randat_debug.get("apply_order", [])),
                 "placement_ledger": copy.deepcopy(randat_debug.get("placement_ledger", [])),
                 "group_final_positions": copy.deepcopy(randat_debug.get("group_final_positions", {})),
-                "at_rebase": copy.deepcopy(randat_debug.get("at_rebase", {}))
+                "at_rebase": copy.deepcopy(randat_debug.get("at_rebase", {})),
+                "runtime_min_gap": copy.deepcopy(runtime_min_gap_diagnostic)
             },
             "resolve_note": resolve_note
         }
@@ -7278,38 +7414,46 @@ class App:
         lines = [
             "Randat 輔助判斷",
             "",
-            "buff groups：{}".format(result.get("buff_group_count", 0)),
-            "合法 slots：{}".format(result.get("slot_count", 0)),
-            "已{}檢查配置：{}".format("完整" if result.get("complete_enumeration", True) else "抽樣/成對", result.get("checked_assignments", 0)),
-            "",
-            "minimum gap：{:.3f}".format(result.get("minimum_gap", 0.0)),
-            "最大 at_jitter：{:.3f}".format(result.get("max_at_jitter", 0.0)),
-            "採用規則：{}".format(result.get("jitter_rule", "")),
-            "block 內部最小 gap：{}".format(result.get("block_internal_min_gap")),
-            "slot 邊界最小 gap：{}".format(result.get("slot_boundary_min_gap")),
-            "模擬 Table B 最小 gap：{}".format(result.get("table_b_min_gap")),
+            "randat slots：{}".format(result.get("randat_slot_count", 0)),
+            "buff slots：{}".format(result.get("buff_slot_count", 0)),
+            "檢查的 press/release pairs：{}".format(result.get("pair_count", 0)),
             "",
         ]
         if result.get("message"):
             lines.append(str(result.get("message")))
         if result.get("safe"):
-            lines.extend(["結果：安全", "所有已檢查配置皆滿足 gap > jitter。"])
+            lines.extend([
+                "結果：安全",
+                "",
+                "所有 randat slot 均不位於按鍵 pair 中間。",
+                "所有 buff slot 均未被外部按鍵 pair 跨越。",
+            ])
         else:
             risks = result.get("risks", [])
-            lines.append("結果：發現 {} 個風險".format(len(risks)))
-            for risk in risks[:10]:
-                lines.extend([
-                    "",
-                    "{} group {} → slot {}".format(risk.get("kind", ""), risk.get("group", ""), risk.get("slot", "")),
-                    "row {} → {}".format(risk.get("row_a", ""), risk.get("row_b", "")),
-                    "{} {} / {} {}".format(risk.get("type_a", ""), risk.get("button_a", ""), risk.get("type_b", ""), risk.get("button_b", "")),
-                    "gap：{:.3f}".format(_safe_float(risk.get("gap", 0.0), 0.0)),
-                    "jitter limit：{:.3f}".format(_safe_float(risk.get("jitter", 0.0), 0.0)),
-                ])
-                if risk.get("message"):
-                    lines.append(str(risk.get("message")))
-        if not result.get("complete_enumeration", True):
-            lines.append("\n警告：配置數超過上限，已改用 pairwise 與 deterministic sample。")
+            warnings = result.get("structure_warnings", [])
+            lines.append("結果：發現 {} 個 slot 位置問題".format(len(risks)))
+            for idx, risk in enumerate(risks[:20], start=1):
+                lines.append("")
+                if risk.get("kind") == "randat_slot_inside_pair":
+                    lines.extend([
+                        "{}. randat slot row {}".format(idx, risk.get("slot", "")),
+                        "   位於 {} pair 中間".format(risk.get("button", "")),
+                        "   press row {}".format(risk.get("press_row", "")),
+                        "   release row {}".format(risk.get("release_row", "")),
+                    ])
+                elif risk.get("kind") == "buff_slot_crossed_by_pair":
+                    lines.extend([
+                        "{}. buff slot group {}".format(idx, risk.get("group", "")),
+                        "   block rows {}～{}".format(risk.get("first_row", ""), risk.get("last_row", "")),
+                        "   被外部 {} pair 跨越".format(risk.get("button", "")),
+                        "   press row {}".format(risk.get("press_row", "")),
+                        "   release row {}".format(risk.get("release_row", "")),
+                    ])
+            if warnings:
+                lines.append("")
+                lines.append("結構警告：{} 個".format(len(warnings)))
+                for warning in warnings[:10]:
+                    lines.append(" - {}".format(warning))
         self.show_info("Randat 輔助判斷", "\n".join(lines))
 
     def delete_selected_rows(self):

@@ -17,6 +17,7 @@ from front import (
     recalculate_runtime_events_by_index,
     allocate_randat_blocks,
     analyze_randat_safety_timeline,
+    enforce_runtime_min_gap_by_row_order,
     get_buff_cell_visual_state,
     is_slot_excluded_buff_group,
     move_rows_with_ab_gap_compensation,
@@ -28,53 +29,132 @@ def _event(at, buff_group=""):
 
 
 class RecalculateRuntimeTimelineTests(unittest.TestCase):
-    def test_randat_safety_basic_safe_case(self):
+    def test_runtime_min_gap_repairs_jitter_inversion_by_row_order(self):
         events = [
-            {"type": "press", "button": "pre", "at": 0.00, "at_jitter": 0.04},
-            {"type": "randat", "button": "", "at": 0.05, "at_jitter": 0.04},
-            {"type": "release", "button": "pre", "at": 0.10, "at_jitter": 0.04},
-            {"type": "press", "button": "a", "at": 0.15, "at_jitter": 0.04, "buff_group": "1"},
-            {"type": "release", "button": "a", "at": 0.20, "at_jitter": 0.04, "buff_group": "1"},
-            {"type": "press", "button": "post", "at": 0.25, "at_jitter": 0.04},
+            {"type": "noop", "button": "", "at": 0.0},
+            {"type": "noop", "button": "", "at": 0.0},
+            {"type": "noop", "button": "", "at": 0.0},
+            {"type": "release", "button": "fn", "at": 1.69},
+            {"type": "press", "button": "fn", "at": 1.67},
+            {"type": "press", "button": "right", "at": 1.72},
+        ]
+        adjusted, logs = enforce_runtime_min_gap_by_row_order(events, 0.05)
+        self.assertEqual([ev["button"] for ev in adjusted[3:6]], ["fn", "fn", "right"])
+        self.assertEqual([round(ev["at"], 2) for ev in adjusted[3:6]], [1.69, 1.74, 1.79])
+        self.assertEqual(len(logs), 1)
+
+    def test_runtime_min_gap_leaves_safe_timeline_unchanged(self):
+        events = [
+            {"type": "press", "button": "a", "at": 1.00},
+            {"type": "release", "button": "a", "at": 1.10},
+            {"type": "press", "button": "b", "at": 1.30},
+        ]
+        adjusted, logs = enforce_runtime_min_gap_by_row_order(events, 0.05)
+        self.assertEqual([ev["at"] for ev in adjusted], [1.00, 1.10, 1.30])
+        self.assertEqual(logs, [])
+
+    def test_runtime_min_gap_handles_consecutive_short_gaps(self):
+        events = [
+            {"type": "press", "button": "a", "at": 1.00},
+            {"type": "release", "button": "a", "at": 1.01},
+            {"type": "press", "button": "b", "at": 1.02},
+        ]
+        adjusted, logs = enforce_runtime_min_gap_by_row_order(events, 0.05)
+        self.assertEqual([round(ev["at"], 2) for ev in adjusted], [1.00, 1.05, 1.10])
+        self.assertEqual(len(logs), 2)
+
+    def test_runtime_min_gap_does_not_mutate_original(self):
+        events = [
+            {"type": "release", "button": "fn", "at": 1.69},
+            {"type": "press", "button": "fn", "at": 1.67},
+        ]
+        before = json.loads(json.dumps(events))
+        enforce_runtime_min_gap_by_row_order(events, 0.05)
+        self.assertEqual(events, before)
+
+    def test_runtime_min_gap_never_sorts_by_at(self):
+        events = [
+            {"type": "release", "button": "fn", "at": 1.69},
+            {"type": "press", "button": "fn", "at": 1.67},
+        ]
+        adjusted, _ = enforce_runtime_min_gap_by_row_order(events, 0.05)
+        self.assertEqual([ev["type"] for ev in adjusted], ["release", "press"])
+        self.assertEqual([ev["button"] for ev in adjusted], ["fn", "fn"])
+        self.assertEqual([round(ev["at"], 2) for ev in adjusted], [1.69, 1.74])
+
+    def test_randat_safety_basic_safe_boundary_case(self):
+        events = [
+            {"type": "release", "button": "x", "at": 9.30},
+            {"type": "randat", "button": "", "at": 9.30},
+            {"type": "press", "button": "left", "at": 9.50},
         ]
         result = analyze_randat_safety_timeline(events, 0.05)
         self.assertTrue(result["safe"])
         self.assertEqual(result["risk_count"], 0)
+        self.assertFalse(any(r.get("kind") == "slot_boundary" for r in result["risks"]))
 
-    def test_randat_safety_reports_slot_boundary_and_preserves_timeline(self):
+    def test_randat_safety_reports_randat_slot_inside_pair(self):
         events = [
-            {"type": "press", "button": "pre", "at": 0.00, "at_jitter": 0.04},
-            {"type": "randat", "button": "", "at": 0.03, "at_jitter": 0.04},
-            {"type": "release", "button": "pre", "at": 0.08, "at_jitter": 0.04},
-            {"type": "press", "button": "a", "at": 0.13, "at_jitter": 0.04, "buff_group": "1"},
-            {"type": "release", "button": "a", "at": 0.18, "at_jitter": 0.04, "buff_group": "1"},
+            {"type": "press", "button": "fn", "at": 0.00},
+            {"type": "randat", "button": "", "at": 0.03},
+            {"type": "release", "button": "fn", "at": 0.08},
         ]
         before = json.loads(json.dumps(events))
         result = analyze_randat_safety_timeline(events, 0.05)
         self.assertFalse(result["safe"])
-        boundary = [r for r in result["risks"] if r.get("kind") == "slot_boundary"]
-        self.assertTrue(any(r.get("slot") == 1 and r.get("gap") == 0.03 and r.get("jitter") == 0.04 for r in boundary))
         self.assertEqual(events, before)
+        self.assertTrue(any(
+            r.get("kind") == "randat_slot_inside_pair"
+            and r.get("slot") == 1
+            and r.get("button") == "fn"
+            and r.get("press_row") == 0
+            and r.get("release_row") == 2
+            for r in result["risks"]
+        ))
 
-    def test_randat_safety_validates_actual_table_b_allocator_output(self):
+    def test_randat_safety_does_not_call_allocator(self):
         events = [
-            {"type": "press", "button": "pre", "at": 0.00, "at_jitter": 0.04},
-            {"type": "randat", "button": "", "at": 0.05, "at_jitter": 0.04},
-            {"type": "release", "button": "pre", "at": 0.10, "at_jitter": 0.04},
-            {"type": "press", "button": "a", "at": 0.15, "at_jitter": 0.04, "buff_group": "1"},
-            {"type": "release", "button": "a", "at": 0.20, "at_jitter": 0.04, "buff_group": "1"},
-            {"type": "press", "button": "post", "at": 0.25, "at_jitter": 0.04},
+            {"type": "randat", "button": "", "at": 0.05},
+            {"type": "press", "button": "a", "at": 0.15, "buff_group": "1"},
+            {"type": "release", "button": "a", "at": 0.20, "buff_group": "1"},
         ]
 
-        def bad_allocator(source, execution_round=1, assignment_override=None):
-            runtime, assignments, traces, debug = allocate_randat_blocks(source, execution_round, assignment_override)
-            runtime[1]["at"] = 0.32
-            runtime[2]["at"] = 0.34
-            return runtime, assignments, traces, debug
+        def bad_allocator(*_args, **_kwargs):
+            raise AssertionError("allocator must not be called")
 
         result = analyze_randat_safety_timeline(events, 0.05, allocator=bad_allocator)
+        self.assertTrue(result["safe"])
+
+    def test_randat_safety_allows_internal_buff_block_pairs(self):
+        events = [
+            {"type": "press", "button": "fn", "at": 0.00, "buff_group": "3"},
+            {"type": "press", "button": "left", "at": 0.05, "buff_group": "3"},
+            {"type": "release", "button": "left", "at": 0.10, "buff_group": "3"},
+            {"type": "release", "button": "fn", "at": 0.15, "buff_group": "3"},
+        ]
+        result = analyze_randat_safety_timeline(events, 0.05)
+        self.assertTrue(result["safe"])
+        self.assertEqual(result["buff_slot_count"], 1)
+
+    def test_randat_safety_reports_external_pair_crossing_buff_block(self):
+        events = [
+            {"type": "press", "button": "right", "at": 0.00},
+            {"type": "press", "button": "fn", "at": 0.05, "buff_group": "3"},
+            {"type": "press", "button": "left", "at": 0.10, "buff_group": "3"},
+            {"type": "release", "button": "left", "at": 0.15, "buff_group": "3"},
+            {"type": "release", "button": "fn", "at": 0.20, "buff_group": "3"},
+            {"type": "release", "button": "right", "at": 0.25},
+        ]
+        result = analyze_randat_safety_timeline(events, 0.05)
         self.assertFalse(result["safe"])
-        self.assertTrue(any(r.get("kind") == "table_b_gap" and r.get("gap") == 0.02 for r in result["risks"]))
+        self.assertTrue(any(
+            r.get("kind") == "buff_slot_crossed_by_pair"
+            and r.get("group") == "3"
+            and r.get("button") == "right"
+            and r.get("press_row") == 0
+            and r.get("release_row") == 5
+            for r in result["risks"]
+        ))
 
     def test_duplicate_segment_with_same_at_does_not_flatten_following_events(self):
         events = [
@@ -1786,6 +1866,7 @@ class TimelineWorkflowTests(unittest.TestCase):
         app.restore_original_timeline = App.restore_original_timeline.__get__(app, App)
         app.restore_latest_saved_timeline = App.restore_latest_saved_timeline.__get__(app, App)
         app.get_manual_offset_sec = lambda: 0.2
+        app.minimum_gap_entry = types.SimpleNamespace(get=lambda: "0.050")
         app.refresh_tree = lambda: None
         app.refresh_preview = lambda: None
         app.update_current_labels = lambda: None
@@ -1841,6 +1922,38 @@ class TimelineWorkflowTests(unittest.TestCase):
             self.assertIn("final_b_range_slot", placement_ledger[0])
             self.assertIn("final_runtime_row_range", placement_ledger[0])
             self.assertIn("final_b_range", placement_ledger[0])
+
+    def test_prepare_events_for_send_runtime_ui_and_payload_share_adjusted_times(self):
+        app = self._new_workflow_app()
+        app.get_manual_offset_sec = lambda: 0.0
+        app._build_start_task_payload = App._build_start_task_payload.__get__(app, App)
+        app._next_client_task_id = lambda: "ct-test"
+        app._event_id_to_row_from_payload = App._event_id_to_row_from_payload.__get__(app, App)
+        app._runtime_event_id = App._runtime_event_id.__get__(app, App)
+        app.timeline = [
+            {"type": "release", "button": "fn", "at": 1.69, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+            {"type": "press", "button": "fn", "at": 1.67, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+            {"type": "press", "button": "right", "at": 1.72, "at_jitter": 0.0, "buff_group": "", "buff_cycle_sec": 0.0, "buff_jitter_sec": 0.0, "replicatedRow": 0},
+        ]
+
+        runtime_display_events, backend_events, _note = app.prepare_events_for_send(
+            "before_send",
+            return_backend=True,
+            run_randat_gate=False,
+            run_randat_allocate=False,
+            apply_at_jitter=True,
+        )
+        payload = app._build_start_task_payload(backend_events)
+
+        self.assertEqual([round(ev["at"], 2) for ev in runtime_display_events], [1.69, 1.74, 1.79])
+        self.assertEqual([item["at_ms"] for item in payload["timeline"]], [1690, 1740, 1790])
+        for display, item in zip(runtime_display_events, payload["timeline"]):
+            self.assertEqual(int(round(display["at"] * 1000)), item["at_ms"])
+            self.assertEqual(display["type"], item["action"])
+            self.assertEqual(display["button"], item["btn"])
+            self.assertIn("@{}".format(item["at_ms"]), item["event_id"])
+        sorted_payload = sorted(payload["timeline"], key=lambda item: item["at_ms"])
+        self.assertEqual([item["idx"] for item in sorted_payload], [0, 1, 2])
 
     def test_prepare_events_for_send_randat_gate_only_when_rslot_present(self):
         app = self._new_workflow_app()
