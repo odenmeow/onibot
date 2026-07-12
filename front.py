@@ -7,6 +7,7 @@ import errno
 import copy
 import time
 import threading 
+import queue
 import random
 import uuid
 import tkinter as tk
@@ -45,6 +46,7 @@ ROUND_TRACE_REASON_LABELS = {
 
 SAVE_DIR = "saved_timelines"
 LOG_DIR = "LogFile"
+COMMUNICATION_LOG_FILE = os.path.join("logs", "communication.log")
 CONFIG_FILE = "front_config.json"
 
 KEY_MAP = {
@@ -131,6 +133,7 @@ def append_daily_log(category, message):
 def ensure_dirs():
     os.makedirs(SAVE_DIR, exist_ok=True)
     ensure_log_dir()
+    os.makedirs(os.path.dirname(COMMUNICATION_LOG_FILE), exist_ok=True)
 
 
 def load_config():
@@ -140,6 +143,7 @@ def load_config():
             "send_delay_sec": 1.0,
             "auto_connect_enabled": True,
             "auto_switch_runtime_on_loop_start": True,
+            "communication_log_enabled": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
@@ -180,6 +184,7 @@ def load_config():
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
             "auto_connect_enabled": bool(data.get("auto_connect_enabled", True)),
             "auto_switch_runtime_on_loop_start": bool(data.get("auto_switch_runtime_on_loop_start", True)),
+            "communication_log_enabled": bool(data.get("communication_log_enabled", True)),
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": normalize_front_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
@@ -205,6 +210,7 @@ def load_config():
             "send_delay_sec": 1.0,
             "auto_connect_enabled": True,
             "auto_switch_runtime_on_loop_start": True,
+            "communication_log_enabled": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
@@ -1974,6 +1980,58 @@ class App:
         self.refresh_tree()
         self.refresh_preview()
 
+    def _start_communication_log_writer(self):
+        if getattr(self, "communication_log_thread", None) is not None:
+            return
+        self.communication_log_thread = threading.Thread(
+            target=self._communication_log_writer_loop,
+            name="communication-log-writer",
+            daemon=True
+        )
+        self.communication_log_thread.start()
+
+    def _communication_log_writer_loop(self):
+        while True:
+            entry = self.communication_log_queue.get()
+            try:
+                if entry is None:
+                    return
+                os.makedirs(os.path.dirname(self.communication_log_path), exist_ok=True)
+                line = json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+                with open(self.communication_log_path, "a", encoding="utf-8") as f:
+                    f.write(line)
+            except Exception:
+                pass
+            finally:
+                try:
+                    self.communication_log_queue.task_done()
+                except Exception:
+                    pass
+
+    def _enqueue_communication_log(self, entry):
+        try:
+            if not getattr(self, "communication_log_enabled", True):
+                return
+            copied = copy.deepcopy(entry)
+            self.communication_log_queue.put_nowait(copied)
+        except Exception:
+            pass
+
+    def _communication_log_base(self, direction, channel, action, elapsed_ms=None):
+        thread = threading.current_thread()
+        entry = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()) + ".{:03d}".format(int((time.time() % 1) * 1000)),
+            "direction": direction,
+            "channel": channel,
+            "action": action,
+            "type": action,
+            "thread_name": thread.name,
+            "thread_id": thread.ident,
+        }
+        if elapsed_ms is not None:
+            entry["elapsed_ms"] = int(max(0.0, elapsed_ms))
+        return entry
+
     def request_pi(self, payload, success_status=None, write_response=True, channel="control", timeout=None):
         payload_action = str(payload.get("action", "")).strip().lower()
         payload_type = str(payload.get("type", "")).strip().lower()
@@ -1992,18 +2050,58 @@ class App:
         with lock:
             max_attempts = 2 if allow_retry else 1
             for retry in range(max_attempts):
+                start_time = None
                 try:
                     self.ensure_connection(channel=channel, timeout=req_timeout)
                     conn = self.status_conn if channel == "status" else self.control_conn
                     conn_file = self.status_conn_file if channel == "status" else self.control_conn_file
                     wire = json.dumps(payload, ensure_ascii=False) + "\n"
-                    conn.sendall(wire.encode("utf-8"))
+                    wire_bytes = wire.encode("utf-8")
+                    self._enqueue_communication_log({
+                        **self._communication_log_base("give", channel, action),
+                        "pi_host": self.config.get("pi_host", DEFAULT_PI_HOST),
+                        "port": PI_PORT,
+                        "timeout_ms": timeout_ms,
+                        "payload_byte_length": len(wire_bytes),
+                        "payload_json_text": wire,
+                    })
+                    start_time = time.monotonic()
+                    conn.sendall(wire_bytes)
                     line = conn_file.readline()
+                    elapsed_ms = (time.monotonic() - start_time) * 1000.0
+                    self._enqueue_communication_log({
+                        **self._communication_log_base("take", channel, action, elapsed_ms=elapsed_ms),
+                        "raw_response_byte_length": len(line.encode("utf-8")) if isinstance(line, str) else len(line or b""),
+                        "raw_response_text": line,
+                    })
                     if not line:
                         raise ConnectionError("連線已中斷，未收到回應")
                     res = json.loads(line)
+                    runtime = res.get("timeline_runtime", {}) if isinstance(res, dict) else {}
+                    if not isinstance(runtime, dict):
+                        runtime = {}
+                    self._enqueue_communication_log({
+                        **self._communication_log_base("parsed", channel, action, elapsed_ms=elapsed_ms),
+                        "parsed_status": res.get("status") if isinstance(res, dict) else None,
+                        "backend_code": res.get("code") if isinstance(res, dict) else None,
+                        "backend_message": res.get("message") if isinstance(res, dict) else None,
+                        "timeline_runtime.state": runtime.get("state"),
+                        "timeline_runtime.processed_count": runtime.get("processed_count"),
+                        "timeline_runtime.events_total": runtime.get("events_total"),
+                        "timeline_runtime.runtime_version": runtime.get("runtime_version"),
+                        "timeline_runtime.execution_round": runtime.get("execution_round"),
+                    })
                     break
                 except Exception as e:
+                    elapsed_ms = (time.monotonic() - start_time) * 1000.0 if start_time is not None else None
+                    self._enqueue_communication_log({
+                        **self._communication_log_base("error", channel, action, elapsed_ms=elapsed_ms),
+                        "timeout_ms": timeout_ms,
+                        "exception_class": e.__class__.__name__,
+                        "exception_message": str(e),
+                        "retry_attempt_index": retry,
+                        "max_attempts": max_attempts,
+                    })
                     last_err = e
                     self.close_connection(channel=channel, silent=True)
                     if retry < max_attempts - 1:
@@ -2146,6 +2244,11 @@ class App:
         self.applied_gpio_trigger_level = ""
         self.control_request_lock = threading.Lock()
         self.status_request_lock = threading.Lock()
+        self.communication_log_path = COMMUNICATION_LOG_FILE
+        self.communication_log_enabled = bool(self.config.get("communication_log_enabled", True))
+        self.communication_log_queue = queue.Queue()
+        self.communication_log_thread = None
+        self._start_communication_log_writer()
         self.control_conn = None
         self.control_conn_file = None
         self.status_conn = None
