@@ -2561,6 +2561,8 @@ class App:
         self.pending_runtime_version = 0
         self.current_round_runtime_version = 0
         self.next_round_prepared_cache = None
+        self.active_round_snapshot = {}
+        self.next_round_prefetch = {}
         self.loop_preview_pending = False
         self.loop_preview_cached_payload = None
         self.loop_preview_origin_snapshot = []
@@ -3797,7 +3799,84 @@ class App:
         self.write_text(self._build_debug_payload())
 
 
+    def _active_round_runtime_display_events(self):
+        snapshot = getattr(self, "active_round_snapshot", {})
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("runtime_display_events"), list):
+            return snapshot.get("runtime_display_events", [])
+        working = getattr(self, "runtime_working_timeline", [])
+        if isinstance(working, list) and working:
+            return working
+        timeline = getattr(self, "timeline", [])
+        return timeline if isinstance(timeline, list) else []
+
+    def _set_active_round_snapshot(self, runtime_display_events=None, backend_events=None, prepared_payload=None, payload=None, ack_response=None):
+        prepared = copy.deepcopy(prepared_payload if isinstance(prepared_payload, dict) else getattr(self, "last_prepared_payload", {}) if isinstance(getattr(self, "last_prepared_payload", {}), dict) else {})
+        display = self.copy_events(runtime_display_events if runtime_display_events is not None else prepared.get("runtime_display_events", []))
+        backend = self.copy_events(backend_events if backend_events is not None else prepared.get("backend_events", []))
+        event_id_to_row = copy.deepcopy(prepared.get("event_id_to_row", {})) if isinstance(prepared.get("event_id_to_row", {}), dict) else {}
+        if not event_id_to_row and isinstance(payload, dict):
+            event_id_to_row = self._event_id_to_row_from_payload(payload)
+        ack = ack_response if isinstance(ack_response, dict) else {}
+        pay = payload if isinstance(payload, dict) else {}
+        runtime_meta = prepared.get("runtime_meta", {}) if isinstance(prepared.get("runtime_meta", {}), dict) else {}
+        self.active_round_snapshot = {
+            "runtime_display_events": display,
+            "backend_events": backend,
+            "event_id_to_row": event_id_to_row,
+            "prepared_payload": prepared,
+            "round_traces": copy.deepcopy(prepared.get("round_traces", [])),
+            "execution_round": int(pay.get("execution_round", prepared.get("execution_round", runtime_meta.get("execution_round", 0))) or 0),
+            "runtime_version": int(pay.get("runtime_version", prepared.get("runtime_version", runtime_meta.get("runtime_version", 0))) or 0),
+            "client_task_id": str(pay.get("client_task_id", prepared.get("client_task_id", "")) or "").strip(),
+            "server_task_id": str(ack.get("server_task_id", prepared.get("server_task_id", "")) or "").strip(),
+        }
+        self.runtime_working_timeline = self.copy_events(display)
+        self.runtime_round_traces = copy.deepcopy(self.active_round_snapshot.get("round_traces", []))
+
+    def _event_id_to_row_from_payload(self, payload):
+        mapping = {}
+        timeline = payload.get("timeline", []) if isinstance(payload, dict) else []
+        for row, item in enumerate(timeline if isinstance(timeline, list) else []):
+            if not isinstance(item, dict):
+                continue
+            event_id = str(item.get("event_id", "")).strip()
+            if event_id:
+                try:
+                    mapping[event_id] = int(item.get("idx", row))
+                except Exception:
+                    mapping[event_id] = row
+        return mapping
+
+    def _runtime_status_matches_active_round(self, runtime):
+        snapshot = getattr(self, "active_round_snapshot", {})
+        if not isinstance(snapshot, dict) or not snapshot:
+            return True
+        active_key = self._build_runtime_consistency_key(
+            server_task_id=snapshot.get("server_task_id", ""),
+            runtime_version=snapshot.get("runtime_version", 0),
+            execution_round=snapshot.get("execution_round", 0),
+        )
+        status_key = self._consistency_key_from_runtime_status(runtime)
+        return self._is_runtime_key_compatible(active_key, status_key)
+
     def _runtime_event_id_to_row_map(self, runtime):
+        snapshot = getattr(self, "active_round_snapshot", {})
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("event_id_to_row"), dict):
+            mapping = copy.deepcopy(snapshot.get("event_id_to_row", {}))
+            display_events = snapshot.get("runtime_display_events", []) if isinstance(snapshot.get("runtime_display_events", []), list) else []
+            timing_map = {}
+            for idx, ev in enumerate(display_events):
+                if not isinstance(ev, dict):
+                    continue
+                action = str(ev.get("type", "")).strip().lower()
+                button = str(ev.get("button", "")).strip().lower()
+                try:
+                    at_ms = int(round(max(0.0, float(ev.get("at", 0.0))) * 1000.0))
+                except Exception:
+                    at_ms = 0
+                timing_map.setdefault((at_ms, action, button), idx)
+            mapping["__timing__"] = timing_map
+            return mapping
         mapping = {}
         runtime = runtime if isinstance(runtime, dict) else {}
         try:
@@ -3812,7 +3891,8 @@ class App:
             except Exception:
                 execution_round = 0
         timing_map = {}
-        for idx, ev in enumerate(self.timeline if isinstance(getattr(self, "timeline", []), list) else []):
+        source_events = self._active_round_runtime_display_events()
+        for idx, ev in enumerate(source_events):
             if not isinstance(ev, dict):
                 continue
             action = str(ev.get("type", "")).strip().lower()
@@ -3831,6 +3911,13 @@ class App:
     def _runtime_event_row_index(self, ev, event_id_to_row):
         if isinstance(ev, dict):
             event_id = str(ev.get("event_id", "")).strip()
+            display_len = len(self._active_round_runtime_display_events())
+            try:
+                original_index = int(ev.get("original_index"))
+                if display_len > 0 and original_index >= 0 and original_index < display_len:
+                    return original_index
+            except Exception:
+                pass
             if event_id and event_id in event_id_to_row:
                 return int(event_id_to_row[event_id])
             timing_map = event_id_to_row.get("__timing__", {}) if isinstance(event_id_to_row, dict) else {}
@@ -3843,16 +3930,7 @@ class App:
                     continue
                 if (at_ms, action, button) in timing_map:
                     return int(timing_map[(at_ms, action, button)])
-            try:
-                landed = ev.get("runtime_landed_index")
-                if landed is not None:
-                    return int(landed)
-            except Exception:
-                pass
-            try:
-                return int(ev.get("original_index"))
-            except Exception:
-                return None
+            return None
         return None
 
     def update_runtime_from_status(self, status_response):
@@ -3881,6 +3959,9 @@ class App:
             and self.runtime_round_traces
         ):
             round_traces = list(self.runtime_round_traces)
+
+        if not self._runtime_status_matches_active_round(runtime):
+            return False
 
         event_id_to_row = self._runtime_event_id_to_row_map(runtime)
         runtime_by_index = {}
@@ -4502,6 +4583,11 @@ class App:
             normalized_runtime_version = 0
         payload["execution_round"] = normalized_execution_round
         payload["runtime_version"] = normalized_runtime_version
+        event_id_to_row = self._event_id_to_row_from_payload(payload)
+        if isinstance(prepared, dict):
+            prepared["event_id_to_row"] = copy.deepcopy(event_id_to_row)
+            prepared["client_task_id"] = payload["client_task_id"]
+            self.last_prepared_payload = prepared
         if not runtime_meta and prepared:
             runtime_meta = {
                 "rslot_count": int(prepared.get("rslot_count", 0) or 0),
@@ -5599,6 +5685,8 @@ class App:
         self.front_inflight_client_task_id = ""
         self.pending_runtime_version = 0
         self.next_round_prepared_cache = None
+        self.active_round_snapshot = {}
+        self.next_round_prefetch = {}
         self.loop_preview_pending = False
         self.loop_preview_cached_payload = None
         self.loop_preview_origin_snapshot = []
@@ -5682,7 +5770,8 @@ class App:
             self.loop_preview_cached_payload = {
                 "runtime_display_events": self.copy_events(runtime_display_events),
                 "backend_events": self.copy_events(backend_events),
-                "resolve_note": str(resolve_note or "").strip()
+                "resolve_note": str(resolve_note or "").strip(),
+                "prepared_payload": copy.deepcopy(self.last_prepared_payload) if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
             }
             self.runtime_working_timeline = self.copy_events(runtime_display_events)
             self.render_runtime_analysis(force=True)
@@ -5750,6 +5839,8 @@ class App:
             runtime_display_events = self.copy_events(cached.get("runtime_display_events", []))
             backend_events = self.copy_events(cached.get("backend_events", []))
             resolve_note = str(cached.get("resolve_note", "")).strip()
+            if isinstance(cached.get("prepared_payload"), dict):
+                self.last_prepared_payload = copy.deepcopy(cached.get("prepared_payload", {}))
             self.next_round_prepared_cache = None
         else:
             runtime_display_events, backend_events, resolve_note = self.prepare_events_for_send(
@@ -5830,6 +5921,7 @@ class App:
                         self.render_runtime_analysis(force=True)
                         self._update_runtime_control_buttons()
                         return
+                    self._set_active_round_snapshot(runtime_display_events, backend_events, self.last_prepared_payload, payload, res)
                     self.runtime_version = int(self.pending_runtime_version or self.runtime_version)
                     self.current_round_runtime_version = int(self.runtime_version)
                     self.pending_runtime_version = 0
@@ -5850,17 +5942,22 @@ class App:
                         "前端重複送出中：{} 第 {} 輪{}".format(display_name, self.front_loop_round, suffix)
                     )
                     if self.next_round_prepared_cache is None:
+                        active_prepared = copy.deepcopy(self.last_prepared_payload) if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
                         next_runtime_display_events, next_backend_events, next_note = self.prepare_events_for_send(
                             action_reason="before_send_loop_prefetch",
                             base_events=self.origin_snapshot_before_loop,
                             return_backend=True
                         )
+                        prefetched_prepared = copy.deepcopy(self.last_prepared_payload) if isinstance(getattr(self, "last_prepared_payload", None), dict) else {}
+                        self.last_prepared_payload = active_prepared
                         if next_runtime_display_events is not None:
                             self.next_round_prepared_cache = {
                                 "runtime_display_events": self.copy_events(next_runtime_display_events),
                                 "backend_events": self.copy_events(next_backend_events),
-                                "resolve_note": next_note
+                                "resolve_note": next_note,
+                                "prepared_payload": prefetched_prepared
                             }
+                            self.next_round_prefetch = copy.deepcopy(self.next_round_prepared_cache)
                     self._poll_front_loop_round_done(display_name)
                 except Exception as e:
                     if isinstance(e, PiRequestError) and e.kind == "ack_read_timeout":

@@ -696,10 +696,10 @@ class RuntimeDisplayTests(unittest.TestCase):
         })
 
         self.assertTrue(changed)
-        self.assertIn(89, app.timeline_runtime_by_index)
-        self.assertNotIn(88, app.timeline_runtime_by_index)
-        self.assertEqual(app.runtime_latest_index, 89)
-        self.assertEqual(app.runtime_recent_ok_indices, [89])
+        self.assertIn(88, app.timeline_runtime_by_index)
+        self.assertNotIn(89, app.timeline_runtime_by_index)
+        self.assertEqual(app.runtime_latest_index, 88)
+        self.assertEqual(app.runtime_recent_ok_indices, [88])
 
     def test_update_runtime_keeps_local_round_traces_even_if_backend_reports_new_round(self):
         app = self._new_app()
@@ -2288,6 +2288,78 @@ class TimelineWorkflowTests(unittest.TestCase):
 
         app.redo_timeline()
         self.assertEqual(len(app.timeline), 4)
+
+
+    def test_active_round_prefetch_does_not_override_runtime_view(self):
+        app = RuntimeDisplayTests._new_app(self)
+        round1 = [{"idx": 10, "type": "press", "button": "a", "at": 1.0, "runtime_landed_index": 10}]
+        round2 = [{"idx": 40, "type": "press", "button": "a", "at": 4.0, "runtime_landed_index": 40}]
+        prepared1 = {"execution_round": 1, "runtime_version": 1, "runtime_display_events": round1, "backend_events": round1, "round_traces": [{"round": 1}]}
+        app.last_prepared_payload = prepared1
+        payload1 = {"timeline": [{"idx": 10, "event_id": app._runtime_event_id(1, 10, "press", "a", 1000)}], "execution_round": 1, "runtime_version": 1, "client_task_id": "ct-1"}
+        app._set_active_round_snapshot(round1, round1, prepared1, payload1, {"server_task_id": "srv-1"})
+        app.next_round_prefetch = {"runtime_display_events": app.copy_events(round2), "backend_events": app.copy_events(round2), "execution_round": 2, "round_traces": [{"round": 2}]}
+
+        self.assertEqual(app._active_round_runtime_display_events()[0]["idx"], 10)
+        self.assertEqual(app.runtime_working_timeline[0]["idx"], 10)
+        self.assertEqual(app.active_round_snapshot["execution_round"], 1)
+        self.assertEqual(app.active_round_snapshot["round_traces"], [{"round": 1}])
+        self.assertEqual(app.next_round_prefetch["runtime_display_events"][0]["idx"], 40)
+
+    def test_event_id_mapping_uses_sent_payload_not_mutable_timeline(self):
+        app = RuntimeDisplayTests._new_app(self)
+        app._build_start_task_payload = App._build_start_task_payload.__get__(app, App)
+        app._next_client_task_id = lambda: "ct-map"
+        app.front_loop_round = 2
+        app.timeline = [{"idx": 23, "type": "release", "button": "left", "at": 1.0}]
+        app.last_prepared_payload = {"execution_round": 3, "runtime_version": 1}
+        payload = app._build_start_task_payload([{"idx": 23, "type": "release", "button": "left", "at": 8.9}])
+        event_id = payload["timeline"][0]["event_id"]
+        self.assertEqual(app.last_prepared_payload["event_id_to_row"][event_id], 23)
+
+    def test_block_events_use_original_index_not_runtime_landed_anchor(self):
+        app = RuntimeDisplayTests._new_app(self)
+        events = [{"idx": i, "type": "press", "button": "pad", "at": i / 10.0} for i in range(20)] + [
+            {"idx": 20, "type": "press", "button": "fn", "at": 2.0, "runtime_landed_index": 20},
+            {"idx": 21, "type": "press", "button": "left", "at": 2.1, "runtime_landed_index": 20},
+            {"idx": 22, "type": "release", "button": "left", "at": 2.2, "runtime_landed_index": 20},
+            {"idx": 23, "type": "release", "button": "fn", "at": 2.3, "runtime_landed_index": 20},
+        ]
+        app._set_active_round_snapshot(events, events, {"execution_round": 1, "runtime_version": 1, "runtime_display_events": events, "backend_events": events}, {"timeline": [], "execution_round": 1, "runtime_version": 1}, {})
+        mapped = []
+        for idx, ev in zip([20, 21, 22, 23], events[20:]):
+            status_ev = dict(ev)
+            status_ev.update({"original_index": idx, "status": "ok"})
+            app.update_runtime_from_status({"timeline_runtime": {"state": "running", "execution_round": 1, "runtime_version": 1, "events": [status_ev]}})
+            mapped.append(app.runtime_latest_index)
+        self.assertEqual(mapped, [20, 21, 22, 23])
+
+    def test_progress_current_idx_not_overridden_by_missing_mapping_or_landed_index(self):
+        app = RuntimeDisplayTests._new_app(self)
+        display = [{"idx": i, "type": "press", "button": str(i), "at": i / 10.0} for i in range(30)]
+        app._set_active_round_snapshot(display, display, {"execution_round": 1, "runtime_version": 1, "runtime_display_events": display, "backend_events": display}, {"timeline": [], "execution_round": 1, "runtime_version": 1}, {})
+        app.update_runtime_from_status({"timeline_runtime": {"state": "running", "execution_round": 1, "runtime_version": 1, "progress": {"current_idx": 23}, "events": [{"event_id": "missing", "runtime_landed_index": 20, "status": "ok"}]}})
+        self.assertEqual(app.runtime_latest_index, 23)
+        self.assertNotIn(20, app.timeline_runtime_by_index)
+
+    def test_stale_previous_round_status_does_not_update_active_round(self):
+        app = RuntimeDisplayTests._new_app(self)
+        round2 = [{"idx": i, "type": "press", "button": "pad", "at": i / 10.0} for i in range(40)] + [{"idx": 40, "type": "press", "button": "b", "at": 4.0}]
+        app._set_active_round_snapshot(round2, round2, {"execution_round": 2, "runtime_version": 2, "runtime_display_events": round2, "backend_events": round2}, {"timeline": [], "execution_round": 2, "runtime_version": 2}, {})
+        changed = app.update_runtime_from_status({"timeline_runtime": {"state": "running", "execution_round": 1, "runtime_version": 1, "events": [{"original_index": 10, "status": "ok"}]}})
+        self.assertFalse(changed)
+        self.assertEqual(app.timeline_runtime_by_index, {})
+        changed = app.update_runtime_from_status({"timeline_runtime": {"state": "running", "execution_round": 2, "runtime_version": 2, "events": [{"original_index": 40, "status": "ok"}]}})
+        self.assertTrue(changed)
+        self.assertIn(40, app.timeline_runtime_by_index)
+
+    def test_plain_timeline_runtime_mapping_still_works_without_randat(self):
+        app = RuntimeDisplayTests._new_app(self)
+        app.timeline = [{"type": "press", "button": "space", "at": 0.1}, {"type": "release", "button": "space", "at": 0.2}]
+        event_id = app._runtime_event_id(1, 1, "release", "space", 200)
+        app.update_runtime_from_status({"timeline_runtime": {"state": "running", "execution_round": 1, "events": [{"event_id": event_id, "type": "release", "button": "space", "target_at": 0.2, "status": "ok"}]}})
+        self.assertEqual(app.runtime_latest_index, 1)
+        self.assertEqual(app.runtime_recent_ok_indices, [1])
 
 
 if __name__ == "__main__":
