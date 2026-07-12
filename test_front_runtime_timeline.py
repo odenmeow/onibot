@@ -154,8 +154,12 @@ class _FakeTree:
 
 
 class _FakeRoot:
-    def after(self, _delay, _callback):
-        return "after-id"
+    def __init__(self):
+        self.after_calls = []
+
+    def after(self, delay, callback):
+        self.after_calls.append((delay, callback))
+        return "after-id-{}".format(len(self.after_calls))
 
 
 class _FakeStringVar:
@@ -288,6 +292,11 @@ class RuntimeDisplayTests(unittest.TestCase):
         app._is_runtime_key_compatible = App._is_runtime_key_compatible.__get__(app, App)
         app.refresh_tree = App.refresh_tree.__get__(app, App)
         app.poll_runtime_status = App.poll_runtime_status.__get__(app, App)
+        app._schedule_runtime_status_poll = App._schedule_runtime_status_poll.__get__(app, App)
+        app.runtime_status_poll_scheduled = False
+        app.runtime_status_poll_sequence_id = 0
+        app.runtime_status_poll_loop_generation = 0
+        app.runtime_status_poll_scheduled_after_ms = None
         app.is_auto_connect_enabled = App.is_auto_connect_enabled.__get__(app, App)
         app.update_auto_connect_ui = App.update_auto_connect_ui.__get__(app, App)
         app.set_auto_connect_enabled = App.set_auto_connect_enabled.__get__(app, App)
@@ -314,6 +323,7 @@ class RuntimeDisplayTests(unittest.TestCase):
         app._get_ack_timeout_ms = App._get_ack_timeout_ms.__get__(app, App)
         app._build_request_diag_message = App._build_request_diag_message.__get__(app, App)
         app._get_handshake_contract_version = App._get_handshake_contract_version.__get__(app, App)
+        app._communication_log_base = App._communication_log_base.__get__(app, App)
         app.stop_pi = App.stop_pi.__get__(app, App)
         app.update_current_labels = lambda: None
         app.set_frontend_error = lambda *_args, **_kwargs: None
@@ -325,6 +335,53 @@ class RuntimeDisplayTests(unittest.TestCase):
             insert=lambda *_args, **_kwargs: None
         )
         return app
+
+
+    def test_repeated_runtime_poll_initialization_schedules_only_one_loop(self):
+        app = self._new_app()
+        app.root = _FakeRoot()
+
+        first_id = app._schedule_runtime_status_poll(200)
+        second_id = app._schedule_runtime_status_poll(200)
+        third_id = app._schedule_runtime_status_poll(200)
+
+        self.assertEqual(first_id, "after-id-1")
+        self.assertIsNone(second_id)
+        self.assertIsNone(third_id)
+        self.assertEqual(len(app.root.after_calls), 1)
+        self.assertTrue(app.runtime_status_poll_scheduled)
+        self.assertEqual(app.runtime_status_poll_scheduled_after_ms, 200)
+        self.assertEqual(app.runtime_status_poll_loop_generation, 1)
+
+    def test_runtime_poll_clears_schedule_flag_and_reschedules_once(self):
+        app = self._new_app()
+        app.root = _FakeRoot()
+        app.request_pi = mock.Mock(return_value={"timeline_runtime": {"state": "idle", "events": []}})
+        app._classify_request_error = lambda *_args, **_kwargs: "request_error"
+        app._set_channel_error = lambda *_args, **_kwargs: None
+
+        app._schedule_runtime_status_poll(200)
+        app.poll_runtime_status()
+
+        self.assertEqual(len(app.root.after_calls), 2)
+        self.assertEqual(app.root.after_calls[0][0], 200)
+        self.assertEqual(app.root.after_calls[1][0], sys.modules["front"].RUNTIME_POLL_INTERVAL_MS)
+        self.assertTrue(app.runtime_status_poll_scheduled)
+        self.assertEqual(app.runtime_status_poll_sequence_id, 1)
+        self.assertEqual(app.runtime_status_poll_loop_generation, 2)
+        self.assertEqual(app.runtime_status_poll_scheduled_after_ms, sys.modules["front"].RUNTIME_POLL_INTERVAL_MS)
+
+    def test_runtime_communication_log_base_includes_poll_fields(self):
+        app = self._new_app()
+        app.runtime_status_poll_sequence_id = 7
+        app.runtime_status_poll_scheduled_after_ms = 300
+        app.runtime_status_poll_loop_generation = 4
+
+        entry = app._communication_log_base("give", "status", "status")
+
+        self.assertEqual(entry["poll_sequence_id"], 7)
+        self.assertEqual(entry["scheduled_after_ms"], 300)
+        self.assertEqual(entry["poll_loop_generation"], 4)
 
     def test_poll_runtime_status_keeps_sync_when_auto_connect_paused(self):
         app = self._new_app()
