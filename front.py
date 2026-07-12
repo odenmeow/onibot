@@ -1141,6 +1141,32 @@ def allocate_randat_blocks(events, execution_round=1):
             first_at = original_at_by_idx.get(first_origin, 0.0)
         prev_at = round(first_at, 4)
 
+        slot_gap_by_anchor = {}
+        for origin, row in enumerate(table_a):
+            group = str(row.get("__runtime_gid", "")).strip()
+            if group in block_gap_map and origin != int(block_gap_map[group]["first"]):
+                continue
+            if group in block_gap_map:
+                first = int(block_gap_map[group]["first"])
+                last = int(block_gap_map[group]["last"])
+                front_gap = original_gap_by_pair.get((first - 1, first), 0.0) if first > 0 else 0.0
+                back_gap = original_gap_by_pair.get((last, last + 1), 0.0) if last + 1 < len(table_a) else 0.0
+            else:
+                front_gap = original_gap_by_pair.get((origin - 1, origin), 0.0) if origin > 0 else 0.0
+                back_gap = original_gap_by_pair.get((origin, origin + 1), 0.0) if origin + 1 < len(table_a) else 0.0
+            slot_gap_by_anchor[origin] = {
+                "front_gap": round(max(0.0, _safe_float(front_gap, 0.0)), 4),
+                "back_gap": round(max(0.0, _safe_float(back_gap, 0.0)), 4),
+            }
+
+        def _block_group_for_origin(origin):
+            if origin < 0 or origin >= len(table_a):
+                return ""
+            group = str(table_a[origin].get("__runtime_gid", "")).strip()
+            if group in block_gap_map:
+                return group
+            return ""
+
         def _runtime_gap(prev_row, cur_row):
             prev_group = str(prev_row.get("__runtime_gid", "")).strip()
             cur_group = str(cur_row.get("__runtime_gid", "")).strip()
@@ -1158,31 +1184,31 @@ def allocate_randat_blocks(events, execution_round=1):
 
             if prev_group != cur_group and cur_group in block_gap_map and cur_origin == int(block_gap_map[cur_group]["first"]):
                 picked_slot = int(block_assignments.get(cur_group, {}).get("picked_slot", cur_origin))
-                if picked_slot == 0:
-                    return 0.0
-                gap = original_gap_by_pair.get((picked_slot - 1, picked_slot))
-                if gap is not None:
-                    return gap
+                return slot_gap_by_anchor.get(picked_slot, {}).get("front_gap", 0.0)
+
+            if prev_group != cur_group and prev_group in block_gap_map and prev_origin == int(block_gap_map[prev_group]["last"]):
+                picked_slot = int(block_assignments.get(prev_group, {}).get("picked_slot", prev_origin))
+                return slot_gap_by_anchor.get(picked_slot, {}).get("back_gap", 0.0)
 
             if prev_origin + 1 < cur_origin:
                 skipped = list(range(prev_origin + 1, cur_origin))
-                skipped_groups = {
-                    str(table_a[origin].get("__runtime_gid", "")).strip()
-                    for origin in skipped
-                    if 0 <= origin < len(table_a)
-                }
+                skipped_groups = {_block_group_for_origin(origin) for origin in skipped}
                 skipped_groups.discard("")
                 if (
                     len(skipped_groups) == 1
-                    and next(iter(skipped_groups)) in block_gap_map
+                    and (skipped_group := next(iter(skipped_groups))) in block_gap_map
                     and all(
-                        str(table_a[origin].get("__runtime_gid", "")).strip() == next(iter(skipped_groups))
+                        _block_group_for_origin(origin) == skipped_group
                         for origin in skipped
                     )
                 ):
-                    front_gap = original_gap_by_pair.get((prev_origin, prev_origin + 1), 0.0)
-                    back_gap = original_gap_by_pair.get((cur_origin - 1, cur_origin), 0.0)
-                    return round(max(0.0, _safe_float(front_gap, 0.0)) + max(0.0, _safe_float(back_gap, 0.0)), 4)
+                    anchor = int(block_gap_map[skipped_group]["first"])
+                    slot_gap = slot_gap_by_anchor.get(anchor, {})
+                    return round(
+                        max(0.0, _safe_float(slot_gap.get("front_gap", 0.0), 0.0))
+                        + max(0.0, _safe_float(slot_gap.get("back_gap", 0.0), 0.0)),
+                        4
+                    )
 
             return 0.0
 

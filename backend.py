@@ -608,6 +608,8 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         timeline_shift += compressed_sec
                     elif buff_skip_mode == BUFF_SKIP_MODE_WALK and wait_time > 0:
                         safe_sleep(wait_time, clock=clock)
+                    logical_actual_at = clock.now()
+                    wall_actual_at = time.monotonic() - wall_start
                     results.append({
                         "index": i,
                         "event_id": ev.get("event_id", ""),
@@ -616,8 +618,8 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         "button": ev["button"],
                         "source_target_at": round(source_target, 4),
                         "target_at": round(target, 4),
-                        "actual_at": round(clock.now(), 4),
-                        "wall_actual_at": round(time.monotonic() - wall_start, 4),
+                        "actual_at": round(logical_actual_at, 4),
+                        "wall_actual_at": round(wall_actual_at, 4),
                         "status": "skipped_by_cooldown",
                         "buff_skip_mode": buff_skip_mode,
                         "compressed_sec": round(compressed_sec, 4)
@@ -631,8 +633,8 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         "status": "skipped_by_cooldown",
                         "source_target_at": round(source_target, 4),
                         "target_at": round(target, 4),
-                        "actual_at": round(clock.now(), 4),
-                        "wall_actual_at": round(time.monotonic() - wall_start, 4),
+                        "actual_at": round(logical_actual_at, 4),
+                        "wall_actual_at": round(wall_actual_at, 4),
                         "buff_skip_mode": buff_skip_mode,
                         "buff_group": buff_group,
                         "runtime_landed_index": ev.get("runtime_landed_index"),
