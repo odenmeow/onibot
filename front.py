@@ -2184,10 +2184,6 @@ class App:
         self.top_control_buttons = []
 
         self.status_var = tk.StringVar(value="尚未錄製")
-        self.status_label = tk.Label(top, textvariable=self.status_var, anchor="w")
-        self.status_label.grid(
-            row=1, column=0, columnspan=btn_count, sticky="we", padx=8, pady=(2, 2)
-        )
         self.record_button = None
         self.loop_button = None
         self.pause_resume_button = None
@@ -2210,13 +2206,7 @@ class App:
         self._update_runtime_control_buttons()
 
         self.current_script_var = tk.StringVar(value="【目前腳本：未命名 / 未儲存】")
-        self.current_script_label = tk.Label(
-            top,
-            textvariable=self.current_script_var,
-            anchor="w",
-            fg="#1a4fb8"
-        )
-        self.current_script_label.grid(row=2, column=0, columnspan=btn_count, sticky="w", padx=8, pady=(0, 8))
+        self.current_script_label = None
 
         self.top_panel = top
         info = tk.LabelFrame(left_content_paned, text="目前套用資訊")
@@ -2308,7 +2298,7 @@ class App:
         self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
         self.saved_listbox.pack(fill="x", padx=5, pady=5)
 
-        self.left_content_paned.add(top, minsize=110)
+        self.left_content_paned.add(top, minsize=85)
         self.left_content_paned.add(info, minsize=120)
         self.left_content_paned.add(save_frame, minsize=120)
         self.left_panel.bind("<Configure>", self._update_responsive_layout, add="+")
@@ -2443,17 +2433,28 @@ class App:
         json_split.pack(fill="both", expand=True)
         self.json_split_paned = json_split
 
-        error_frame = tk.LabelFrame(json_split, text="錯誤訊息（前端 / 後端）")
+        error_frame = tk.LabelFrame(json_split, text="Message")
         self.error_panel = error_frame
-        tk.Label(error_frame, text="前端：", width=6, anchor="w").grid(row=0, column=0, padx=6, pady=2, sticky="nw")
-        self.frontend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
-        self.frontend_error_text.grid(row=0, column=1, sticky="nsew", padx=(0, 6), pady=2)
-        tk.Label(error_frame, text="後端：", width=6, anchor="w").grid(row=1, column=0, padx=6, pady=2, sticky="nw")
-        self.backend_error_text = tk.Text(error_frame, height=4, wrap="word", fg="#b30000")
-        self.backend_error_text.grid(row=1, column=1, sticky="nsew", padx=(0, 6), pady=(2, 6))
+        tk.Label(error_frame, text="狀態：", width=6, anchor="w").grid(row=0, column=0, padx=6, pady=(4, 2), sticky="nw")
+        self.status_label = tk.Label(error_frame, textvariable=self.status_var, anchor="w")
+        self.status_label.grid(row=0, column=1, sticky="we", padx=(0, 6), pady=(4, 2))
+        tk.Label(error_frame, text="腳本：", width=6, anchor="w").grid(row=1, column=0, padx=6, pady=2, sticky="nw")
+        self.current_script_label = tk.Label(
+            error_frame,
+            textvariable=self.current_script_var,
+            anchor="w",
+            fg="#1a4fb8"
+        )
+        self.current_script_label.grid(row=1, column=1, sticky="we", padx=(0, 6), pady=2)
+        tk.Label(error_frame, text="前端：", width=6, anchor="w").grid(row=2, column=0, padx=6, pady=2, sticky="nw")
+        self.frontend_error_text = tk.Text(error_frame, height=3, wrap="word", fg="#b30000")
+        self.frontend_error_text.grid(row=2, column=1, sticky="nsew", padx=(0, 6), pady=2)
+        tk.Label(error_frame, text="後端：", width=6, anchor="w").grid(row=3, column=0, padx=6, pady=2, sticky="nw")
+        self.backend_error_text = tk.Text(error_frame, height=3, wrap="word", fg="#b30000")
+        self.backend_error_text.grid(row=3, column=1, sticky="nsew", padx=(0, 6), pady=(2, 6))
         error_frame.grid_columnconfigure(1, weight=1)
-        error_frame.grid_rowconfigure(0, weight=1)
-        error_frame.grid_rowconfigure(1, weight=1)
+        error_frame.grid_rowconfigure(2, weight=1)
+        error_frame.grid_rowconfigure(3, weight=1)
 
         json_text_panel = tk.Frame(json_split)
         mode_row = tk.Frame(json_text_panel)
@@ -2526,8 +2527,6 @@ class App:
 
     def _layout_left_controls_wide(self):
         btn_count = max(1, len(getattr(self, "top_control_buttons", [])))
-        self.status_label.grid_configure(row=1, column=0, columnspan=btn_count, sticky="we", padx=8, pady=(2, 2))
-        self.current_script_label.grid_configure(row=2, column=0, columnspan=btn_count, sticky="w")
         for idx, btn in enumerate(self.top_control_buttons):
             btn.grid_forget()
             btn.grid(row=0, column=idx, padx=4, pady=(6, 2))
@@ -2550,8 +2549,6 @@ class App:
 
     def _layout_left_controls_compact(self):
         btn_count = len(self.top_control_buttons)
-        self.status_label.grid_configure(row=btn_count, column=0, columnspan=1, sticky="we", padx=8, pady=(2, 2))
-        self.current_script_label.grid_configure(row=btn_count + 1, column=0, columnspan=1, sticky="we")
         for idx, btn in enumerate(self.top_control_buttons):
             btn.grid_forget()
             btn.grid(row=idx, column=0, padx=8, pady=2, sticky="we")
