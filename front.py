@@ -34,6 +34,7 @@ PROGRESS_TIMEOUT_MIN_MS = 2000
 PROGRESS_TIMEOUT_MAX_MS = 30000
 ROUND_DONE_FINISH_GRACE_MS = 350
 HANDSHAKE_ACTION = "status"
+PANED_WINDOW_KWARGS = {"sashrelief": tk.RAISED, "sashwidth": 10, "showhandle": True, "handlesize": 12}
 ROUND_TRACE_REASON_LABELS = {
     "randat_disabled": "未啟用 randat（無可用 randat 列）",
     "fallback_no_free_slot": "無可用 idx（候選位置皆被占用）",
@@ -2154,7 +2155,7 @@ class App:
         container = tk.Frame(root)
         container.pack(fill="both", expand=True, padx=10, pady=8)
 
-        body = tk.PanedWindow(container, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        body = tk.PanedWindow(container, orient=tk.HORIZONTAL, **PANED_WINDOW_KWARGS)
         body.pack(fill="both", expand=True)
         self.body = body
 
@@ -2167,7 +2168,7 @@ class App:
         body.add(left_panel, minsize=60)
         body.add(right_panel, minsize=240)
 
-        left_content_paned = tk.PanedWindow(left_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED)
+        left_content_paned = tk.PanedWindow(left_panel, orient=tk.VERTICAL, **PANED_WINDOW_KWARGS)
         left_content_paned.pack(fill="both", expand=True)
         self.left_content_paned = left_content_paned
 
@@ -2295,12 +2296,12 @@ class App:
         for btn in [self.save_primary_buttons[0], *self.save_secondary_buttons[:2], self.save_primary_buttons[1], self.save_secondary_buttons[2]]:
             btn.pack(side="left", padx=3)
 
-        self.saved_listbox = tk.Listbox(save_frame, height=5, exportselection=False)
-        self.saved_listbox.pack(fill="x", padx=5, pady=5)
+        self.saved_listbox = tk.Listbox(save_frame, height=8, exportselection=False)
+        self.saved_listbox.pack(fill="both", expand=True, padx=5, pady=5)
 
         self.left_content_paned.add(top, minsize=85)
         self.left_content_paned.add(info, minsize=120)
-        self.left_content_paned.add(save_frame, minsize=120)
+        self.left_content_paned.add(save_frame, minsize=180)
         self.left_panel.bind("<Configure>", self._update_responsive_layout, add="+")
         self.root.after(100, self._update_responsive_layout)
 
@@ -2376,7 +2377,7 @@ class App:
             width=12
         ).pack(side="left", padx=(0, 0))
 
-        right_content_paned = tk.PanedWindow(right_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED)
+        right_content_paned = tk.PanedWindow(right_panel, orient=tk.VERTICAL, **PANED_WINDOW_KWARGS)
         right_content_paned.pack(fill="both", expand=True)
         self.right_content_paned = right_content_paned
 
@@ -2429,7 +2430,7 @@ class App:
         tk.Label(edit_row, text="秒").pack(side="left", padx=(0, 5))
         tk.Button(edit_row, text="套用偏移", command=self.apply_offset_from_selected).pack(side="left", padx=2)
 
-        json_split = tk.PanedWindow(json_panel, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        json_split = tk.PanedWindow(json_panel, orient=tk.HORIZONTAL, **PANED_WINDOW_KWARGS)
         json_split.pack(fill="both", expand=True)
         self.json_split_paned = json_split
 
