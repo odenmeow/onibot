@@ -16,6 +16,7 @@ from front import (
     ROUND_DONE_FINISH_GRACE_MS,
     recalculate_runtime_events_by_index,
     allocate_randat_blocks,
+    analyze_randat_safety_timeline,
     get_buff_cell_visual_state,
     is_slot_excluded_buff_group,
     move_rows_with_ab_gap_compensation,
@@ -27,6 +28,54 @@ def _event(at, buff_group=""):
 
 
 class RecalculateRuntimeTimelineTests(unittest.TestCase):
+    def test_randat_safety_basic_safe_case(self):
+        events = [
+            {"type": "press", "button": "pre", "at": 0.00, "at_jitter": 0.04},
+            {"type": "randat", "button": "", "at": 0.05, "at_jitter": 0.04},
+            {"type": "release", "button": "pre", "at": 0.10, "at_jitter": 0.04},
+            {"type": "press", "button": "a", "at": 0.15, "at_jitter": 0.04, "buff_group": "1"},
+            {"type": "release", "button": "a", "at": 0.20, "at_jitter": 0.04, "buff_group": "1"},
+            {"type": "press", "button": "post", "at": 0.25, "at_jitter": 0.04},
+        ]
+        result = analyze_randat_safety_timeline(events, 0.05)
+        self.assertTrue(result["safe"])
+        self.assertEqual(result["risk_count"], 0)
+
+    def test_randat_safety_reports_slot_boundary_and_preserves_timeline(self):
+        events = [
+            {"type": "press", "button": "pre", "at": 0.00, "at_jitter": 0.04},
+            {"type": "randat", "button": "", "at": 0.03, "at_jitter": 0.04},
+            {"type": "release", "button": "pre", "at": 0.08, "at_jitter": 0.04},
+            {"type": "press", "button": "a", "at": 0.13, "at_jitter": 0.04, "buff_group": "1"},
+            {"type": "release", "button": "a", "at": 0.18, "at_jitter": 0.04, "buff_group": "1"},
+        ]
+        before = json.loads(json.dumps(events))
+        result = analyze_randat_safety_timeline(events, 0.05)
+        self.assertFalse(result["safe"])
+        boundary = [r for r in result["risks"] if r.get("kind") == "slot_boundary"]
+        self.assertTrue(any(r.get("slot") == 1 and r.get("gap") == 0.03 and r.get("jitter") == 0.04 for r in boundary))
+        self.assertEqual(events, before)
+
+    def test_randat_safety_validates_actual_table_b_allocator_output(self):
+        events = [
+            {"type": "press", "button": "pre", "at": 0.00, "at_jitter": 0.04},
+            {"type": "randat", "button": "", "at": 0.05, "at_jitter": 0.04},
+            {"type": "release", "button": "pre", "at": 0.10, "at_jitter": 0.04},
+            {"type": "press", "button": "a", "at": 0.15, "at_jitter": 0.04, "buff_group": "1"},
+            {"type": "release", "button": "a", "at": 0.20, "at_jitter": 0.04, "buff_group": "1"},
+            {"type": "press", "button": "post", "at": 0.25, "at_jitter": 0.04},
+        ]
+
+        def bad_allocator(source, execution_round=1, assignment_override=None):
+            runtime, assignments, traces, debug = allocate_randat_blocks(source, execution_round, assignment_override)
+            runtime[1]["at"] = 0.32
+            runtime[2]["at"] = 0.34
+            return runtime, assignments, traces, debug
+
+        result = analyze_randat_safety_timeline(events, 0.05, allocator=bad_allocator)
+        self.assertFalse(result["safe"])
+        self.assertTrue(any(r.get("kind") == "table_b_gap" and r.get("gap") == 0.02 for r in result["risks"]))
+
     def test_duplicate_segment_with_same_at_does_not_flatten_following_events(self):
         events = [
             _event(5.00, "-1"),
