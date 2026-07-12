@@ -2086,7 +2086,7 @@ class App:
         self.current_name = ""
         self.current_loaded_from_saved = False
         self.connected = False
-        self.offline_mode = False
+        self.offline_mode = True
         self.control_request_lock = threading.Lock()
         self.status_request_lock = threading.Lock()
         self.control_conn = None
@@ -2478,7 +2478,6 @@ class App:
         self.restore_last_selected()
         self.on_json_mode_change()
         self.root.after(50, self.apply_saved_ui_layout)
-        self.root.after(150, self.auto_connect)
         self.root.after(200, self.poll_runtime_status)
 
     def get_current_paned_sash_x(self):
