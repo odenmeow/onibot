@@ -22,6 +22,9 @@ BUFF_SKIP_MODE_PASS = "pass"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
 RUNTIME_POLL_INTERVAL_MS = 300
+RUNTIME_POLL_IDLE_INTERVAL_MS = 1500
+FRONT_LOOP_STATUS_CACHE_MAX_AGE_SEC = 0.75
+STATUS_SUMMARY_RAW_LOG_MAX_CHARS = 512
 CONTROL_REQUEST_TIMEOUT_SEC = 8.0
 STATUS_REQUEST_TIMEOUT_SEC = 0.45
 FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
@@ -2183,8 +2186,13 @@ class App:
             if not getattr(self, "communication_log_enabled", True):
                 return
             copied = dict(entry)
+            raw_response_max_chars = copied.pop("_raw_response_text_max_chars", 8192)
             self._truncate_communication_log_field(copied, "payload_json_text")
-            self._truncate_communication_log_field(copied, "raw_response_text")
+            self._truncate_communication_log_field(
+                copied,
+                "raw_response_text",
+                max_chars=raw_response_max_chars
+            )
             self.communication_log_queue.put_nowait(copied)
         except Exception:
             pass
@@ -2244,10 +2252,14 @@ class App:
                     conn.sendall(wire_bytes)
                     line = conn_file.readline()
                     elapsed_ms = (time.monotonic() - start_time) * 1000.0
+                    raw_log_limit = 8192
+                    if channel == "status" and action == "status":
+                        raw_log_limit = STATUS_SUMMARY_RAW_LOG_MAX_CHARS
                     self._enqueue_communication_log({
                         **self._communication_log_base("take", channel, action, elapsed_ms=elapsed_ms),
                         "raw_response_byte_length": len(line.encode("utf-8")) if isinstance(line, str) else len(line or b""),
                         "raw_response_text": line,
+                        "_raw_response_text_max_chars": raw_log_limit,
                     })
                     if not line:
                         raise ConnectionError("連線已中斷，未收到回應")
@@ -2449,6 +2461,7 @@ class App:
         self.last_control_error = ""
         self.last_status_error = ""
         self.timeline_runtime_info = {"events": []}
+        self.timeline_runtime_status_updated_at = 0.0
         self.timeline_runtime_by_index = {}
         self.runtime_round_traces = []
         self.runtime_trace_status_note = ""
@@ -3880,6 +3893,7 @@ class App:
             or runtime_by_index != self.timeline_runtime_by_index
         )
         self.timeline_runtime_info = runtime
+        self.timeline_runtime_status_updated_at = float(time.monotonic())
         self.timeline_runtime_by_index = runtime_by_index
         self.runtime_round_traces = round_traces
         self.runtime_recent_ok_indices = recent_ok
@@ -3887,6 +3901,15 @@ class App:
         self.runtime_latest_index = latest_idx
         self.last_runtime_signature = signature
         return changed
+
+    def _next_runtime_status_poll_interval_ms(self):
+        if bool(getattr(self, "front_loop_enabled", False)):
+            return RUNTIME_POLL_INTERVAL_MS
+        runtime = getattr(self, "timeline_runtime_info", {})
+        state = str(runtime.get("state", "") if isinstance(runtime, dict) else "").strip().lower()
+        if state in {"running", "resumed", "paused", "waiting_ack"}:
+            return RUNTIME_POLL_INTERVAL_MS
+        return RUNTIME_POLL_IDLE_INTERVAL_MS
 
     def poll_runtime_status(self):
         self.runtime_status_poll_scheduled = False
@@ -3959,10 +3982,11 @@ class App:
                 self.monitor_reconnect_pending = True
         finally:
             if not bool(getattr(self, "runtime_status_poll_scheduled", False)):
-                self._schedule_runtime_status_poll(RUNTIME_POLL_INTERVAL_MS)
+                self._schedule_runtime_status_poll(self._next_runtime_status_poll_interval_ms())
 
     def clear_runtime_highlight(self, preserve_round_traces=False):
         self.timeline_runtime_info = {"events": []}
+        self.timeline_runtime_status_updated_at = 0.0
         self.timeline_runtime_by_index = {}
         if not preserve_round_traces:
             self.runtime_round_traces = []
@@ -5824,6 +5848,29 @@ class App:
             self.render_runtime_analysis(force=True)
             self.show_error("重複傳送失敗", str(e))
 
+    def _get_cached_front_loop_runtime_state(self):
+        runtime = getattr(self, "timeline_runtime_info", {})
+        if not isinstance(runtime, dict):
+            return ""
+        state = str(runtime.get("state", "")).strip().lower()
+        if not state:
+            return ""
+        try:
+            updated_at = float(getattr(self, "timeline_runtime_status_updated_at", 0.0) or 0.0)
+        except Exception:
+            updated_at = 0.0
+        if updated_at > 0 and (time.monotonic() - updated_at) <= FRONT_LOOP_STATUS_CACHE_MAX_AGE_SEC:
+            return state
+        return ""
+
+    def _read_front_loop_runtime_state(self):
+        cached_state = self._get_cached_front_loop_runtime_state()
+        if cached_state:
+            return cached_state
+        status_response = self.request_pi({"action": "status"}, write_response=False, channel="status")
+        runtime = status_response.get("timeline_runtime", {}) if isinstance(status_response, dict) else {}
+        return str(runtime.get("state", "")).strip().lower()
+
     def _poll_front_loop_round_done(self, display_name):
         if not self.front_loop_enabled:
             return
@@ -5831,9 +5878,7 @@ class App:
             self.front_loop_after_id = None
             return
         try:
-            status_response = self.request_pi({"action": "status"}, write_response=False, channel="status")
-            runtime = status_response.get("timeline_runtime", {})
-            state = str(runtime.get("state", "")).strip().lower()
+            state = self._read_front_loop_runtime_state()
             if state in ("running", "paused", "resumed"):
                 self._set_front_round_state("running")
                 self.front_loop_after_id = self.root.after(

@@ -365,11 +365,11 @@ class RuntimeDisplayTests(unittest.TestCase):
 
         self.assertEqual(len(app.root.after_calls), 2)
         self.assertEqual(app.root.after_calls[0][0], 200)
-        self.assertEqual(app.root.after_calls[1][0], sys.modules["front"].RUNTIME_POLL_INTERVAL_MS)
+        self.assertEqual(app.root.after_calls[1][0], sys.modules["front"].RUNTIME_POLL_IDLE_INTERVAL_MS)
         self.assertTrue(app.runtime_status_poll_scheduled)
         self.assertEqual(app.runtime_status_poll_sequence_id, 1)
         self.assertEqual(app.runtime_status_poll_loop_generation, 2)
-        self.assertEqual(app.runtime_status_poll_scheduled_after_ms, sys.modules["front"].RUNTIME_POLL_INTERVAL_MS)
+        self.assertEqual(app.runtime_status_poll_scheduled_after_ms, sys.modules["front"].RUNTIME_POLL_IDLE_INTERVAL_MS)
 
     def test_runtime_communication_log_base_includes_poll_fields(self):
         app = self._new_app()
