@@ -142,6 +142,22 @@ class CommunicationLoggingTests(unittest.TestCase):
 
         app.daily_log_queue.put_nowait.assert_not_called()
 
+    def test_daily_and_communication_log_toggles_are_independent(self):
+        app = App.__new__(App)
+        app.daily_log_enabled = True
+        app.communication_log_enabled = False
+        app.daily_log_queue = types.SimpleNamespace(put_nowait=mock.Mock())
+        app.communication_log_queue = types.SimpleNamespace(put_nowait=mock.Mock())
+        app._truncate_communication_log_field = App._truncate_communication_log_field.__get__(app, App)
+        app._log_message = App._log_message.__get__(app, App)
+        app._enqueue_communication_log = App._enqueue_communication_log.__get__(app, App)
+
+        app._enqueue_communication_log({"direction": "give", "action": "ping"})
+        app._log_message("前端", "仍應寫入 LogFile")
+
+        app.communication_log_queue.put_nowait.assert_not_called()
+        app.daily_log_queue.put_nowait.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
