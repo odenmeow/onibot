@@ -2087,6 +2087,17 @@ class App:
         self.frontend_monitor_alert_level = "info" if self.frontend_monitor_alert else ""
         self._render_frontend_error()
 
+    def _format_current_script_text(self):
+        if self.current_name:
+            source_note = "已儲存" if self.current_loaded_from_saved else "目前工作中"
+            return "【目前腳本：{}（{}）】".format(self.current_name, source_note)
+        return "【目前腳本：未命名 / 未儲存】"
+
+    def _sync_frontend_context(self):
+        if not hasattr(self, "frontend_error_text"):
+            return
+        self._render_frontend_error()
+
     def _is_ack_timeout_message(self, message):
         text = str(message or "").strip().lower()
         return ("ack_timeout" in text) or ("ack timeout" in text)
@@ -2173,9 +2184,17 @@ class App:
             lines.append("最後 control 錯誤：{}".format(self.last_control_error))
         if self.last_status_error:
             lines.append("最後 status 錯誤：{}".format(self.last_status_error))
+        context_lines = []
+        if hasattr(self, "status_var"):
+            status_text = str(self.status_var.get() or "").strip()
+            if status_text:
+                context_lines.append("狀態：{}".format(status_text))
+        if hasattr(self, "current_script_var") or hasattr(self, "current_name"):
+            context_lines.append("腳本：{}".format(self._format_current_script_text()))
         rendered_lines = []
         rendered_lines.extend(lines)
         rendered_lines.extend(info_lines)
+        rendered_lines.extend(context_lines)
         if not rendered_lines:
             rendered_lines = ["無"]
         fg_color = "#b30000"
@@ -2455,6 +2474,7 @@ class App:
     def set_status(self, message):
         self._log_message("Message", message)
         self.status_var.set(message)
+        self._sync_frontend_context()
 
     def _is_script_switch_for_load(self, target_name):
         target = str(target_name or "").strip()
@@ -3678,11 +3698,8 @@ class App:
         tk.Button(action_row, text="取消", command=dialog.destroy).pack(side="right")
 
     def update_current_labels(self):
-        if self.current_name:
-            source_note = "已儲存" if self.current_loaded_from_saved else "目前工作中"
-            self.current_script_var.set("【目前腳本：{}（{}）】".format(self.current_name, source_note))
-        else:
-            self.current_script_var.set("【目前腳本：未命名 / 未儲存】")
+        self.current_script_var.set(self._format_current_script_text())
+        self._sync_frontend_context()
 
     def write_text(self, obj):
         self.text.delete("1.0", tk.END)
