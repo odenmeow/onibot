@@ -2,7 +2,10 @@
 """
 executor_only 邊界說明：
 - 此模組僅負責「執行」已排程完成的 timeline 事件（press/release + at_ms）。
-- start_task 只接受可執行欄位：idx/event_id/at_ms/action/btn/skip_mode。
+- start_task 只接受可執行欄位：idx/event_id/at_ms/action/btn/skip_mode，
+  以及執行期 cooldown metadata：buff_group/buff_cycle_sec。
+- buff_group/buff_cycle_sec 僅用於 Pi 執行期判斷是否略過 GPIO 與壓縮時間軸；
+  後端不重新 random jitter，也不參與 randat 抽籤、候選池或 block assignment。
 - 任何抽籤/排程語意欄位（例如 randat 指令級資料）一律拒收，避免後端參與排程決策。
 """
 import json
@@ -85,18 +88,21 @@ timeline_cooldown_runtime = {
     "next_ready_at": {},
     "landed_index_by_group": {}
 }
+cooldown_sessions = {}
+active_cooldown_session_id = ""
 
 # 狀態輪詢防爆：避免 timeline_runtime.events / round_traces 無上限回傳造成卡頓
 STATUS_EVENTS_LIMIT = 120
 STATUS_ROUND_TRACES_LIMIT = 40
 START_TASK_ALLOWED_TIMELINE_FIELDS = {
     "idx", "event_id", "at_ms", "action", "btn", "skip_mode",
+    "buff_group", "buff_cycle_sec",
     "runtime_landed_index", "runtime_anchor_index", "runtime_occupies_original"
 }
 RUNTIME_SUMMARY_EVENT_FIELDS = (
     "event_id", "index", "runtime_index", "original_index", "source_target_at", "target_at",
     "actual_at", "wall_actual_at", "type", "button", "status", "runtime_landed_index",
-    "runtime_anchor_index", "runtime_occupies_original"
+    "runtime_anchor_index", "runtime_occupies_original", "buff_group", "buff_skip_mode", "compressed_sec"
 )
 
 
@@ -107,6 +113,57 @@ def _now_ms():
 
 def _new_server_task_id():
     return "srv-{}-{}".format(_now_ms(), uuid.uuid4().hex[:8])
+
+
+def _new_ephemeral_cooldown_session_id():
+    return "single-{}-{}".format(_now_ms(), uuid.uuid4().hex[:8])
+
+
+def get_or_create_cooldown_session(cooldown_session_id, keep_existing_active=True):
+    """Return a cooldown runtime shared by start_task rounds in one front-loop session."""
+    global active_cooldown_session_id
+    session_id = str(cooldown_session_id or "").strip() or _new_ephemeral_cooldown_session_id()
+    now_abs = time.monotonic()
+    with runtime_lock:
+        if session_id != active_cooldown_session_id:
+            # Bound memory: the frontend owns one repeat-execution cooldown session at
+            # a time. A new session starts fresh and old sessions are discarded.
+            existing = cooldown_sessions.get(session_id) if keep_existing_active else None
+            cooldown_sessions.clear()
+            if isinstance(existing, dict):
+                cooldown_sessions[session_id] = existing
+            active_cooldown_session_id = session_id
+        session = cooldown_sessions.get(session_id)
+        if not isinstance(session, dict):
+            session = {
+                "next_ready_at": {},
+                "landed_index_by_group": {},
+                "last_seen_at": now_abs
+            }
+            cooldown_sessions[session_id] = session
+        session["last_seen_at"] = now_abs
+    return session_id, session
+
+
+def reset_cooldown_sessions():
+    global active_cooldown_session_id
+    with runtime_lock:
+        cooldown_sessions.clear()
+        active_cooldown_session_id = ""
+        timeline_cooldown_runtime["next_ready_at"] = {}
+        timeline_cooldown_runtime["landed_index_by_group"] = {}
+
+
+def sync_timeline_cooldown_runtime_from_session(session_id=None):
+    with runtime_lock:
+        sid = str(session_id or active_cooldown_session_id or "").strip()
+        session = cooldown_sessions.get(sid) if sid else None
+        if not isinstance(session, dict):
+            timeline_cooldown_runtime["next_ready_at"] = {}
+            timeline_cooldown_runtime["landed_index_by_group"] = {}
+            return
+        timeline_cooldown_runtime["next_ready_at"] = dict(session.get("next_ready_at", {}))
+        timeline_cooldown_runtime["landed_index_by_group"] = dict(session.get("landed_index_by_group", {}))
 
 
 def make_error_response(code, message, phase, diag=None, status="error", server_task_id=None):
@@ -144,8 +201,8 @@ def set_timeline_runtime(mode, state, events_total=0, loop_count=0, server_task_
             "event_time_ms": _now_ms(),
             "heartbeat_interval_ms": 1000
         }
-        timeline_cooldown_runtime["next_ready_at"] = {}
-        timeline_cooldown_runtime["landed_index_by_group"] = {}
+        # Only reset per-round runtime display data here. Cross-round cooldown
+        # state lives in cooldown_sessions and must survive start_task rounds.
 
 
 def append_timeline_runtime_event(event_payload):
@@ -233,14 +290,18 @@ def get_timeline_runtime_snapshot():
     with runtime_lock:
         now_abs = time.monotonic()
         cooldowns = []
-        for group, ready_at in timeline_cooldown_runtime.get("next_ready_at", {}).items():
+        session_id = str(active_cooldown_session_id or "").strip()
+        active_session = cooldown_sessions.get(session_id) if session_id else None
+        cooldown_source = active_session if isinstance(active_session, dict) else timeline_cooldown_runtime
+        for group, ready_at in cooldown_source.get("next_ready_at", {}).items():
             remain = max(0.0, float(ready_at) - now_abs)
             if remain <= 0:
                 continue
             cooldowns.append({
+                "cooldown_session_id": session_id,
                 "buff_group": str(group),
                 "remain_sec": round(remain, 3),
-                "landed_index": timeline_cooldown_runtime.get("landed_index_by_group", {}).get(group)
+                "landed_index": cooldown_source.get("landed_index_by_group", {}).get(group)
             })
         events = timeline_runtime.get("events", [])
         if len(events) > STATUS_EVENTS_LIMIT:
@@ -271,6 +332,7 @@ def get_timeline_runtime_snapshot():
             "debug": dict(timeline_runtime.get("debug", {})),
             "runtime_version": int(timeline_runtime.get("runtime_version", 0)),
             "execution_round": int(timeline_runtime.get("execution_round", 0)),
+            "cooldown_session_id": session_id,
             "cooldowns": cooldowns
         }
 
@@ -283,6 +345,7 @@ def reset_runtime_state():
         loop_count=0,
         server_task_id=""
     )
+    reset_cooldown_sessions()
 
 
 def _normalize_round_traces_payload(raw):
@@ -520,7 +583,6 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
         at = max(0.0, float(ev.get("at", 0.0)))
         buff_group = str(ev.get("buff_group", "")).strip()
         buff_cycle_sec = max(0.0, float(ev.get("buff_cycle_sec", 0.0)))
-        buff_jitter_sec = abs(float(ev.get("buff_jitter_sec", 0.0)))
 
         if ev_type not in ("press", "release"):
             raise ValueError("第 {} 筆 event type 錯誤".format(i))
@@ -531,8 +593,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
             cfg = group_config.get(buff_group)
             if cfg is None:
                 group_config[buff_group] = {
-                    "cycle_sec": buff_cycle_sec,
-                    "jitter_sec": buff_jitter_sec
+                    "cycle_sec": buff_cycle_sec
                 }
         try:
             source_index = int(ev.get("runtime_source_index", i))
@@ -544,6 +605,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
             "button": button,
             "at": at,
             "buff_group": buff_group,
+            "buff_cycle_sec": buff_cycle_sec,
             "runtime_landed_index": ev.get("runtime_landed_index"),
             "runtime_anchor_index": ev.get("runtime_anchor_index"),
             "runtime_occupies_original": ev.get("runtime_occupies_original", 0),
@@ -559,6 +621,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
         wall_start = time.monotonic()
         timeline_shift = 0.0
         emitted_round_trace_groups = set()
+        group_decisions = {}
         try:
             for i, ev in enumerate(normalized):
                 resumed = _wait_if_paused_by_clock(clock)
@@ -587,25 +650,32 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                 ):
                     append_timeline_round_trace(round_trace)
                     emitted_round_trace_groups.add(buff_group)
+                decision = None
                 if buff_runtime is not None and buff_group in group_config:
-                    now_abs = time.monotonic()
-                    next_ready = buff_runtime["next_ready_at"].get(buff_group)
-                    if next_ready is not None and now_abs < next_ready:
-                        skip_by_cooldown = True
-                    else:
-                        cfg = group_config[buff_group]
-                        cd = max(0.0, cfg["cycle_sec"])
-                        buff_runtime["next_ready_at"][buff_group] = now_abs + cd
-                        landed_index = ev.get("runtime_landed_index")
-                        with runtime_lock:
-                            timeline_cooldown_runtime["next_ready_at"][buff_group] = now_abs + cd
-                            timeline_cooldown_runtime["landed_index_by_group"][buff_group] = landed_index
+                    decision = group_decisions.get(buff_group)
+                    if decision is None:
+                        now_abs = time.monotonic()
+                        next_ready = buff_runtime.setdefault("next_ready_at", {}).get(buff_group)
+                        skip_by_cooldown = bool(
+                            buff_skip_mode != BUFF_SKIP_MODE_NONE
+                            and next_ready is not None
+                            and now_abs < next_ready
+                        )
+                        decision = {
+                            "skip": skip_by_cooldown,
+                            "ready_at_before": next_ready,
+                            "cycle_sec": max(0.0, float(group_config[buff_group].get("cycle_sec", 0.0))),
+                            "cooldown_started": False
+                        }
+                        group_decisions[buff_group] = decision
+                    skip_by_cooldown = bool(decision.get("skip"))
 
                 if skip_by_cooldown and buff_skip_mode != BUFF_SKIP_MODE_NONE:
                     compressed_sec = 0.0
                     if buff_skip_mode == BUFF_SKIP_MODE_PASS:
-                        compressed_sec = max(0.0, wait_time)
-                        timeline_shift += compressed_sec
+                        new_shift = max(timeline_shift, source_target - logical_now)
+                        compressed_sec = max(0.0, new_shift - timeline_shift)
+                        timeline_shift = new_shift
                     elif buff_skip_mode == BUFF_SKIP_MODE_WALK and wait_time > 0:
                         safe_sleep(wait_time, clock=clock)
                     logical_actual_at = clock.now()
@@ -621,6 +691,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         "actual_at": round(logical_actual_at, 4),
                         "wall_actual_at": round(wall_actual_at, 4),
                         "status": "skipped_by_cooldown",
+                        "buff_group": buff_group,
                         "buff_skip_mode": buff_skip_mode,
                         "compressed_sec": round(compressed_sec, 4)
                     })
@@ -637,6 +708,7 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                         "wall_actual_at": round(wall_actual_at, 4),
                         "buff_skip_mode": buff_skip_mode,
                         "buff_group": buff_group,
+                        "compressed_sec": round(compressed_sec, 4),
                         "runtime_landed_index": ev.get("runtime_landed_index"),
                         "runtime_anchor_index": ev.get("runtime_anchor_index"),
                         "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
@@ -645,6 +717,15 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
 
                 if wait_time > 0:
                     safe_sleep(wait_time, clock=clock)
+
+                if decision is not None and not decision.get("cooldown_started"):
+                    cd = max(0.0, float(decision.get("cycle_sec", 0.0)))
+                    now_abs = time.monotonic()
+                    next_ready_at = now_abs + cd
+                    buff_runtime.setdefault("next_ready_at", {})[buff_group] = next_ready_at
+                    buff_runtime.setdefault("landed_index_by_group", {})[buff_group] = ev.get("runtime_landed_index")
+                    decision["cooldown_started"] = True
+                    sync_timeline_cooldown_runtime_from_session()
 
                 if ev["type"] == "press":
                     press_only(ev["button"])
@@ -663,7 +744,8 @@ def run_timeline(events, reset_stop_event=True, buff_runtime=None, buff_skip_mod
                     "target_at": round(target, 4),
                     "actual_at": round(logical_actual_at, 4),
                     "wall_actual_at": round(wall_actual_at, 4),
-                    "status": "ok"
+                    "status": "ok",
+                    "buff_group": buff_group
                 })
                 append_timeline_runtime_event({
                     "index": i,
@@ -696,7 +778,8 @@ def run_timeline_background(
     buff_skip_mode=BUFF_SKIP_MODE_WALK,
     runtime_version=0,
     execution_round=0,
-    runtime_debug=None
+    runtime_debug=None,
+    cooldown_session_id=""
 ):
     global current_run_status, current_run_clock
     try:
@@ -711,6 +794,8 @@ def run_timeline_background(
             runtime_version=runtime_version,
             execution_round=execution_round
         )
+        session_id, buff_runtime = get_or_create_cooldown_session(cooldown_session_id)
+        sync_timeline_cooldown_runtime_from_session(session_id)
         if isinstance(runtime_debug, dict):
             patch_timeline_runtime(debug=runtime_debug)
         current_run_status = {
@@ -719,7 +804,7 @@ def run_timeline_background(
             "message": "正在執行 timeline",
             "server_task_id": current_server_task_id
         }
-        run_timeline(events, buff_skip_mode=buff_skip_mode)
+        run_timeline(events, buff_runtime=buff_runtime, buff_skip_mode=buff_skip_mode)
         release_all()
         patch_timeline_runtime(state="finished")
         current_run_status = {
@@ -822,7 +907,7 @@ def parse_start_task_timeline(raw_timeline):
         extra_keys = sorted([k for k in row.keys() if k not in START_TASK_ALLOWED_TIMELINE_FIELDS])
         if extra_keys:
             raise ValueError(
-                "timeline 第 {} 列包含未允許欄位: {}（僅接受: idx/event_id/at_ms/action/btn/skip_mode/runtime_landed_index/runtime_anchor_index/runtime_occupies_original）".format(
+                "timeline 第 {} 列包含未允許欄位: {}（僅接受: idx/event_id/at_ms/action/btn/skip_mode/buff_group/buff_cycle_sec/runtime_landed_index/runtime_anchor_index/runtime_occupies_original）".format(
                     i, ",".join(extra_keys)
                 )
             )
@@ -841,11 +926,20 @@ def parse_start_task_timeline(raw_timeline):
             runtime_source_index = int(row.get("idx", i))
         except Exception:
             runtime_source_index = i
+        buff_group = str(row.get("buff_group", "") or "").strip()
+        try:
+            buff_cycle_sec = float(row.get("buff_cycle_sec", 0) or 0)
+        except Exception:
+            raise ValueError("timeline 第 {} 列 buff_cycle_sec 錯誤".format(i))
+        if buff_cycle_sec < 0:
+            raise ValueError("timeline 第 {} 列 buff_cycle_sec 不可為負數".format(i))
         event_id = str(row.get("event_id", ""))
         events.append({
             "type": action,
             "button": button,
             "at": max(0, at_ms) / 1000.0,
+            "buff_group": buff_group,
+            "buff_cycle_sec": buff_cycle_sec,
             "runtime_source_index": runtime_source_index,
             "event_id": event_id,
             "runtime_landed_index": row.get("runtime_landed_index"),
@@ -1210,6 +1304,7 @@ def handle_request(data):
                 phase="submit",
                 diag={"last_state": str(current_run_status.get("state", "")), "elapsed_ms": 0, "threshold_ms": 0}
             )
+        incoming_cooldown_session_id = str(data.get("cooldown_session_id", "") or "").strip()
 
         events = parse_start_task_timeline(data.get("timeline", []))
         runtime_debug_enabled = bool(data.get("runtime_debug_enabled", False))
@@ -1236,13 +1331,14 @@ def handle_request(data):
         skip_mode_values = [str(row.get("skip_mode", "")).strip().lower() for row in data.get("timeline", []) if isinstance(row, dict)]
         chosen_skip_mode = next((mode for mode in skip_mode_values if mode), BUFF_SKIP_MODE_WALK)
         buff_skip_mode, deprecated_alias = normalize_buff_skip_mode(chosen_skip_mode)
+        effective_cooldown_session_id, _ = get_or_create_cooldown_session(incoming_cooldown_session_id)
         current_server_task_id = _new_server_task_id()
         current_client_task_id = client_task_id
         stop_event.clear()
         pause_event.clear()
         current_run_thread = threading.Thread(
             target=run_timeline_background,
-            args=(events, buff_skip_mode, max(0, incoming_runtime_version), incoming_execution_round, effective_order_debug if runtime_debug_enabled else None),
+            args=(events, buff_skip_mode, max(0, incoming_runtime_version), incoming_execution_round, effective_order_debug if runtime_debug_enabled else None, effective_cooldown_session_id),
             daemon=True
         )
         current_run_thread.start()
@@ -1262,6 +1358,7 @@ def handle_request(data):
             "status": "ok",
             "mode": "timeline",
             "client_task_id": client_task_id,
+            "cooldown_session_id": effective_cooldown_session_id,
             "server_task_id": current_server_task_id,
             "state": {
                 "status": "running",

@@ -2946,6 +2946,7 @@ class App:
         self.front_loop_display_name = ""
         self.front_loop_after_id = None
         self.front_loop_round = 0
+        self.cooldown_session_id = ""
         self.front_round_state = "idle"
         self.front_round_state_changed_at = 0.0
         self.front_round_last_running_at = None
@@ -5058,6 +5059,10 @@ class App:
             action = str(ev.get("type", "")).strip().lower()
             button = str(ev.get("button", "")).strip().lower()
             skip_mode = normalize_front_skip_mode(ev.get("skip_mode", default_skip_mode))
+            try:
+                buff_cycle_sec = max(0.0, float(ev.get("buff_cycle_sec", ev.get("runtime_buff_cycle_applied", 0.0)) or 0.0))
+            except Exception:
+                buff_cycle_sec = 0.0
             timeline.append({
                 "idx": source_idx,
                 "event_id": self._runtime_event_id(normalized_execution_round, source_idx, action, button, at_ms),
@@ -5065,6 +5070,8 @@ class App:
                 "action": action,
                 "btn": button,
                 "skip_mode": skip_mode,
+                "buff_group": str(ev.get("buff_group", "") or "").strip(),
+                "buff_cycle_sec": buff_cycle_sec,
                 "runtime_landed_index": ev.get("runtime_landed_index"),
                 "runtime_anchor_index": ev.get("runtime_anchor_index"),
                 "runtime_occupies_original": ev.get("runtime_occupies_original", 0)
@@ -5073,6 +5080,7 @@ class App:
             "type": "start_task",
             "contract_version": RUNTIME_CONTRACT_VERSION,
             "client_task_id": self._next_client_task_id(),
+            "cooldown_session_id": str(getattr(self, "cooldown_session_id", "") or "").strip(),
             "sent_at_ms": sent_at_ms,
             "timeline": timeline,
             "runtime_debug_enabled": bool(self.config.get("runtime_debug_enabled", False))
@@ -6183,6 +6191,7 @@ class App:
 
     def _mark_loop_terminal(self):
         self.front_loop_enabled = False
+        self.cooldown_session_id = ""
         self.front_loop_ui_paused = False
         self.front_loop_display_name = ""
         self.front_inflight_client_task_id = ""
@@ -6312,6 +6321,7 @@ class App:
 
         display_name = self.current_name if self.current_name else "未命名資料"
         self.front_loop_enabled = True
+        self.cooldown_session_id = uuid.uuid4().hex
         self.front_loop_ui_paused = False
         self.front_loop_display_name = display_name
         self.front_loop_round = 0
