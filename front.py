@@ -3571,18 +3571,27 @@ class App:
         dialog.grab_set()
         dialog.resizable(False, False)
 
-        log_enabled_var = tk.BooleanVar(value=bool(getattr(self, "log_enabled", True)))
+        daily_log_enabled_var = tk.BooleanVar(value=bool(getattr(self, "daily_log_enabled", True)))
+        communication_log_enabled_var = tk.BooleanVar(value=bool(getattr(self, "communication_log_enabled", True)))
         tk.Checkbutton(
             dialog,
-            text="紀錄 LOG（關閉後不寫每日 LogFile 與 logs/communication.log）",
-            variable=log_enabled_var,
+            text="每日 LogFile（前端事件、狀態、錯誤）",
+            variable=daily_log_enabled_var,
             anchor="w",
             justify="left"
-        ).pack(fill="x", padx=14, pady=(14, 8))
+        ).pack(fill="x", padx=14, pady=(14, 4))
+
+        tk.Checkbutton(
+            dialog,
+            text="Communication log（前後端 request / response 診斷）",
+            variable=communication_log_enabled_var,
+            anchor="w",
+            justify="left"
+        ).pack(fill="x", padx=14, pady=(0, 8))
 
         tk.Label(
             dialog,
-            text="關閉後仍可正常執行，只是不再累積診斷紀錄；需要排查問題時再打開。",
+            text="可分開關閉：例如只停用 communication log，仍保留前端事件寫入每日 LogFile。",
             fg="#555555",
             wraplength=420,
             justify="left"
@@ -3592,15 +3601,21 @@ class App:
         btn_row.pack(fill="x", padx=14, pady=(0, 14))
 
         def save_settings():
-            enabled = bool(log_enabled_var.get())
-            self.log_enabled = enabled
-            self.daily_log_enabled = enabled
-            self.communication_log_enabled = enabled
-            self.config["log_enabled"] = enabled
-            self.config["daily_log_enabled"] = enabled
-            self.config["communication_log_enabled"] = enabled
+            daily_enabled = bool(daily_log_enabled_var.get())
+            communication_enabled = bool(communication_log_enabled_var.get())
+            self.daily_log_enabled = daily_enabled
+            self.communication_log_enabled = communication_enabled
+            self.log_enabled = daily_enabled or communication_enabled
+            self.config["log_enabled"] = self.log_enabled
+            self.config["daily_log_enabled"] = daily_enabled
+            self.config["communication_log_enabled"] = communication_enabled
             save_config(self.config)
-            self.set_status("LOG 紀錄已{}".format("啟用" if enabled else "關閉"))
+            self.set_status(
+                "LOG 設定已保存：LogFile {}、Communication {}".format(
+                    "啟用" if daily_enabled else "關閉",
+                    "啟用" if communication_enabled else "關閉"
+                )
+            )
             dialog.destroy()
 
         tk.Button(btn_row, text="取消", command=dialog.destroy).pack(side="right", padx=(6, 0))
