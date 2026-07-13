@@ -160,7 +160,9 @@ def load_config():
             "send_delay_sec": 1.0,
             "auto_connect_enabled": True,
             "auto_switch_runtime_on_loop_start": True,
+            "log_enabled": True,
             "communication_log_enabled": True,
+            "daily_log_enabled": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
@@ -201,7 +203,9 @@ def load_config():
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
             "auto_connect_enabled": bool(data.get("auto_connect_enabled", True)),
             "auto_switch_runtime_on_loop_start": bool(data.get("auto_switch_runtime_on_loop_start", True)),
-            "communication_log_enabled": bool(data.get("communication_log_enabled", True)),
+            "log_enabled": bool(data.get("log_enabled", data.get("communication_log_enabled", True))),
+            "communication_log_enabled": bool(data.get("communication_log_enabled", data.get("log_enabled", True))),
+            "daily_log_enabled": bool(data.get("daily_log_enabled", data.get("log_enabled", True))),
             "last_selected_name": data.get("last_selected_name", ""),
             "buff_skip_mode": normalize_front_skip_mode(data.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)),
             "manual_offset_sec": float(data.get("manual_offset_sec", NEGATIVE_GROUP_ANCHOR_GAP_SEC)),
@@ -227,7 +231,9 @@ def load_config():
             "send_delay_sec": 1.0,
             "auto_connect_enabled": True,
             "auto_switch_runtime_on_loop_start": True,
+            "log_enabled": True,
             "communication_log_enabled": True,
+            "daily_log_enabled": True,
             "last_selected_name": "",
             "buff_skip_mode": BUFF_SKIP_MODE_PASS,
             "manual_offset_sec": 0.2,
@@ -2037,6 +2043,8 @@ class App:
         text = str(message or "").strip()
         if not text or text == "無":
             return
+        if not getattr(self, "daily_log_enabled", getattr(self, "log_enabled", True)):
+            return
         try:
             self.daily_log_queue.put_nowait({
                 "timestamp": time.time(),
@@ -2880,7 +2888,9 @@ class App:
         self.control_request_lock = threading.Lock()
         self.status_request_lock = threading.Lock()
         self.communication_log_path = COMMUNICATION_LOG_FILE
-        self.communication_log_enabled = bool(self.config.get("communication_log_enabled", True))
+        self.log_enabled = bool(self.config.get("log_enabled", self.config.get("communication_log_enabled", True)))
+        self.daily_log_enabled = bool(self.config.get("daily_log_enabled", self.log_enabled))
+        self.communication_log_enabled = bool(self.config.get("communication_log_enabled", self.log_enabled))
         self.communication_log_queue = queue.Queue()
         self.communication_log_thread = None
         self._start_communication_log_writer()
@@ -3147,7 +3157,12 @@ class App:
             command=self.restore_pre_run_state,
             state="disabled"
         )
-        self.restore_pre_run_btn.pack(side="left")
+        self.restore_pre_run_btn.pack(side="left", padx=(0, 4))
+        tk.Button(
+            top_row,
+            text="設定",
+            command=self.open_app_settings_dialog
+        ).pack(side="left")
         tk.Label(
             jitter_frame,
             text="【註：buff_group 為負值時，請用「糾正複製體」重算；「套用偏移」僅手動平移時間。】"
@@ -3548,6 +3563,56 @@ class App:
     def get_hint_note_text(self):
         text = str(self.config.get("hint_note_text", "")).strip()
         return text or DEFAULT_HINT_NOTE_TEXT
+
+    def open_app_settings_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("設定")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        log_enabled_var = tk.BooleanVar(value=bool(getattr(self, "log_enabled", True)))
+        tk.Checkbutton(
+            dialog,
+            text="紀錄 LOG（關閉後不寫每日 LogFile 與 logs/communication.log）",
+            variable=log_enabled_var,
+            anchor="w",
+            justify="left"
+        ).pack(fill="x", padx=14, pady=(14, 8))
+
+        tk.Label(
+            dialog,
+            text="關閉後仍可正常執行，只是不再累積診斷紀錄；需要排查問題時再打開。",
+            fg="#555555",
+            wraplength=420,
+            justify="left"
+        ).pack(fill="x", padx=14, pady=(0, 12))
+
+        btn_row = tk.Frame(dialog)
+        btn_row.pack(fill="x", padx=14, pady=(0, 14))
+
+        def save_settings():
+            enabled = bool(log_enabled_var.get())
+            self.log_enabled = enabled
+            self.daily_log_enabled = enabled
+            self.communication_log_enabled = enabled
+            self.config["log_enabled"] = enabled
+            self.config["daily_log_enabled"] = enabled
+            self.config["communication_log_enabled"] = enabled
+            save_config(self.config)
+            self.set_status("LOG 紀錄已{}".format("啟用" if enabled else "關閉"))
+            dialog.destroy()
+
+        tk.Button(btn_row, text="取消", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        tk.Button(
+            btn_row,
+            text="保存",
+            bg="#fff4b3",
+            activebackground="#ffe08a",
+            command=save_settings
+        ).pack(side="right")
+        self._position_dialog_to_app_lower_center(dialog)
+        dialog.focus_force()
 
     def open_hint_note_dialog(self):
         dialog = tk.Toplevel(self.root)
