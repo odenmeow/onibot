@@ -117,7 +117,7 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
         self.assertIn("runtime_diag", full)
         self.assertIn("debug", full)
 
-    def test_same_group_second_event_can_be_skipped_in_same_round(self):
+    def test_same_group_second_event_reuses_group_decision_in_same_round(self):
         runtime = {"next_ready_at": {}}
         events = [
             {"type": "press", "button": "f", "at": 0.0, "at_jitter": 0.0, "buff_group": "1", "buff_cycle_sec": 15.0, "buff_jitter_sec": 0.0},
@@ -155,7 +155,7 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             backend.release_only = orig_release
 
         self.assertEqual(results[0]["status"], "ok")
-        self.assertEqual(results[1]["status"], "skipped_by_cooldown")
+        self.assertEqual(results[1]["status"], "ok")
 
     def test_backend_uses_frontend_computed_at_without_runtime_randomization(self):
         events = [
@@ -241,8 +241,8 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             backend.press_only = orig_press
             backend.release_only = orig_release
 
-        self.assertEqual(results[1]["status"], "skipped_by_cooldown")
-        self.assertEqual(len(waits), 0)
+        self.assertEqual(results[1]["status"], "ok")
+        self.assertEqual(len(waits), 1)
 
     def test_skip_mode_walk_keeps_wait_for_skipped_row(self):
         runtime = {"next_ready_at": {}}
@@ -268,8 +268,104 @@ class BackendCooldownRuntimeTests(unittest.TestCase):
             backend.press_only = orig_press
             backend.release_only = orig_release
 
-        self.assertEqual(results[1]["status"], "skipped_by_cooldown")
+        self.assertEqual(results[1]["status"], "ok")
         self.assertGreater(waits[0], 0.0)
+
+    def test_cooldown_group_executes_press_and_release_and_sets_once(self):
+        runtime = {"next_ready_at": {}, "landed_index_by_group": {}}
+        events = [
+            {"type": "press", "button": "a", "at": 1.00, "buff_group": "1", "buff_cycle_sec": 60.0},
+            {"type": "release", "button": "a", "at": 1.10, "buff_group": "1", "buff_cycle_sec": 60.0},
+        ]
+        tick = {"t": 100.0}
+        calls = []
+        orig_monotonic, orig_sleep, orig_press, orig_release = backend.time.monotonic, backend.safe_sleep, backend.press_only, backend.release_only
+        try:
+            backend.time.monotonic = lambda: tick["t"]
+            backend.safe_sleep = lambda sec, **_kwargs: tick.__setitem__("t", tick["t"] + max(0.0, float(sec)))
+            backend.press_only = lambda btn: calls.append(("press", btn, tick["t"]))
+            backend.release_only = lambda btn: calls.append(("release", btn, tick["t"]))
+            results = backend.run_timeline(events, buff_runtime=runtime, buff_skip_mode=backend.BUFF_SKIP_MODE_PASS)
+        finally:
+            backend.time.monotonic, backend.safe_sleep, backend.press_only, backend.release_only = orig_monotonic, orig_sleep, orig_press, orig_release
+        self.assertEqual([r["status"] for r in results], ["ok", "ok"])
+        self.assertEqual([c[:2] for c in calls], [("press", "a"), ("release", "a")])
+        self.assertAlmostEqual(runtime["next_ready_at"]["1"], calls[0][2] + 60.0)
+
+    def test_same_session_cooldown_pass_skips_group_and_compresses_following_event(self):
+        runtime = {"next_ready_at": {"1": 999.0}, "landed_index_by_group": {}}
+        events = [
+            {"type": "press", "button": "a", "at": 1.00, "buff_group": "1", "buff_cycle_sec": 60.0},
+            {"type": "release", "button": "a", "at": 1.10, "buff_group": "1", "buff_cycle_sec": 60.0},
+            {"type": "press", "button": "d", "at": 3.00},
+        ]
+        tick = {"t": 100.0}
+        waits, calls = [], []
+        orig_monotonic, orig_sleep, orig_press, orig_release = backend.time.monotonic, backend.safe_sleep, backend.press_only, backend.release_only
+        try:
+            backend.time.monotonic = lambda: tick["t"]
+            def fake_sleep(sec, **_kwargs):
+                waits.append(round(float(sec), 4)); tick["t"] += max(0.0, float(sec))
+            backend.safe_sleep = fake_sleep
+            backend.press_only = lambda btn: calls.append(("press", btn, tick["t"]))
+            backend.release_only = lambda btn: calls.append(("release", btn, tick["t"]))
+            results = backend.run_timeline(events, buff_runtime=runtime, buff_skip_mode=backend.BUFF_SKIP_MODE_PASS)
+        finally:
+            backend.time.monotonic, backend.safe_sleep, backend.press_only, backend.release_only = orig_monotonic, orig_sleep, orig_press, orig_release
+        self.assertEqual([r["status"] for r in results[:2]], ["skipped_by_cooldown", "skipped_by_cooldown"])
+        self.assertEqual(calls, [("press", "d", 101.9)])
+        self.assertEqual(runtime["next_ready_at"]["1"], 999.0)
+        self.assertEqual(waits, [1.9])
+
+    def test_same_session_cooldown_walk_keeps_following_event_time(self):
+        runtime = {"next_ready_at": {"1": 999.0}, "landed_index_by_group": {}}
+        events = [
+            {"type": "press", "button": "a", "at": 1.00, "buff_group": "1", "buff_cycle_sec": 60.0},
+            {"type": "release", "button": "a", "at": 1.10, "buff_group": "1", "buff_cycle_sec": 60.0},
+            {"type": "press", "button": "d", "at": 3.00},
+        ]
+        tick = {"t": 100.0}; waits=[]; calls=[]
+        orig_monotonic, orig_sleep, orig_press, orig_release = backend.time.monotonic, backend.safe_sleep, backend.press_only, backend.release_only
+        try:
+            backend.time.monotonic = lambda: tick["t"]
+            backend.safe_sleep = lambda sec, **_kwargs: (waits.append(round(float(sec), 4)), tick.__setitem__("t", tick["t"] + max(0.0, float(sec))))
+            backend.press_only = lambda btn: calls.append(("press", btn, tick["t"]))
+            backend.release_only = lambda btn: calls.append(("release", btn, tick["t"]))
+            results = backend.run_timeline(events, buff_runtime=runtime, buff_skip_mode=backend.BUFF_SKIP_MODE_WALK)
+        finally:
+            backend.time.monotonic, backend.safe_sleep, backend.press_only, backend.release_only = orig_monotonic, orig_sleep, orig_press, orig_release
+        self.assertEqual([r["status"] for r in results[:2]], ["skipped_by_cooldown", "skipped_by_cooldown"])
+        self.assertEqual(calls, [("press", "d", 103.0)])
+        self.assertEqual(waits, [1.0, 0.1, 1.9])
+
+    def test_cooldown_expiry_and_new_session_and_reset_runtime(self):
+        sid1, runtime1 = backend.get_or_create_cooldown_session("s1")
+        runtime1["next_ready_at"]["1"] = 10.0
+        sid2, runtime2 = backend.get_or_create_cooldown_session("s2")
+        self.assertEqual(sid2, "s2")
+        self.assertNotIn("1", runtime2["next_ready_at"])
+        backend.reset_runtime_state()
+        self.assertEqual(backend.cooldown_sessions, {})
+
+    def test_cooldown_expired_group_executes_again(self):
+        runtime = {"next_ready_at": {"1": 50.0}, "landed_index_by_group": {}}
+        events = [
+            {"type": "press", "button": "a", "at": 0.0, "buff_group": "1", "buff_cycle_sec": 10.0},
+            {"type": "release", "button": "a", "at": 0.1, "buff_group": "1", "buff_cycle_sec": 10.0},
+        ]
+        tick={"t":100.0}; calls=[]
+        orig_monotonic, orig_sleep, orig_press, orig_release = backend.time.monotonic, backend.safe_sleep, backend.press_only, backend.release_only
+        try:
+            backend.time.monotonic=lambda: tick["t"]
+            backend.safe_sleep=lambda sec, **_kwargs: tick.__setitem__("t", tick["t"]+max(0.0,float(sec)))
+            backend.press_only=lambda btn: calls.append(("press", btn))
+            backend.release_only=lambda btn: calls.append(("release", btn))
+            results=backend.run_timeline(events, buff_runtime=runtime, buff_skip_mode=backend.BUFF_SKIP_MODE_PASS)
+        finally:
+            backend.time.monotonic, backend.safe_sleep, backend.press_only, backend.release_only = orig_monotonic, orig_sleep, orig_press, orig_release
+        self.assertEqual([r["status"] for r in results], ["ok", "ok"])
+        self.assertEqual(calls, [("press", "a"), ("release", "a")])
+        self.assertAlmostEqual(runtime["next_ready_at"]["1"], 110.0)
 
     def test_pause_resume_delays_timeline_without_catchup(self):
         events = [
