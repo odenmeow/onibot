@@ -123,6 +123,25 @@ class CommunicationLoggingTests(unittest.TestCase):
 
         self.assertEqual(response["status"], "ok")
 
+    def test_communication_log_toggle_skips_enqueue(self):
+        app = self._new_app()
+        app.communication_log_enabled = False
+
+        app._enqueue_communication_log({"direction": "give", "action": "ping"})
+
+        self.assertEqual(app.logged, [])
+
+    def test_daily_log_toggle_skips_queue(self):
+        app = App.__new__(App)
+        app.daily_log_enabled = False
+        app.log_enabled = False
+        app.daily_log_queue = types.SimpleNamespace(put_nowait=mock.Mock())
+        app._log_message = App._log_message.__get__(app, App)
+
+        app._log_message("前端", "不應寫入")
+
+        app.daily_log_queue.put_nowait.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
