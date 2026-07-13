@@ -3033,15 +3033,16 @@ class App:
         row = tk.Frame(info)
         row.pack(fill="x", padx=8, pady=2)
 
+        self.pi_ip_row = row
         tk.Label(row, text="Pi IP：").pack(side="left")
         self.pi_ip_entry = tk.Entry(row, width=18)
         self.pi_ip_entry.insert(0, self.config["pi_host"])
         self.pi_ip_entry.pack(side="left", padx=5)
-        tk.Label(row, text="送出延遲(秒)：").pack(side="left", padx=(8, 0))
+        self.send_delay_label = tk.Label(row, text="送出延遲(秒)：")
         self.send_delay_entry = tk.Entry(row, width=8)
         self.send_delay_entry.insert(0, str(self.config.get("send_delay_sec", 1.0)))
-        self.send_delay_entry.pack(side="left", padx=5)
-        tk.Button(row, text="保存", command=self.save_apply_info).pack(side="left", padx=5)
+        self.send_delay_save_button = tk.Button(row, text="保存", command=self.save_apply_info)
+        self.send_delay_row = tk.Frame(info)
 
         connection_row = tk.Frame(info)
         connection_row.pack(fill="x", padx=8, pady=(2, 3))
@@ -3073,6 +3074,7 @@ class App:
 
         buff_mode_row = tk.Frame(info)
         buff_mode_row.pack(fill="x", padx=8, pady=(0, 5))
+        self.buff_mode_row = buff_mode_row
         tk.Label(buff_mode_row, text="buff 略過模式：").pack(side="left")
         self.buff_skip_mode_var = tk.StringVar(value=normalize_front_skip_mode(self.config.get("buff_skip_mode", BUFF_SKIP_MODE_PASS)))
         self.buff_skip_mode_combo = ttk.Combobox(
@@ -3364,7 +3366,27 @@ class App:
             btn.pack_forget()
             btn.pack(fill="x", padx=padx, pady=2)
 
+    def _layout_apply_info_wide(self):
+        self.send_delay_row.pack_forget()
+        self.send_delay_label.pack_forget()
+        self.send_delay_entry.pack_forget()
+        self.send_delay_save_button.pack_forget()
+        self.send_delay_label.pack(in_=self.pi_ip_row, side="left", padx=(8, 0))
+        self.send_delay_entry.pack(in_=self.pi_ip_row, side="left", padx=5)
+        self.send_delay_save_button.pack(in_=self.pi_ip_row, side="left", padx=5)
+
+    def _layout_apply_info_compact(self):
+        self.send_delay_label.pack_forget()
+        self.send_delay_entry.pack_forget()
+        self.send_delay_save_button.pack_forget()
+        self.send_delay_row.pack_forget()
+        self.send_delay_row.pack(fill="x", padx=8, pady=(0, 5), after=self.buff_mode_row)
+        self.send_delay_label.pack(in_=self.send_delay_row, side="left")
+        self.send_delay_entry.pack(in_=self.send_delay_row, side="left", padx=5)
+        self.send_delay_save_button.pack(in_=self.send_delay_row, side="left", padx=5)
+
     def _layout_left_controls_wide(self):
+        self._layout_apply_info_wide()
         btn_count = max(1, len(getattr(self, "top_control_buttons", [])))
         for idx, btn in enumerate(self.top_control_buttons):
             btn.grid_forget()
@@ -3387,6 +3409,7 @@ class App:
         self.left_optional_panes_hidden = False
 
     def _layout_left_controls_compact(self):
+        self._layout_apply_info_compact()
         btn_count = len(self.top_control_buttons)
         for idx, btn in enumerate(self.top_control_buttons):
             btn.grid_forget()
@@ -3399,10 +3422,9 @@ class App:
         self._pack_buttons_vertical(self.save_primary_buttons, padx=0)
 
         panes = list(self.left_content_paned.panes())
-        if str(self.info_panel) in panes:
-            self.left_content_paned.forget(self.info_panel)
-        panes = list(self.left_content_paned.panes())
-        self.left_optional_panes_hidden = True
+        if str(self.info_panel) not in panes:
+            self.left_content_paned.add(self.info_panel, after=self.top_panel, minsize=150)
+        self.left_optional_panes_hidden = False
 
     def _update_responsive_layout(self, event=None):
         if not hasattr(self, "left_panel"):
