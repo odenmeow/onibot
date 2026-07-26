@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import camera_capture
+from ai_monitor import AIMonitor, AlarmPlayer, is_timeout_error
 from camera_capture import CameraCapture, classify_device
 from image_library import ImageLibrary, ImageLibraryFullError
 from qwen_client import QwenClient, QwenError, choose_model
@@ -73,6 +74,33 @@ class QwenTests(unittest.TestCase):
     def test_chat_rejects_blank_model_without_request(self):
         client = QwenClient(model="", opener=lambda *_a, **_k: self.fail("called"))
         with self.assertRaisesRegex(QwenError, "尚未選擇模型"): client.chat("hi")
+
+
+class AIMonitorTests(unittest.TestCase):
+    def test_qwen_timeout_is_classified(self):
+        self.assertTrue(is_timeout_error(QwenError("API timeout")))
+        self.assertFalse(is_timeout_error(QwenError("無法連線")))
+
+    def test_delay_occurs_after_completed_attempt(self):
+        camera = mock.Mock(); camera.latest_frame.return_value = object(); camera.error = ""
+        client = mock.Mock(timeout=30); client.chat.side_effect = ["X", RuntimeError("done")]
+        monitor = AIMonitor(camera, client, [{"enabled": True, "prompt": "p"}], after_answer_delay=.15)
+        encoded = mock.Mock(); encoded.tobytes.return_value = b"jpg"
+        cv2 = mock.Mock(); cv2.imencode.return_value = (True, encoded)
+        started = time.monotonic()
+        with mock.patch.dict("sys.modules", {"cv2": cv2}):
+            monitor.start()
+            while client.chat.call_count < 2 and time.monotonic() - started < 1: time.sleep(.01)
+            monitor.stop()
+        self.assertGreaterEqual(time.monotonic() - started, .14)
+
+    def test_builtin_alarm_does_not_require_sound_path(self):
+        alarm = AlarmPlayer(sound_path="", sound_mode="system_alarm")
+        with mock.patch.object(alarm, "_beep") as beep:
+            self.assertTrue(alarm.play("error"))
+            deadline = time.time() + 1
+            while alarm._playing and time.time() < deadline: time.sleep(.01)
+        beep.assert_called_once_with("error")
 
 
 class ImageLibraryTests(unittest.TestCase):

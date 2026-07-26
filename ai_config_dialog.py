@@ -26,7 +26,7 @@ class AIConfigDialog:
             device_id=ai.get("camera_device_id", ""), camera_name=ai.get("camera_name", ""),
             width=ai.get("camera_width"), height=ai.get("camera_height"), fps=ai.get("camera_fps"), fourcc=ai.get("camera_fourcc"))
         self.library = ImageLibrary(os.path.join(os.path.dirname(__file__), "saved_ai_images"))
-        self.alarm = AlarmPlayer(ai.get("sound_path", "")); self.alarm.enabled = ai.get("sound_enabled", True)
+        self.alarm = AlarmPlayer(ai.get("sound_path", ""), sound_mode=ai.get("sound_mode", "system_alarm"))
         self.monitor = None; self.devices = []; self.capabilities = []
         self.displayed_frame = self.selected_image = self._selected_item = self.zoom_window = None
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
@@ -62,11 +62,29 @@ class AIConfigDialog:
         qbox = ttk.LabelFrame(self.window, text="Ollama 與監控設定"); qbox.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8)
         self.base_url = self._entry(qbox, 0, "API 位址", ai.get("base_url", "http://127.0.0.1:11434"), 25)
         ttk.Label(qbox, text="模型").grid(row=0, column=2); self.model = ttk.Combobox(qbox, width=20); self.model.set(ai.get("model", "qwen3-vl:8b")); self.model.grid(row=0, column=3)
-        self.timeout = self._entry(qbox, 4, "timeout", ai.get("timeout", 30), 6)
-        self.interval = self._entry(qbox, 6, "Monitor 間隔", ai.get("interval", 5), 6)
-        self.sound_enabled = tk.BooleanVar(value=ai.get("sound_enabled", True)); ttk.Checkbutton(qbox, text="鬧鐘", variable=self.sound_enabled).grid(row=0, column=8)
-        self.sound_path = self._entry(qbox, 9, "聲音檔", ai.get("sound_path", ""), 16)
-        ttk.Button(qbox, text="檢查 Ollama", command=self.test_connection).grid(row=0, column=11)
+        ttk.Button(qbox, text="檢查 Ollama", command=self.test_connection).grid(row=0, column=4, padx=4)
+        self.timeout = self._entry(qbox, 0, "AI 回答逾時", ai.get("timeout", 30), 6, row=1, suffix="秒")
+        self.after_answer_delay = self._entry(qbox, 3, "回答完成後等待", ai.get("after_answer_delay", ai.get("interval", 0)), 6, row=1, suffix="秒")
+        self._tooltip(self.timeout, "單次送出圖片後，最多等待 AI 回答的時間")
+        self._tooltip(self.after_answer_delay, "AI 回答或錯誤處理完成後，再等待幾秒開始下一輪；0 表示立刻繼續")
+        self.alarm_on_detected = tk.BooleanVar(value=ai.get("alarm_on_detected", ai.get("sound_enabled", True)))
+        self.alarm_on_timeout = tk.BooleanVar(value=ai.get("alarm_on_timeout", True))
+        self.alarm_on_error = tk.BooleanVar(value=ai.get("alarm_on_error", False))
+        for col, (label, variable, tip) in enumerate((("偵測到 O 時警報", self.alarm_on_detected, "AI 回答 O 時持續警報"), ("AI 回答逾時時警報", self.alarm_on_timeout, "AI 等待超過設定秒數時短促警報"), ("系統錯誤時警報", self.alarm_on_error, "相機、Ollama 或圖片錯誤時提示；相同錯誤 10 秒內一次"))):
+            widget = ttk.Checkbutton(qbox, text=label, variable=variable); widget.grid(row=2, column=col, columnspan=2, sticky="w"); self._tooltip(widget, tip)
+        ttk.Label(qbox, text="警報聲音").grid(row=3, column=0, sticky="e")
+        self.sound_mode = tk.StringVar(value=ai.get("sound_mode", "system_alarm")); self.sound_mode_box = ttk.Combobox(qbox, state="readonly", width=14, textvariable=self.sound_mode,
+            values=("系統警報聲", "系統提示音", "自訂聲音檔", "靜音")); self.sound_mode_box.grid(row=3, column=1, sticky="w"); self.sound_mode_box.bind("<<ComboboxSelected>>", self._sound_mode_changed)
+        mode_labels = {"system_alarm": "系統警報聲", "system_notice": "系統提示音", "custom": "自訂聲音檔", "mute": "靜音"}
+        self.sound_mode.set(mode_labels.get(ai.get("sound_mode", "system_alarm"), "系統警報聲"))
+        self.sound_file_label = ttk.Label(qbox, text=os.path.basename(ai.get("sound_path", "")) or "尚未選擇檔案", width=22)
+        self.sound_file_label.grid(row=3, column=2, sticky="w"); self.sound_file_label._full_path = ai.get("sound_path", "")
+        self.sound_path = tk.StringVar(value=ai.get("sound_path", ""))
+        self.pick_sound_button = ttk.Button(qbox, text="選擇聲音檔", command=self.pick_sound); self.pick_sound_button.grid(row=3, column=3)
+        self.test_sound_button = ttk.Button(qbox, text="測試聲音", command=self.test_sound); self.test_sound_button.grid(row=3, column=4)
+        ttk.Button(qbox, text="停止鬧鐘", command=self.alarm.stop).grid(row=3, column=5)
+        self.sound_status = ttk.Label(qbox, text=""); self.sound_status.grid(row=4, column=0, columnspan=6, sticky="w")
+        self._sound_mode_changed()
 
         left = ttk.Frame(self.window); left.grid(row=2, column=0, sticky="nsew", padx=(8, 4)); left.columnconfigure(0, weight=1); left.rowconfigure(2, weight=1)
         sysbox = ttk.LabelFrame(left, text="系統提示詞（多行）"); sysbox.grid(row=0, column=0, sticky="ew")
@@ -98,14 +116,26 @@ class AIConfigDialog:
         ttk.Button(controls, text="停止鬧鐘", command=self.alarm.stop).pack(side="left")
         self.monitor_status = ttk.Label(right, text="AI Monitor：已停止"); self.monitor_status.grid(row=3, column=0, sticky="w")
         self.response = tk.Text(right, state="disabled"); self.response.grid(row=4, column=0, sticky="nsew")
+        history_box = ttk.LabelFrame(right, text="最近 50 次提問歷史"); history_box.grid(row=5, column=0, sticky="ew")
+        self.history_tree = ttk.Treeview(history_box, columns=("summary",), show="headings", height=5); self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果"); self.history_tree.pack(fill="x"); self._refresh_history()
         bottom = ttk.Frame(self.window); bottom.grid(row=3, column=0, columnspan=2, sticky="e", padx=8, pady=5)
         ttk.Button(bottom, text="保存設定", command=self.save_settings).pack(side="left")
         ttk.Button(bottom, text="套用並重新連接相機", command=lambda: self.apply_camera(save=True)).pack(side="left")
         ttk.Button(bottom, text="關閉", command=self.close).pack(side="left")
 
     @staticmethod
-    def _entry(parent, column, label, value, width=20):
-        ttk.Label(parent, text=label).grid(row=0, column=column); entry = ttk.Entry(parent, width=width); entry.insert(0, str(value)); entry.grid(row=0, column=column + 1); return entry
+    def _entry(parent, column, label, value, width=20, row=0, suffix=""):
+        ttk.Label(parent, text=label).grid(row=row, column=column); entry = ttk.Entry(parent, width=width); entry.insert(0, str(value)); entry.grid(row=row, column=column + 1)
+        if suffix: ttk.Label(parent, text=suffix).grid(row=row, column=column + 2, sticky="w")
+        return entry
+    @staticmethod
+    def _tooltip(widget, text):
+        tip = {"window": None}
+        def show(_event):
+            win = tk.Toplevel(widget); win.wm_overrideredirect(True); win.geometry("+{}+{}".format(widget.winfo_rootx() + 12, widget.winfo_rooty() + widget.winfo_height() + 4)); ttk.Label(win, text=text, padding=5).pack(); tip["window"] = win
+        def hide(_event):
+            if tip["window"]: tip["window"].destroy(); tip["window"] = None
+        widget.bind("<Enter>", show, add="+"); widget.bind("<Leave>", hide, add="+")
     @staticmethod
     def _resolution_text(w, h): return "{} × {}".format(w, h) if w and h else "自動"
     def _schedule(self, delay, callback):
@@ -187,8 +217,12 @@ class AIConfigDialog:
         if self.mode.get() == "auto": self.show_latest()
         if self.monitor:
             while not self.monitor.results.empty():
-                _, kind, value = self.monitor.results.get_nowait(); self._append("AI" if kind == "answer" else "錯誤", value.get("text") if isinstance(value, dict) else value)
-                if kind == "error": self.monitor_status.config(text="AI Monitor：發生錯誤")
+                _, kind, value = self.monitor.results.get_nowait()
+                self._record_history(value)
+                if kind == "answer": self._append("AI", value["text"])
+                elif kind == "timeout":
+                    waited = value.get("timeout_sec", self.timeout.get()); self._append("錯誤", "AI 回答逾時：已等待 {} 秒".format(_number_text(waited))); self.monitor_status.config(text="AI Monitor：AI 回答逾時（繼續運行）")
+                else: self._append("錯誤", value.get("error", "未知錯誤")); self.monitor_status.config(text="AI Monitor：發生錯誤（繼續運行）")
         self._schedule(150, self._poll_preview)
     def show_latest(self):
         frame = self.camera.latest_frame()
@@ -217,10 +251,12 @@ class AIConfigDialog:
     def clear_draft(self): self.user_text.delete("1.0", "end"); self._save(announce=False)
     def _save(self, announce=True):
         ai = self.config.setdefault("ai", {}); device = self._current_device()
-        try: timeout, interval = float(self.timeout.get()), float(self.interval.get())
-        except ValueError: raise ValueError("timeout 與 Monitor 間隔必須是數字")
+        try: timeout, delay = float(self.timeout.get()), float(self.after_answer_delay.get())
+        except ValueError: raise ValueError("AI 回答逾時與回答完成後等待必須是數字")
+        if timeout <= 0 or delay < 0: raise ValueError("AI 回答逾時必須大於 0，回答完成後等待不可小於 0")
         parts = self.resolution.get().replace(" ", "").split("×"); w, h = (map(int, parts) if len(parts) == 2 else (None, None))
-        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "interval": interval, "sound_enabled": self.sound_enabled.get(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
+        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "after_answer_delay": delay, "alarm_on_detected": self.alarm_on_detected.get(), "alarm_on_timeout": self.alarm_on_timeout.get(), "alarm_on_error": self.alarm_on_error.get(), "sound_mode": self._sound_mode_key(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
+        ai.pop("interval", None); ai.pop("sound_enabled", None)
         self.on_save(self.config)
         if announce: self._append("系統", "設定已保存")
     def save_settings(self):
@@ -278,10 +314,41 @@ class AIConfigDialog:
         if self.monitor and self.monitor.enabled:
             self.monitor.stop(); self.monitor_button.config(text="啟用 AI Monitor"); self.monitor_status.config(text="AI Monitor：已停止"); self.on_state and self.on_state(False); return
         try:
-            self._save(announce=False); self.alarm.enabled = self.sound_enabled.get(); self.alarm.sound_path = self.sound_path.get()
-            self.monitor = AIMonitor(self.camera, self._client(), self.profiles, float(self.interval.get()), self.alarm); self.monitor.start()
+            self._save(announce=False); self._configure_alarm()
+            self.monitor = AIMonitor(self.camera, self._client(), self.profiles, float(self.after_answer_delay.get()), self.alarm,
+                self.alarm_on_detected.get(), self.alarm_on_timeout.get(), self.alarm_on_error.get(),
+                self.config["ai"].get("stop_on_timeout", False), os.path.join(os.path.dirname(__file__), "saved_ai_images", "monitor")); self.monitor.start()
             self.monitor_button.config(text="停用 AI Monitor"); self.monitor_status.config(text="AI Monitor：運行中"); self.on_state and self.on_state(True)
         except Exception as exc: self.monitor_status.config(text="AI Monitor：發生錯誤"); messagebox.showerror("無法啟用 AI", str(exc), parent=self.window)
+
+    def _sound_mode_key(self):
+        return {"系統警報聲": "system_alarm", "系統提示音": "system_notice", "自訂聲音檔": "custom", "靜音": "mute"}.get(self.sound_mode.get(), "system_alarm")
+    def _configure_alarm(self): self.alarm.sound_mode = self._sound_mode_key(); self.alarm.sound_path = self.sound_path.get().strip()
+    def _sound_mode_changed(self, _event=None):
+        custom = self._sound_mode_key() == "custom"; state = "normal" if custom else "disabled"
+        if hasattr(self, "pick_sound_button"):
+            self.pick_sound_button.config(state=state); self.sound_file_label.config(state=state)
+    def pick_sound(self):
+        path = filedialog.askopenfilename(parent=self.window, filetypes=[("聲音檔", "*.wav *.mp3 *.ogg"), ("所有檔案", "*.*")])
+        if path: self.sound_path.set(path); self.sound_file_label.config(text=os.path.basename(path)); self.sound_file_label._full_path = path; self.sound_status.config(text=path)
+    def test_sound(self):
+        self._configure_alarm()
+        if self.alarm.sound_mode == "custom" and not os.path.isfile(self.alarm.sound_path):
+            self.sound_status.config(text="自訂聲音檔不存在；測試時將改用系統警報聲")
+        self.alarm.stop(); self.alarm.play("timeout")
+        self._schedule(100, lambda: self.sound_status.config(text=self.alarm.error or self.sound_status.cget("text")))
+    def _record_history(self, value):
+        if not isinstance(value, dict): return
+        history = self.config.setdefault("ai", {}).setdefault("question_history", []); history.append(dict(value)); del history[:-50]
+        self.on_save(self.config); self._refresh_history()
+    def _refresh_history(self):
+        if not hasattr(self, "history_tree"): return
+        for row in self.history_tree.get_children(): self.history_tree.delete(row)
+        for index, item in enumerate(reversed(self.config.get("ai", {}).get("question_history", [])[-50:])):
+            stamp = time.strftime("%H:%M:%S", time.localtime(item.get("ended_at", item.get("captured_at", 0))))
+            result = "逾時 {} 秒".format(_number_text(item.get("timeout_sec", item.get("elapsed_sec", 0)))) if item.get("error") == "AI 回答逾時" else (item.get("error") or item.get("answer", ""))
+            summary = "{}｜{}｜{}｜{}".format(stamp, item.get("tag", ""), item.get("filename", ""), result)
+            self.history_tree.insert("", "end", iid="history-{}".format(index), values=(summary,))
 
     def _append(self, role, value):
         self.response.config(state="normal"); self.response.insert("end", "{}：{}\n\n".format(role, value)); self.response.config(state="disabled"); self.response.see("end")
@@ -347,3 +414,10 @@ class AIConfigDialog:
 def time_text(timestamp):
     try: return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(timestamp)))
     except Exception: return ""
+
+
+def _number_text(value):
+    try:
+        number = float(value)
+        return str(int(number)) if number.is_integer() else "{:.1f}".format(number)
+    except (TypeError, ValueError): return str(value)

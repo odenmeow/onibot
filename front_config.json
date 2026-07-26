@@ -50,9 +50,12 @@
     "timeout": 30,
     "system_prompt": "",
     "user_prompt_draft": "",
-    "interval": 5,
-    "sound_enabled": true,
     "sound_path": "",
-    "prompt_profiles": []
+    "prompt_profiles": [],
+    "after_answer_delay": 0,
+    "alarm_on_detected": true,
+    "alarm_on_timeout": true,
+    "alarm_on_error": false,
+    "sound_mode": "system_alarm"
   }
 }
