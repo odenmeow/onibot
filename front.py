@@ -165,8 +165,10 @@ def load_config():
         "camera_backend": "dshow" if os.name == "nt" else "v4l2", "camera_width": 1280,
         "camera_height": 720, "camera_fps": 30, "camera_fourcc": "MJPG", "preview_mode": "auto",
         "base_url": "http://127.0.0.1:11434", "model": "qwen3-vl:8b", "timeout": 30,
-        "system_prompt": "", "user_prompt_draft": "", "interval": 5, "sound_enabled": True,
-        "sound_path": "", "accept_lowercase_o": False, "prompt_profiles": []
+        "system_prompt": "", "user_prompt_draft": "", "after_answer_delay": 0,
+        "alarm_on_detected": True, "alarm_on_timeout": True, "alarm_on_error": False,
+        "sound_mode": "system_alarm", "sound_path": "", "accept_lowercase_o": False,
+        "prompt_profiles": [], "question_history": []
     }
     if not os.path.exists(CONFIG_FILE):
         return {
@@ -219,6 +221,8 @@ def load_config():
         # migrated configuration must never erase settings this version does
         # not happen to understand.
         normalized_ai.update(raw_ai)
+        if "after_answer_delay" not in raw_ai and "interval" in raw_ai:
+            normalized_ai["after_answer_delay"] = raw_ai["interval"]
         normalized_ai["enabled"] = False  # never resurrect a crashed monitor session
         if not isinstance(normalized_ai["prompt_profiles"], list):
             normalized_ai["prompt_profiles"] = []
