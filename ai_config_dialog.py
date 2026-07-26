@@ -20,22 +20,26 @@ from qwen_client import QwenClient, choose_model
 class AIConfigDialog:
     def __init__(self, parent, config, on_save, on_state=None):
         self.config, self.on_save, self.on_state = config, on_save, on_state
-        self.window = tk.Toplevel(parent); self.window.title("AI 配置"); self.window.geometry("1180x850")
+        self.window = tk.Toplevel(parent); self.window.title("AI 配置")
         ai = config.setdefault("ai", {})
+        self.ai_layout = ai.setdefault("ai_window_layout", {})
+        self.window.geometry(self.ai_layout.get("geometry", "1180x850"))
         self.camera = CameraCapture(ai.get("camera_index", 0), backend=ai.get("camera_backend", "dshow"),
             device_id=ai.get("camera_device_id", ""), camera_name=ai.get("camera_name", ""),
             width=ai.get("camera_width"), height=ai.get("camera_height"), fps=ai.get("camera_fps"), fourcc=ai.get("camera_fourcc"))
         self.library = ImageLibrary(os.path.join(os.path.dirname(__file__), "saved_ai_images"))
         self.alarm = AlarmPlayer(ai.get("sound_path", ""), sound_mode=ai.get("sound_mode", "system_alarm"))
         self.monitor = None; self.devices = []; self.capabilities = []
-        self.displayed_frame = self.selected_image = self._selected_item = self.zoom_window = None
+        self.displayed_frame = self.selected_image = self._selected_item = None
+        self.zoom_window = self._viewer_image = self._viewer_photo = None
+        self._viewer_after = self.detached_window = self.detached_preview = None
+        self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
-        self._draft_after = self._system_after = None; self._last_ctrl = 0
+        self._draft_after = self._system_after = None
         self._probe_cancel = threading.Event()
         self.profiles = [dict(x) for x in ai.get("prompt_profiles", []) if isinstance(x, dict)]
         self._build(ai); self._schedule(100, self.scan_cameras); self._schedule(150, self._poll_preview)
-        self.window.bind_all("<KeyPress-Control_L>", self._ctrl_press, add="+")
-        self.window.bind_all("<KeyPress-Control_R>", self._ctrl_press, add="+")
+        self._schedule(80, self._restore_ai_layout)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
 
     def _build(self, ai):
@@ -43,6 +47,7 @@ class AIConfigDialog:
         preview = ttk.LabelFrame(self.window, text="相機裝置與預覽"); preview.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=8, pady=5)
         preview.columnconfigure(0, weight=1)
         self.preview_label = ttk.Label(preview, text="尚無畫面", anchor="center"); self.preview_label.grid(row=0, column=0, columnspan=12, sticky="nsew")
+        self.preview_label.bind("<Double-Button-1>", self._on_camera_double_click)
         self.camera_status = ttk.Label(preview, text="正在背景掃描相機……", justify="left"); self.camera_status.grid(row=1, column=0, columnspan=12, sticky="w")
         self.mode = tk.StringVar(value=ai.get("preview_mode", "auto"))
         ttk.Radiobutton(preview, text="自動顯示", variable=self.mode, value="auto").grid(row=2, column=0)
@@ -57,6 +62,10 @@ class AIConfigDialog:
         self.fourcc = tk.StringVar(value=ai.get("camera_fourcc", "MJPG") or "自動"); ttk.Label(preview, text="FourCC").grid(row=2, column=8); ttk.Combobox(preview, textvariable=self.fourcc, values=("自動", "MJPG", "YUY2"), width=7).grid(row=2, column=9)
         ttk.Button(preview, text="重新掃描", command=self.scan_cameras).grid(row=2, column=10)
         ttk.Button(preview, text="套用相機設定", command=self.apply_camera).grid(row=2, column=11)
+        camera_actions = ttk.Frame(preview); camera_actions.grid(row=3, column=0, columnspan=6, sticky="w")
+        ttk.Button(camera_actions, text="顯示預覽", command=lambda: self.set_camera_view("docked")).pack(side="left")
+        ttk.Button(camera_actions, text="隱藏預覽", command=lambda: self.set_camera_view("hidden")).pack(side="left")
+        ttk.Button(camera_actions, text="分離預覽", command=lambda: self.set_camera_view("detached")).pack(side="left")
         ttk.Button(preview, text="手動探測支援規格", command=self.probe_capabilities).grid(row=3, column=10, columnspan=2)
 
         qbox = ttk.LabelFrame(self.window, text="Ollama 與監控設定"); qbox.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8)
@@ -86,7 +95,10 @@ class AIConfigDialog:
         self.sound_status = ttk.Label(qbox, text=""); self.sound_status.grid(row=4, column=0, columnspan=6, sticky="w")
         self._sound_mode_changed()
 
-        left = ttk.Frame(self.window); left.grid(row=2, column=0, sticky="nsew", padx=(8, 4)); left.columnconfigure(0, weight=1); left.rowconfigure(2, weight=1)
+        self.main_paned = tk.PanedWindow(self.window, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        self.main_paned.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8)
+        left = ttk.Frame(self.main_paned); left.columnconfigure(0, weight=1); left.rowconfigure(2, weight=1)
+        self._layout_panes = {"left": left}
         sysbox = ttk.LabelFrame(left, text="系統提示詞（多行）"); sysbox.grid(row=0, column=0, sticky="ew")
         self.system = tk.Text(sysbox, height=4); self.system.pack(fill="x"); self.system.insert("1.0", ai.get("system_prompt", ""))
         self.system.bind("<KeyRelease>", self._system_changed)
@@ -99,13 +111,21 @@ class AIConfigDialog:
         images = ttk.LabelFrame(left, text="圖片庫／附件"); images.grid(row=2, column=0, sticky="nsew")
         self.image_info = ttk.Label(images, text="本次提問尚未附加圖片"); self.image_info.pack(fill="x")
         self.attachment_preview = ttk.Label(images, text="無附件", anchor="center"); self.attachment_preview.pack(fill="x")
+        self.attachment_preview.bind("<Double-Button-1>", self._on_attachment_double_click)
         for label, command in (("選取檔案", self.pick_image), ("使用最新畫面", self.use_latest), ("清除附件", self.clear_image), ("保存目前圖片", self.save_image)):
             ttk.Button(images, text=label, command=command).pack(side="left")
         self.library_tree = ttk.Treeview(images, columns=("favorite", "time", "source"), show="headings", height=5)
         for key, label in (("favorite", "最愛"), ("time", "保存時間"), ("source", "來源")): self.library_tree.heading(key, text=label)
-        self.library_tree.pack(fill="both", expand=True); self.library_tree.bind("<<TreeviewSelect>>", self.select_library_image); self.refresh_library()
+        self.library_tree.pack(fill="both", expand=True); self.library_tree.bind("<<TreeviewSelect>>", self.select_library_image)
+        self.library_tree.bind("<Double-Button-1>", self._on_library_double_click); self.refresh_library()
 
-        right = ttk.Frame(self.window); right.grid(row=2, column=1, sticky="nsew", padx=(4, 8)); right.columnconfigure(0, weight=1); right.rowconfigure(4, weight=1)
+        right = ttk.Frame(self.main_paned); right.columnconfigure(0, weight=1); right.rowconfigure(4, weight=1)
+        self._layout_panes["right"] = right
+        for pane_name in self.ai_layout.get("main_order", ["left", "right"]):
+            pane = self._layout_panes.get(pane_name)
+            if pane is not None: self.main_paned.add(pane, minsize=320, stretch="always")
+        for pane_name, pane in self._layout_panes.items():
+            if str(pane) not in self.main_paned.panes(): self.main_paned.add(pane, minsize=320, stretch="always")
         ttk.Label(right, text="使用者提問（Ctrl+Enter 送出）").grid(row=0, column=0, sticky="w")
         self.user_text = tk.Text(right, height=7); self.user_text.grid(row=1, column=0, sticky="ew"); self.user_text.insert("1.0", ai.get("user_prompt_draft", ""))
         self.user_text.bind("<KeyRelease>", self._draft_changed); self.user_text.bind("<Control-Return>", self._send_shortcut)
@@ -117,7 +137,13 @@ class AIConfigDialog:
         self.monitor_status = ttk.Label(right, text="AI Monitor：已停止"); self.monitor_status.grid(row=3, column=0, sticky="w")
         self.response = tk.Text(right, state="disabled"); self.response.grid(row=4, column=0, sticky="nsew")
         history_box = ttk.LabelFrame(right, text="最近 50 次提問歷史"); history_box.grid(row=5, column=0, sticky="ew")
-        self.history_tree = ttk.Treeview(history_box, columns=("summary",), show="headings", height=5); self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果"); self.history_tree.pack(fill="x"); self._refresh_history()
+        self.history_tree = ttk.Treeview(history_box, columns=("summary",), show="headings", height=5); self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果"); self.history_tree.pack(fill="x")
+        self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
+        for name, pane, row in (("left", left, 3), ("right", right, 6)):
+            handle = ttk.Label(pane, text="☰ 拖曳到另一側交換內容區塊", anchor="center", cursor="fleur")
+            handle.grid(row=row, column=0, sticky="ew", pady=2)
+            handle.bind("<ButtonPress-1>", lambda _e, key=name: setattr(self, "_dragged_pane", key))
+            handle.bind("<ButtonRelease-1>", self._finish_pane_drag)
         bottom = ttk.Frame(self.window); bottom.grid(row=3, column=0, columnspan=2, sticky="e", padx=8, pady=5)
         ttk.Button(bottom, text="保存設定", command=self.save_settings).pack(side="left")
         ttk.Button(bottom, text="套用並重新連接相機", command=lambda: self.apply_camera(save=True)).pack(side="left")
@@ -227,14 +253,75 @@ class AIConfigDialog:
     def show_latest(self):
         frame = self.camera.latest_frame()
         if frame is None: return
-        self.displayed_frame = frame
+        self.displayed_frame = frame.copy()
         try:
             from PIL import Image, ImageTk
             import cv2
             image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)); image.thumbnail((560, 250)); photo = ImageTk.PhotoImage(image)
-            self.preview_label.config(image=photo, text=""); self.preview_label.image = photo
-            if self.zoom_window: self._render_zoom()
+            if self.camera_view_state == "docked":
+                self.preview_label.config(image=photo, text=""); self.preview_label.image = photo
+            elif self.camera_view_state == "detached" and self.detached_preview:
+                self.detached_preview.config(image=photo, text=""); self.detached_preview.image = photo
         except Exception as exc: self.preview_label.config(text="預覽失敗：{}".format(exc), image="")
+
+    def set_camera_view(self, state):
+        """Switch only the live picture; camera controls always remain docked."""
+        if state not in ("docked", "hidden", "detached"): return
+        if self.detached_window:
+            self.ai_layout["detached_geometry"] = self.detached_window.geometry()
+            self.detached_window.destroy(); self.detached_window = self.detached_preview = None
+        self.camera_view_state = state; self.ai_layout["camera_state"] = state
+        if state == "docked":
+            self.preview_label.grid()
+        else:
+            self.preview_label.grid_remove()
+        if state == "detached":
+            win = self.detached_window = tk.Toplevel(self.window); win.title("相機預覽")
+            win.geometry(self.ai_layout.get("detached_geometry", "800x600")); win.minsize(400, 300)
+            self.detached_preview = ttk.Label(win, text="尚無畫面", anchor="center")
+            self.detached_preview.pack(fill="both", expand=True)
+            self.detached_preview.bind("<Double-Button-1>", self._on_camera_double_click)
+            ttk.Button(win, text="重新 Dock", command=lambda: self.set_camera_view("docked")).pack()
+            win.protocol("WM_DELETE_WINDOW", lambda: self.set_camera_view("docked"))
+        self._save_ai_layout()
+
+    def _restore_ai_layout(self):
+        try:
+            sash = self.ai_layout.get("main_sash")
+            if sash is not None: self.main_paned.sash_place(0, int(sash), 0)
+        except (tk.TclError, TypeError, ValueError): pass
+        self.set_camera_view(self.camera_view_state)
+
+    def _finish_pane_drag(self, event):
+        """Dropping a section handle across the centre exchanges both panes."""
+        name = getattr(self, "_dragged_pane", None); self._dragged_pane = None
+        if not name: return
+        centre = self.main_paned.winfo_rootx() + self.main_paned.winfo_width() // 2
+        order = self._current_pane_order()
+        wanted = 0 if event.x_root < centre else len(order) - 1
+        current = order.index(name)
+        if current == wanted: return
+        order[current], order[wanted] = order[wanted], order[current]
+        for pane in self.main_paned.panes(): self.main_paned.forget(pane)
+        for key in order: self.main_paned.add(self._layout_panes[key], minsize=320, stretch="always")
+        self.ai_layout["main_order"] = order; self._save_ai_layout()
+
+    def _current_pane_order(self):
+        paths = list(self.main_paned.panes())
+        return sorted(self._layout_panes, key=lambda key: paths.index(str(self._layout_panes[key])))
+
+    def _save_ai_layout(self):
+        if self._closed: return
+        try: self.ai_layout["geometry"] = self.window.geometry()
+        except tk.TclError: pass
+        try: self.ai_layout["main_sash"] = self.main_paned.sash_coord(0)[0]
+        except (tk.TclError, AttributeError): pass
+        try: self.ai_layout["main_order"] = self._current_pane_order()
+        except (tk.TclError, ValueError): pass
+        self.ai_layout["camera_state"] = self.camera_view_state
+        if self.detached_window:
+            try: self.ai_layout["detached_geometry"] = self.detached_window.geometry()
+            except tk.TclError: pass
 
     def _draft_changed(self, _event=None):
         if self._draft_after:
@@ -250,6 +337,7 @@ class AIConfigDialog:
     def _autosave_system(self): self._system_after = None; self._save(announce=False)
     def clear_draft(self): self.user_text.delete("1.0", "end"); self._save(announce=False)
     def _save(self, announce=True):
+        self._save_ai_layout()
         ai = self.config.setdefault("ai", {}); device = self._current_device()
         try: timeout, delay = float(self.timeout.get()), float(self.after_answer_delay.get())
         except ValueError: raise ValueError("AI 回答逾時與回答完成後等待必須是數字")
@@ -339,16 +427,34 @@ class AIConfigDialog:
         self._schedule(100, lambda: self.sound_status.config(text=self.alarm.error or self.sound_status.cget("text")))
     def _record_history(self, value):
         if not isinstance(value, dict): return
-        history = self.config.setdefault("ai", {}).setdefault("question_history", []); history.append(dict(value)); del history[:-50]
+        item = dict(value); item.setdefault("history_id", uuid.uuid4().hex)
+        item.setdefault("mode", "auto"); item.setdefault("profile_tags", [])
+        history = self.config.setdefault("ai", {}).setdefault("question_history", []); history.append(item); del history[:-50]
         self.on_save(self.config); self._refresh_history()
     def _refresh_history(self):
         if not hasattr(self, "history_tree"): return
         for row in self.history_tree.get_children(): self.history_tree.delete(row)
-        for index, item in enumerate(reversed(self.config.get("ai", {}).get("question_history", [])[-50:])):
+        self._history_by_id = {}
+        history = self.config.get("ai", {}).get("question_history", [])[-50:]
+        for item in history:
+            if isinstance(item, dict) and not item.get("history_id"): item["history_id"] = uuid.uuid4().hex
+        for item in reversed(history):
+            if not isinstance(item, dict): continue
+            history_id = str(item["history_id"]); self._history_by_id[history_id] = item
             stamp = time.strftime("%H:%M:%S", time.localtime(item.get("ended_at", item.get("captured_at", 0))))
             result = "逾時 {} 秒".format(_number_text(item.get("timeout_sec", item.get("elapsed_sec", 0)))) if item.get("error") == "AI 回答逾時" else (item.get("error") or item.get("answer", ""))
             summary = "{}｜{}｜{}｜{}".format(stamp, item.get("tag", ""), item.get("filename", ""), result)
-            self.history_tree.insert("", "end", iid="history-{}".format(index), values=(summary,))
+            self.history_tree.insert("", "end", iid=history_id, values=(summary,))
+
+    def _on_history_double_click(self, event):
+        row_id = self.history_tree.identify_row(event.y)
+        item = self._history_by_id.get(row_id)
+        if not item: return
+        path = item.get("path", "")
+        if not os.path.isfile(path):
+            messagebox.showwarning("歷史圖片", "找不到歷史圖片：\n{}".format(item.get("filename") or os.path.basename(path)), parent=self.window)
+            return
+        self._open_image_viewer("history", path=path, title="歷史圖片", metadata=item)
 
     def _append(self, role, value):
         self.response.config(state="normal"); self.response.insert("end", "{}：{}\n\n".format(role, value)); self.response.config(state="disabled"); self.response.see("end")
@@ -377,28 +483,71 @@ class AIConfigDialog:
             item = next((x for x in self.library.list() if x["id"] == selected[0]), None)
             if item: self._selected_item = item; self._select_image(item["path"], "圖片庫")
 
-    def _ctrl_press(self, _event):
-        now = time.monotonic()
-        if now - self._last_ctrl < .35: self._toggle_zoom(); self._last_ctrl = 0
-        else: self._last_ctrl = now
-    def _toggle_zoom(self):
-        if self.zoom_window:
-            self.zoom_window.destroy(); self.zoom_window = None; self.window.focus_force(); return
-        if self.selected_image is None and self.displayed_frame is None: return
-        self.zoom_window = tk.Toplevel(self.window); self.zoom_window.title("圖片放大檢視"); self.zoom_label = ttk.Label(self.zoom_window, anchor="center"); self.zoom_label.pack(fill="both", expand=True)
-        self.zoom_window.bind("<Escape>", lambda _e: self._toggle_zoom()); self.zoom_window.bind("<Configure>", lambda _e: self._render_zoom()); self._render_zoom()
-    def _render_zoom(self):
-        if not self.zoom_window: return
+    def _on_camera_double_click(self, _event=None):
+        if self.displayed_frame is not None:
+            self._open_image_viewer("camera", frame=self.displayed_frame.copy(), title="相機即時畫面")
+    def _on_attachment_double_click(self, _event=None):
+        if self.selected_image: self._open_image_viewer("attachment", path=self.selected_image, title="提問附件")
+    def _on_library_double_click(self, event):
+        row_id = self.library_tree.identify_row(event.y)
+        item = next((x for x in self.library.list() if x.get("id") == row_id), None)
+        if item: self._open_image_viewer("library", path=item.get("path"), title="圖片庫", metadata=item)
+
+    def _open_image_viewer(self, source_type, path=None, frame=None, title="", metadata=None):
+        """Open an explicit image source; never infer it from attachment state."""
+        self._close_image_viewer()
         try:
-            from PIL import Image, ImageTk
-            if self.selected_image: image = Image.open(self.selected_image).convert("RGB")
-            else:
+            from PIL import Image
+            if source_type == "camera":
+                if frame is None: return
                 import cv2
-                image = Image.fromarray(cv2.cvtColor(self.displayed_frame, cv2.COLOR_BGR2RGB))
-            image.thumbnail((max(1, self.zoom_window.winfo_width()), max(1, self.zoom_window.winfo_height()))); photo = ImageTk.PhotoImage(image); self.zoom_label.config(image=photo); self.zoom_label.image = photo
-        except Exception: pass
+                image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                filename = "相機即時畫面"
+            else:
+                if not path or not os.path.isfile(path): raise FileNotFoundError(path or "")
+                with Image.open(path) as opened: image = opened.convert("RGB")
+                filename = os.path.basename(path)
+        except Exception as exc:
+            messagebox.showerror("圖片無法開啟", str(exc), parent=self.window); return
+        self._viewer_image = image
+        viewer = self.zoom_window = tk.Toplevel(self.window); viewer.title(title or "圖片檢視")
+        viewer.geometry("900x700"); viewer.minsize(800, 600)
+        source_labels = {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}
+        ttk.Label(viewer, text="{}   原始解析度：{}×{}   來源：{}".format(filename, image.width, image.height, source_labels.get(source_type, source_type))).pack(fill="x", padx=8, pady=5)
+        self.zoom_label = ttk.Label(viewer, anchor="center"); self.zoom_label.pack(fill="both", expand=True)
+        ttk.Button(viewer, text="關閉", command=self._close_image_viewer).pack(pady=5)
+        viewer.bind("<Escape>", lambda _e: self._close_image_viewer())
+        viewer.bind("<Configure>", self._queue_viewer_render); viewer.protocol("WM_DELETE_WINDOW", self._close_image_viewer)
+        self._queue_viewer_render()
+
+    def _queue_viewer_render(self, _event=None):
+        if not self.zoom_window: return
+        if self._viewer_after:
+            try: self.zoom_window.after_cancel(self._viewer_after)
+            except tk.TclError: pass
+        self._viewer_after = self.zoom_window.after(100, self._render_viewer)
+    def _render_viewer(self):
+        self._viewer_after = None
+        if not self.zoom_window or self._viewer_image is None: return
+        from PIL import ImageTk
+        image = self._viewer_image.copy()
+        image.thumbnail((max(1, self.zoom_label.winfo_width() - 12), max(1, self.zoom_label.winfo_height() - 12)))
+        self._viewer_photo = ImageTk.PhotoImage(image); self.zoom_label.config(image=self._viewer_photo)
+    def _close_image_viewer(self):
+        if self._viewer_after and self.zoom_window:
+            try: self.zoom_window.after_cancel(self._viewer_after)
+            except tk.TclError: pass
+        self._viewer_after = None
+        if self.zoom_window:
+            try: self.zoom_window.destroy()
+            except tk.TclError: pass
+        if self._viewer_image is not None:
+            try: self._viewer_image.close()
+            except Exception: pass
+        self.zoom_window = self._viewer_image = self._viewer_photo = None
     def close(self):
         if self._closed: return
+        self._save_ai_layout(); self._close_image_viewer()
         try: self._save(announce=False)
         except Exception: pass
         self._closed = True; self._generation += 1
