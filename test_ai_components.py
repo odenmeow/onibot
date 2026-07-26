@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 import camera_capture
-from camera_capture import CameraCapture
+from camera_capture import CameraCapture, classify_device
 from image_library import ImageLibrary, ImageLibraryFullError
 from qwen_client import QwenClient, QwenError, choose_model
 
@@ -19,6 +19,19 @@ class FakeCapture:
 
 
 class CameraTests(unittest.TestCase):
+    def test_camera_names_distinguish_physical_integrated_and_virtual(self):
+        self.assertEqual(classify_device("Logitech USB Camera"), "usb")
+        self.assertEqual(classify_device("Integrated Camera"), "integrated")
+        self.assertEqual(classify_device("OBS Virtual Camera"), "virtual")
+
+    def test_stable_selection_prefers_id_then_name_then_index(self):
+        devices = [
+            {"device_id": "usb-a", "name": "Webcam", "index": 4, "device_type": "usb"},
+            {"device_id": "obs", "name": "OBS Virtual Camera", "index": 0, "device_type": "virtual"},
+        ]
+        self.assertEqual(CameraCapture.select_device(devices, "usb-a", "", 0)["index"], 4)
+        self.assertEqual(CameraCapture.select_device(devices, "missing", "Webcam", 0)["index"], 4)
+        self.assertIsNone(CameraCapture.select_device(devices, "", "", 0))
     def test_missing_opencv_reports_dependency_error_without_thread(self):
         with mock.patch.object(camera_capture, "cv2", None):
             reader = CameraCapture(); reader.start()

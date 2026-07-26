@@ -33,5 +33,26 @@
       "buff_jitter_sec": 117,
       "group": 103
     }
+  },
+  "ai": {
+    "enabled": false,
+    "camera_device_id": "",
+    "camera_name": "",
+    "camera_index": 0,
+    "camera_backend": "dshow",
+    "camera_width": 1280,
+    "camera_height": 720,
+    "camera_fps": 30,
+    "camera_fourcc": "MJPG",
+    "preview_mode": "auto",
+    "base_url": "http://127.0.0.1:11434",
+    "model": "qwen3-vl:8b",
+    "timeout": 30,
+    "system_prompt": "",
+    "user_prompt_draft": "",
+    "interval": 5,
+    "sound_enabled": true,
+    "sound_path": "",
+    "prompt_profiles": []
   }
 }

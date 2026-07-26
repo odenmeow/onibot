@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+"""Main application shell; ``App.open_ai_config`` is the sole AI UI entry.
+
+AI camera and configuration behavior live in ``camera_capture.py`` and
+``ai_config_dialog.py``; this file only loads/saves their configuration.
+"""
 import json
 import os
 import re
@@ -156,9 +161,11 @@ def ensure_dirs():
 
 def load_config():
     ai_defaults = {
-        "enabled": False, "camera_index": 0, "camera_backend": "auto", "preview_mode": "auto",
-        "base_url": "http://127.0.0.1:11434", "model": "", "timeout": 30,
-        "system_prompt": "", "interval": 5, "sound_enabled": True,
+        "enabled": False, "camera_device_id": "", "camera_name": "", "camera_index": 0,
+        "camera_backend": "dshow" if os.name == "nt" else "v4l2", "camera_width": 1280,
+        "camera_height": 720, "camera_fps": 30, "camera_fourcc": "MJPG", "preview_mode": "auto",
+        "base_url": "http://127.0.0.1:11434", "model": "qwen3-vl:8b", "timeout": 30,
+        "system_prompt": "", "user_prompt_draft": "", "interval": 5, "sound_enabled": True,
         "sound_path": "", "accept_lowercase_o": False, "prompt_profiles": []
     }
     if not os.path.exists(CONFIG_FILE):
@@ -208,7 +215,10 @@ def load_config():
         normalized_recent = normalized_recent[:7]
         raw_ai = data.get("ai", {}) if isinstance(data.get("ai", {}), dict) else {}
         normalized_ai = dict(ai_defaults)
-        normalized_ai.update({key: raw_ai[key] for key in ai_defaults if key in raw_ai})
+        # Preserve future/legacy AI keys while filling missing fields.  Saving a
+        # migrated configuration must never erase settings this version does
+        # not happen to understand.
+        normalized_ai.update(raw_ai)
         normalized_ai["enabled"] = False  # never resurrect a crashed monitor session
         if not isinstance(normalized_ai["prompt_profiles"], list):
             normalized_ai["prompt_profiles"] = []
@@ -3098,8 +3108,6 @@ class App:
             tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10),
             tk.Button(connection_btn_row, text="AI配置", command=self.open_ai_config, width=10),
         ]
-        self.ai_toggle_button = tk.Button(connection_btn_row, text="AI啟用", command=self.toggle_ai, width=10, bg="#d9d9d9")
-        self.connection_buttons.append(self.ai_toggle_button)
         for btn in self.connection_buttons:
             btn.pack(side="left", padx=4)
         self.update_auto_connect_ui()
@@ -6085,28 +6093,11 @@ class App:
         if existing is not None:
             try:
                 existing.window.lift()
+                existing.window.focus_force()
                 return
             except Exception:
                 self.ai_dialog = None
-        self.ai_dialog = AIConfigDialog(
-            self.root, self.config, save_config, self._set_ai_enabled_ui
-        )
-
-    def _set_ai_enabled_ui(self, enabled):
-        self.config.setdefault("ai", {})["enabled"] = bool(enabled)
-        button = getattr(self, "ai_toggle_button", None)
-        if button is not None:
-            button.config(
-                text="AI停用" if enabled else "AI啟用",
-                bg="#91d18b" if enabled else "#d9d9d9"
-            )
-        save_config(self.config)
-
-    def toggle_ai(self):
-        self.open_ai_config()
-        dialog = getattr(self, "ai_dialog", None)
-        if dialog is not None:
-            dialog.toggle_monitor()
+        self.ai_dialog = AIConfigDialog(self.root, self.config, save_config)
 
     def set_gpio_polarity(self, trigger_level):
         label = "高位觸發" if trigger_level == "high" else "低位觸發"
