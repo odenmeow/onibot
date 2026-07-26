@@ -1,11 +1,18 @@
-"""Labelled Tk AI configuration surface with safe background operations."""
+"""AI configuration window and all AI-facing text/settings management.
+
+``AIConfigDialog`` is created only by ``front.py``.  It owns camera/monitor
+threads, prompt profiles, draft autosave and image viewing, then persists via
+the save callback supplied by the main application.
+"""
 import os
 import threading
+import time
 import tkinter as tk
+import uuid
 from tkinter import filedialog, messagebox, ttk
 
 from ai_monitor import AIMonitor, AlarmPlayer, combine_prompt_profiles
-from camera_capture import CameraCapture
+from camera_capture import BACKEND_LABELS, TYPE_LABELS, CameraCapture
 from image_library import ImageLibrary
 from qwen_client import QwenClient, choose_model
 
@@ -13,85 +20,153 @@ from qwen_client import QwenClient, choose_model
 class AIConfigDialog:
     def __init__(self, parent, config, on_save, on_state=None):
         self.config, self.on_save, self.on_state = config, on_save, on_state
-        self.window = tk.Toplevel(parent); self.window.title("AI 配置"); self.window.geometry("1050x780")
+        self.window = tk.Toplevel(parent); self.window.title("AI 配置"); self.window.geometry("1180x850")
         ai = config.setdefault("ai", {})
-        self.camera = CameraCapture(ai.get("camera_index", 0), backend=ai.get("camera_backend", "auto"))
+        self.camera = CameraCapture(ai.get("camera_index", 0), backend=ai.get("camera_backend", "dshow"),
+            device_id=ai.get("camera_device_id", ""), camera_name=ai.get("camera_name", ""),
+            width=ai.get("camera_width"), height=ai.get("camera_height"), fps=ai.get("camera_fps"), fourcc=ai.get("camera_fourcc"))
         self.library = ImageLibrary(os.path.join(os.path.dirname(__file__), "saved_ai_images"))
-        self.alarm = AlarmPlayer(ai.get("sound_path", "")); self.monitor = None
-        self.displayed_frame = self.selected_image = self._selected_item = None
+        self.alarm = AlarmPlayer(ai.get("sound_path", "")); self.alarm.enabled = ai.get("sound_enabled", True)
+        self.monitor = None; self.devices = []; self.capabilities = []
+        self.displayed_frame = self.selected_image = self._selected_item = self.zoom_window = None
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
-        self._build(ai); self.camera.start(); self._schedule(150, self._poll_preview)
+        self._draft_after = None; self._last_ctrl = 0
+        self.profiles = [dict(x) for x in ai.get("prompt_profiles", []) if isinstance(x, dict)]
+        self._build(ai); self._schedule(100, self.scan_cameras); self._schedule(150, self._poll_preview)
+        self.window.bind_all("<KeyPress-Control_L>", self._ctrl_press, add="+")
+        self.window.bind_all("<KeyPress-Control_R>", self._ctrl_press, add="+")
         self.window.protocol("WM_DELETE_WINDOW", self.close)
 
     def _build(self, ai):
-        self.window.columnconfigure(0, weight=1); self.window.columnconfigure(1, weight=1); self.window.rowconfigure(2, weight=1)
-        preview = ttk.LabelFrame(self.window, text="相機預覽與連線狀態"); preview.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=8, pady=5)
-        self.preview_label = ttk.Label(preview, text="尚無畫面", anchor="center"); self.preview_label.grid(row=0, column=0, columnspan=10, sticky="nsew")
-        self.camera_status = ttk.Label(preview, text="正在連接相機……"); self.camera_status.grid(row=1, column=0, columnspan=10, sticky="w")
+        self.window.columnconfigure((0, 1), weight=1); self.window.rowconfigure(2, weight=1)
+        preview = ttk.LabelFrame(self.window, text="相機裝置與預覽"); preview.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=8, pady=5)
+        preview.columnconfigure(0, weight=1)
+        self.preview_label = ttk.Label(preview, text="尚無畫面", anchor="center"); self.preview_label.grid(row=0, column=0, columnspan=12, sticky="nsew")
+        self.camera_status = ttk.Label(preview, text="正在背景掃描相機……", justify="left"); self.camera_status.grid(row=1, column=0, columnspan=12, sticky="w")
         self.mode = tk.StringVar(value=ai.get("preview_mode", "auto"))
         ttk.Radiobutton(preview, text="自動顯示", variable=self.mode, value="auto").grid(row=2, column=0)
         ttk.Radiobutton(preview, text="手動顯示", variable=self.mode, value="manual").grid(row=2, column=1)
-        ttk.Button(preview, text="顯示最新畫面", command=self.show_latest).grid(row=2, column=2)
-        ttk.Label(preview, text="裝置索引").grid(row=2, column=3)
-        self.camera_index = tk.IntVar(value=ai.get("camera_index", 0)); self.camera_box = ttk.Combobox(preview, textvariable=self.camera_index, values=tuple(range(10)), width=5)
-        self.camera_box.grid(row=2, column=4)
-        ttk.Label(preview, text="連線方式").grid(row=2, column=5)
-        self.backend = tk.StringVar(value=ai.get("camera_backend", "auto")); ttk.Combobox(preview, textvariable=self.backend, values=("auto", "dshow", "msmf", "v4l2"), state="readonly", width=7).grid(row=2, column=6)
-        ttk.Button(preview, text="掃描相機", command=self.scan_cameras).grid(row=2, column=7)
-        ttk.Button(preview, text="重新連接", command=self.reconnect_camera).grid(row=2, column=8)
-        ttk.Button(preview, text="保存目前圖片", command=self.save_image).grid(row=2, column=9)
+        self.device_choice = tk.StringVar(); self.camera_box = ttk.Combobox(preview, textvariable=self.device_choice, state="readonly", width=37)
+        ttk.Label(preview, text="相機裝置").grid(row=2, column=2); self.camera_box.grid(row=2, column=3); self.camera_box.bind("<<ComboboxSelected>>", self._device_changed)
+        self.resolution = tk.StringVar(value=self._resolution_text(ai.get("camera_width"), ai.get("camera_height")))
+        ttk.Label(preview, text="解析度").grid(row=2, column=4); self.res_box = ttk.Combobox(preview, textvariable=self.resolution, state="readonly", width=12); self.res_box.grid(row=2, column=5)
+        self.fps = tk.StringVar(value=str(ai.get("camera_fps") or "自動")); ttk.Label(preview, text="FPS").grid(row=2, column=6); self.fps_box = ttk.Combobox(preview, textvariable=self.fps, state="readonly", width=7); self.fps_box.grid(row=2, column=7)
+        self.fourcc = tk.StringVar(value=ai.get("camera_fourcc", "MJPG") or "自動"); ttk.Label(preview, text="FourCC").grid(row=2, column=8); ttk.Combobox(preview, textvariable=self.fourcc, values=("自動", "MJPG", "YUYV"), width=7).grid(row=2, column=9)
+        ttk.Button(preview, text="重新掃描", command=self.scan_cameras).grid(row=2, column=10)
+        ttk.Button(preview, text="套用相機設定", command=self.apply_camera).grid(row=2, column=11)
 
-        qbox = ttk.LabelFrame(self.window, text="Ollama 連線與模型設定"); qbox.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=5)
-        self.base_url = self._entry(qbox, 0, "API 位址", ai.get("base_url", "http://127.0.0.1:11434"))
-        ttk.Label(qbox, text="模型").grid(row=0, column=2); self.model = ttk.Combobox(qbox, width=23); self.model.set(ai.get("model", "")); self.model.grid(row=0, column=3)
-        self.timeout = self._entry(qbox, 4, "逾時秒數", ai.get("timeout", 30), 8)
-        self.system = self._entry(qbox, 6, "系統提示詞", ai.get("system_prompt", ""), 24)
-        ttk.Button(qbox, text="檢查 Ollama／自動選模型", command=self.test_connection).grid(row=0, column=8, padx=4)
+        qbox = ttk.LabelFrame(self.window, text="Ollama 與監控設定"); qbox.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8)
+        self.base_url = self._entry(qbox, 0, "API 位址", ai.get("base_url", "http://127.0.0.1:11434"), 25)
+        ttk.Label(qbox, text="模型").grid(row=0, column=2); self.model = ttk.Combobox(qbox, width=20); self.model.set(ai.get("model", "qwen3-vl:8b")); self.model.grid(row=0, column=3)
+        self.timeout = self._entry(qbox, 4, "timeout", ai.get("timeout", 30), 6)
+        self.interval = self._entry(qbox, 6, "Monitor 間隔", ai.get("interval", 5), 6)
+        self.sound_enabled = tk.BooleanVar(value=ai.get("sound_enabled", True)); ttk.Checkbutton(qbox, text="鬧鐘", variable=self.sound_enabled).grid(row=0, column=8)
+        self.sound_path = self._entry(qbox, 9, "聲音檔", ai.get("sound_path", ""), 16)
+        ttk.Button(qbox, text="檢查 Ollama", command=self.test_connection).grid(row=0, column=11)
 
-        left = ttk.Frame(self.window); left.grid(row=2, column=0, sticky="nsew", padx=(8,4)); left.rowconfigure(1, weight=1); left.columnconfigure(0, weight=1)
-        images = ttk.LabelFrame(left, text="圖片庫（雙擊切換我的最愛）"); images.grid(row=0, column=0, sticky="ew")
+        left = ttk.Frame(self.window); left.grid(row=2, column=0, sticky="nsew", padx=(8, 4)); left.columnconfigure(0, weight=1); left.rowconfigure(2, weight=1)
+        sysbox = ttk.LabelFrame(left, text="系統提示詞（多行）"); sysbox.grid(row=0, column=0, sticky="ew")
+        self.system = tk.Text(sysbox, height=4); self.system.pack(fill="x"); self.system.insert("1.0", ai.get("system_prompt", ""))
+        pbox = ttk.LabelFrame(left, text="提問配置（依畫面順序組合）"); pbox.grid(row=1, column=0, sticky="ew", pady=4)
+        self.profile_tree = ttk.Treeview(pbox, columns=("enabled", "name"), show="headings", height=6); self.profile_tree.heading("enabled", text="狀態"); self.profile_tree.heading("name", text="名稱"); self.profile_tree.pack(fill="x")
+        bar = ttk.Frame(pbox); bar.pack(fill="x")
+        for label, command in (("新增提問配置", self.add_profile), ("編輯", self.edit_profile), ("複製", self.copy_profile), ("刪除", self.delete_profile), ("上移", lambda: self.move_profile(-1)), ("下移", lambda: self.move_profile(1)), ("啟用／停用", self.toggle_profile)):
+            ttk.Button(bar, text=label, command=command).pack(side="left")
+        self._refresh_profiles()
+        images = ttk.LabelFrame(left, text="圖片庫／附件"); images.grid(row=2, column=0, sticky="nsew")
         self.image_info = ttk.Label(images, text="本次提問尚未附加圖片"); self.image_info.pack(fill="x")
         self.attachment_preview = ttk.Label(images, text="無附件", anchor="center"); self.attachment_preview.pack(fill="x")
-        for text_, command in (("選取檔案", self.pick_image), ("使用最新畫面", self.use_latest), ("移除附件", self.clear_image), ("重新整理圖片庫", self.refresh_library)):
-            ttk.Button(images, text=text_, command=command).pack(side="left")
-        self.library_tree = ttk.Treeview(left, columns=("favorite", "time", "source", "note"), show="headings", height=7)
-        for key, label in (("favorite", "最愛"), ("time", "保存時間"), ("source", "來源"), ("note", "備註")): self.library_tree.heading(key, text=label)
-        self.library_tree.grid(row=1, column=0, sticky="nsew"); self.library_tree.bind("<Double-1>", self.toggle_favorite); self.library_tree.bind("<<TreeviewSelect>>", self.select_library_image)
-        profiles = ttk.LabelFrame(left, text="提問配置（依顯示順序組合）"); profiles.grid(row=2, column=0, sticky="ew", pady=5)
-        self.profile_vars = []
-        for profile in ai.get("prompt_profiles", []):
-            var = tk.BooleanVar(value=profile.get("enabled", False)); self.profile_vars.append((profile, var)); ttk.Checkbutton(profiles, text=profile.get("name", "未命名"), variable=var).pack(anchor="w")
-        if not self.profile_vars: ttk.Label(profiles, text="尚未建立提問配置；仍可在右側直接輸入問題。").pack(anchor="w")
+        for label, command in (("選取檔案", self.pick_image), ("使用最新畫面", self.use_latest), ("清除附件", self.clear_image), ("保存目前圖片", self.save_image)):
+            ttk.Button(images, text=label, command=command).pack(side="left")
+        self.library_tree = ttk.Treeview(images, columns=("favorite", "time", "source"), show="headings", height=5)
+        for key, label in (("favorite", "最愛"), ("time", "保存時間"), ("source", "來源")): self.library_tree.heading(key, text=label)
+        self.library_tree.pack(fill="both", expand=True); self.library_tree.bind("<<TreeviewSelect>>", self.select_library_image); self.refresh_library()
 
-        right = ttk.Frame(self.window); right.grid(row=2, column=1, sticky="nsew", padx=(4,8)); right.rowconfigure(3, weight=1); right.columnconfigure(0, weight=1)
+        right = ttk.Frame(self.window); right.grid(row=2, column=1, sticky="nsew", padx=(4, 8)); right.columnconfigure(0, weight=1); right.rowconfigure(4, weight=1)
         ttk.Label(right, text="使用者提問（Ctrl+Enter 送出）").grid(row=0, column=0, sticky="w")
-        self.user_text = tk.Text(right, height=5); self.user_text.grid(row=1, column=0, sticky="ew"); self.user_text.bind("<Control-Return>", lambda _e: self.send_test())
+        self.user_text = tk.Text(right, height=7); self.user_text.grid(row=1, column=0, sticky="ew"); self.user_text.insert("1.0", ai.get("user_prompt_draft", ""))
+        self.user_text.bind("<KeyRelease>", self._draft_changed); self.user_text.bind("<Control-Return>", self._send_shortcut)
         controls = ttk.Frame(right); controls.grid(row=2, column=0, sticky="ew")
         self.send_button = ttk.Button(controls, text="送出提問", command=self.send_test); self.send_button.pack(side="left")
-        ttk.Button(controls, text="AI Monitor 啟用／停用", command=self.toggle_monitor).pack(side="left"); ttk.Button(controls, text="停止鬧鐘", command=self.alarm.stop).pack(side="left")
-        logbox = ttk.LabelFrame(right, text="對話、狀態與錯誤紀錄"); logbox.grid(row=3, column=0, sticky="nsew")
-        self.response = tk.Text(logbox, state="disabled"); self.response.pack(fill="both", expand=True)
-        self.refresh_library()
+        ttk.Button(controls, text="清除文字", command=self.clear_draft).pack(side="left")
+        self.monitor_button = ttk.Button(controls, text="啟用 AI Monitor", command=self.toggle_monitor); self.monitor_button.pack(side="left")
+        ttk.Button(controls, text="停止鬧鐘", command=self.alarm.stop).pack(side="left")
+        self.monitor_status = ttk.Label(right, text="AI Monitor：已停止"); self.monitor_status.grid(row=3, column=0, sticky="w")
+        self.response = tk.Text(right, state="disabled"); self.response.grid(row=4, column=0, sticky="nsew")
+        bottom = ttk.Frame(self.window); bottom.grid(row=3, column=0, columnspan=2, sticky="e", padx=8, pady=5)
+        ttk.Button(bottom, text="保存設定", command=self.save_settings).pack(side="left")
+        ttk.Button(bottom, text="套用並重新連接相機", command=lambda: self.apply_camera(save=True)).pack(side="left")
+        ttk.Button(bottom, text="關閉", command=self.close).pack(side="left")
 
     @staticmethod
     def _entry(parent, column, label, value, width=20):
-        ttk.Label(parent, text=label).grid(row=0, column=column); entry = ttk.Entry(parent, width=width); entry.insert(0, str(value)); entry.grid(row=0, column=column+1); return entry
-
-    def _client(self): return QwenClient(self.base_url.get(), self.model.get(), float(self.timeout.get()))
+        ttk.Label(parent, text=label).grid(row=0, column=column); entry = ttk.Entry(parent, width=width); entry.insert(0, str(value)); entry.grid(row=0, column=column + 1); return entry
+    @staticmethod
+    def _resolution_text(w, h): return "{} × {}".format(w, h) if w and h else "自動"
     def _schedule(self, delay, callback):
         if self._closed: return
         holder = {}
         def run(): self._after_ids.discard(holder.get("id")); callback()
         holder["id"] = self.window.after(delay, run); self._after_ids.add(holder["id"])
-    def _poll_preview(self):
-        if self.camera.error:
-            status = self.camera.error
-        elif self.camera.state == "connected":
-            status = "相機已連接：索引 {}／{}".format(self.camera.index, self.camera.backend)
+    def _worker(self, operation, work, success=None):
+        if self._busy: self._append("系統", "已有工作進行中，請稍候"); return
+        self._busy = True; self._generation += 1; generation = self._generation; self._append("系統", operation + "中……")
+        def run():
+            try: result = True, work()
+            except Exception as exc: result = False, str(exc)
+            def done():
+                if self._closed or generation != self._generation: return
+                self._busy = False
+                if result[0]: success(result[1]) if success else self._append("系統", operation + "完成")
+                else: self._append("錯誤", result[1])
+            self._schedule(0, done)
+        threading.Thread(target=run, daemon=True, name="ai-{}".format(operation)).start()
+
+    def scan_cameras(self): self._worker("掃描相機", lambda: CameraCapture.discover(10, backend=self.config["ai"].get("camera_backend")), self._scanned)
+    def _scanned(self, devices):
+        self.devices = devices; labels = [d["display_name"] + "（index {}）".format(d["index"]) for d in devices]; self.camera_box["values"] = labels
+        ai = self.config["ai"]; selected = CameraCapture.select_device(devices, ai.get("camera_device_id", ""), ai.get("camera_name", ""), ai.get("camera_index"))
+        if selected:
+            self.device_choice.set(labels[devices.index(selected)]); self._select_device(selected)
         else:
-            status = "相機狀態：{}".format(self.camera.state)
-        self.camera_status.config(text=status)
+            self.camera_status.config(text="狀態：找不到先前選擇的 USB 相機，請重新選擇（不會自動切換至虛擬相機）")
+    def _current_device(self):
+        try: return self.devices[self.camera_box.current()]
+        except (IndexError, TypeError): return None
+    def _device_changed(self, _event=None):
+        device = self._current_device()
+        if device: self._select_device(device)
+    def _select_device(self, device): self._worker("探測相機規格", lambda: CameraCapture.probe_capabilities(device), self._capabilities)
+    def _capabilities(self, modes):
+        self.capabilities = modes
+        resolutions = ["自動"] + list(dict.fromkeys(self._resolution_text(x["width"], x["height"]) for x in modes))
+        fps = ["自動"] + list(dict.fromkeys(str(int(x["fps"])) if float(x["fps"]).is_integer() else str(x["fps"]) for x in modes))
+        self.res_box["values"], self.fps_box["values"] = resolutions, fps
+        if self.resolution.get() not in resolutions: self.resolution.set("自動")
+        if self.fps.get() not in fps: self.fps.set("自動")
+        self._append("系統", "已驗證 {} 種實際規格".format(len(modes)))
+        # Selection/probing is background work; only the quick threaded reader
+        # is started here, so opening the dialog never enables AI Monitor.
+        self.apply_camera()
+    def apply_camera(self, save=False):
+        device = self._current_device()
+        if not device: messagebox.showwarning("相機", "請先選擇相機裝置", parent=self.window); return
+        parts = self.resolution.get().replace(" ", "").split("×"); w, h = (map(int, parts) if len(parts) == 2 else (None, None))
+        fps = None if self.fps.get() == "自動" else float(self.fps.get()); fourcc = None if self.fourcc.get() == "自動" else self.fourcc.get()
+        self.camera.device_name = device["name"]; self.camera.configure(device_id=device["device_id"], index=device["index"], backend=device["backend"], width=w, height=h, fps=fps, fourcc=fourcc)
+        if save: self.save_settings()
+
+    def _poll_preview(self):
+        d = self._current_device() or {}; actual = self.camera.actual
+        requested = self._resolution_text(self.camera.width, self.camera.height) + " @ " + (str(self.camera.fps) if self.camera.fps else "自動") + " FPS"
+        actual_text = self._resolution_text(actual.get("width"), actual.get("height")) + " @ {:.1f} FPS".format(actual.get("fps", 0))
+        status = "畫面讀取正常" if self.camera.state == "connected" else (self.camera.error or self.camera.state)
+        self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}　實際規格：{}\n狀態：{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(self.camera.backend, self.camera.backend), requested, actual_text, status))
         if self.mode.get() == "auto": self.show_latest()
+        if self.monitor:
+            while not self.monitor.results.empty():
+                _, kind, value = self.monitor.results.get_nowait(); self._append("AI" if kind == "answer" else "錯誤", value.get("text") if isinstance(value, dict) else value)
+                if kind == "error": self.monitor_status.config(text="AI Monitor：發生錯誤")
         self._schedule(150, self._poll_preview)
     def show_latest(self):
         frame = self.camera.latest_frame()
@@ -100,101 +175,146 @@ class AIConfigDialog:
         try:
             from PIL import Image, ImageTk
             import cv2
-            photo = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).resize((480, 270)))
+            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)); image.thumbnail((560, 250)); photo = ImageTk.PhotoImage(image)
             self.preview_label.config(image=photo, text=""); self.preview_label.image = photo
+            if self.zoom_window: self._render_zoom()
         except Exception as exc: self.preview_label.config(text="預覽失敗：{}".format(exc), image="")
-    def reconnect_camera(self): self.camera.configure(self.camera_index.get(), self.backend.get()); self._append("系統", "正在重新連接相機 {}／{}".format(self.camera_index.get(), self.backend.get()))
-    def scan_cameras(self):
-        self._worker("掃描相機", lambda: CameraCapture.probe(10, backend=self.backend.get()), self._scanned)
-    def _scanned(self, indexes):
-        self.camera_box["values"] = indexes or tuple(range(10)); self._append("系統", "找到相機索引：{}".format(", ".join(map(str, indexes)) if indexes else "無"))
+
+    def _draft_changed(self, _event=None):
+        if self._draft_after:
+            try: self.window.after_cancel(self._draft_after)
+            except Exception: pass
+        self._draft_after = self.window.after(700, self._autosave_draft)
+    def _autosave_draft(self): self._draft_after = None; self._save(announce=False)
+    def clear_draft(self): self.user_text.delete("1.0", "end"); self._save(announce=False)
+    def _save(self, announce=True):
+        ai = self.config.setdefault("ai", {}); device = self._current_device()
+        try: timeout, interval = float(self.timeout.get()), float(self.interval.get())
+        except ValueError: raise ValueError("timeout 與 Monitor 間隔必須是數字")
+        parts = self.resolution.get().replace(" ", "").split("×"); w, h = (map(int, parts) if len(parts) == 2 else (None, None))
+        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "interval": interval, "sound_enabled": self.sound_enabled.get(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
+        self.on_save(self.config)
+        if announce: self._append("系統", "設定已保存")
+    def save_settings(self):
+        try: self._save()
+        except ValueError as exc: messagebox.showerror("無法保存", str(exc), parent=self.window)
+
+    def _refresh_profiles(self):
+        for row in self.profile_tree.get_children(): self.profile_tree.delete(row)
+        for p in self.profiles: self.profile_tree.insert("", "end", iid=p["id"], values=("啟用" if p.get("enabled") else "停用", p.get("name", "未命名")))
+    def _profile_index(self):
+        selected = self.profile_tree.selection(); return next((i for i, p in enumerate(self.profiles) if selected and p["id"] == selected[0]), None)
+    def add_profile(self): self._profile_editor()
+    def edit_profile(self):
+        i = self._profile_index()
+        if i is not None: self._profile_editor(i)
+    def copy_profile(self):
+        i = self._profile_index()
+        if i is not None:
+            copy = dict(self.profiles[i]); copy.update(id=uuid.uuid4().hex, name=copy.get("name", "") + "（複製）"); self.profiles.insert(i + 1, copy); self._refresh_profiles()
+    def delete_profile(self):
+        i = self._profile_index()
+        if i is not None: del self.profiles[i]; self._refresh_profiles()
+    def move_profile(self, delta):
+        i = self._profile_index()
+        if i is None or not 0 <= i + delta < len(self.profiles): return
+        self.profiles[i], self.profiles[i + delta] = self.profiles[i + delta], self.profiles[i]; self._refresh_profiles(); self.profile_tree.selection_set(self.profiles[i + delta]["id"])
+    def toggle_profile(self):
+        i = self._profile_index()
+        if i is not None: self.profiles[i]["enabled"] = not self.profiles[i].get("enabled"); self._refresh_profiles()
+    def _profile_editor(self, index=None):
+        old = self.profiles[index] if index is not None else {"id": uuid.uuid4().hex, "name": "", "prompt": "", "enabled": True}
+        win = tk.Toplevel(self.window); win.title("編輯提問配置"); win.transient(self.window); win.grab_set()
+        ttk.Label(win, text="配置名稱").pack(anchor="w"); name = ttk.Entry(win, width=60); name.pack(fill="x"); name.insert(0, old.get("name", ""))
+        ttk.Label(win, text="Prompt 內容").pack(anchor="w"); prompt = tk.Text(win, width=70, height=12); prompt.pack(fill="both", expand=True); prompt.insert("1.0", old.get("prompt", ""))
+        enabled = tk.BooleanVar(value=old.get("enabled", True)); ttk.Checkbutton(win, text="啟用", variable=enabled).pack(anchor="w")
+        def save():
+            value = {"id": old["id"], "name": name.get().strip() or "未命名", "prompt": prompt.get("1.0", "end-1c"), "enabled": enabled.get()}
+            if index is None: self.profiles.append(value)
+            else: self.profiles[index] = value
+            self._refresh_profiles(); win.destroy()
+        ttk.Button(win, text="保存", command=save).pack(side="left"); ttk.Button(win, text="取消", command=win.destroy).pack(side="left")
+
+    def _client(self): return QwenClient(self.base_url.get(), self.model.get(), float(self.timeout.get()))
+    def test_connection(self): self._worker("檢查 Ollama", self._client().test_connection, self._models_loaded)
+    def _models_loaded(self, names): self.model["values"] = names; self.model.set(choose_model(names, self.model.get())); self._append("系統", "Ollama 連線成功")
+    def _send_shortcut(self, _event): self.send_test(); return "break"
+    def send_test(self):
+        self._save(announce=False)
+        try: configured = combine_prompt_profiles(self.profiles)
+        except ValueError: configured = ""
+        user = self.user_text.get("1.0", "end-1c").strip(); prompt = "\n\n".join(x for x in (configured, user) if x)
+        if not prompt: messagebox.showwarning("提問", "請輸入文字或啟用提問配置", parent=self.window); return
+        self._append("使用者", prompt); self._worker("等待 AI 回答", lambda: self._client().chat(prompt, self.selected_image, self.system.get("1.0", "end-1c")), lambda x: self._append("AI", x))
+    def toggle_monitor(self):
+        if self.monitor and self.monitor.enabled:
+            self.monitor.stop(); self.monitor_button.config(text="啟用 AI Monitor"); self.monitor_status.config(text="AI Monitor：已停止"); self.on_state and self.on_state(False); return
+        try:
+            self._save(announce=False); self.alarm.enabled = self.sound_enabled.get(); self.alarm.sound_path = self.sound_path.get()
+            self.monitor = AIMonitor(self.camera, self._client(), self.profiles, float(self.interval.get()), self.alarm); self.monitor.start()
+            self.monitor_button.config(text="停用 AI Monitor"); self.monitor_status.config(text="AI Monitor：運行中"); self.on_state and self.on_state(True)
+        except Exception as exc: self.monitor_status.config(text="AI Monitor：發生錯誤"); messagebox.showerror("無法啟用 AI", str(exc), parent=self.window)
+
+    def _append(self, role, value):
+        self.response.config(state="normal"); self.response.insert("end", "{}：{}\n\n".format(role, value)); self.response.config(state="disabled"); self.response.see("end")
     def save_image(self):
-        if self.displayed_frame is None: messagebox.showwarning("圖片", "目前沒有顯示中的畫面", parent=self.window); return
-        try: self.library.save(self.displayed_frame); self.refresh_library()
-        except Exception as exc: messagebox.showerror("保存失敗", str(exc), parent=self.window)
+        if self.displayed_frame is not None: self.library.save(self.displayed_frame); self.refresh_library()
     def pick_image(self):
-        path = filedialog.askopenfilename(parent=self.window, filetypes=[("圖片", "*.jpg *.jpeg *.png")]);
+        path = filedialog.askopenfilename(parent=self.window, filetypes=[("圖片", "*.jpg *.jpeg *.png")])
         if path: self._select_image(path, "檔案")
     def use_latest(self):
-        if self.displayed_frame is None: messagebox.showwarning("圖片", "目前沒有相機畫面", parent=self.window); return
-        try: item = self.library.save(self.displayed_frame, source="camera-test"); self.refresh_library(); self._select_image(item["path"], "最新相機畫面")
-        except Exception as exc: messagebox.showerror("圖片", str(exc), parent=self.window)
+        if self.displayed_frame is not None:
+            item = self.library.save(self.displayed_frame, source="camera"); self.refresh_library(); self._select_image(item["path"], "最新相機畫面")
+    def clear_image(self): self.selected_image = None; self.image_info.config(text="本次提問尚未附加圖片"); self.attachment_preview.config(image="", text="無附件")
     def _select_image(self, path, source):
         try:
             from PIL import Image, ImageTk
-            with Image.open(path) as im:
-                size = "{}×{}".format(*im.size)
-                thumb = im.convert("RGB"); thumb.thumbnail((320, 160)); photo = ImageTk.PhotoImage(thumb)
-        except Exception as exc: messagebox.showerror("圖片無法開啟", str(exc), parent=self.window); return
-        self.selected_image = path; self.image_info.config(text="已附加：{}（{}，{}）".format(os.path.basename(path), size, source)); self.attachment_preview.config(image=photo, text=""); self.attachment_preview.image = photo
-    def clear_image(self): self.selected_image = None; self.image_info.config(text="本次提問尚未附加圖片"); self.attachment_preview.config(image="", text="無附件"); self.attachment_preview.image = None
+            with Image.open(path) as im: size = "{}×{}".format(*im.size); thumb = im.convert("RGB"); thumb.thumbnail((400, 130)); photo = ImageTk.PhotoImage(thumb)
+            self.selected_image = path; self.image_info.config(text="已附加：{}（{}，{}）".format(os.path.basename(path), size, source)); self.attachment_preview.config(image=photo, text=""); self.attachment_preview.image = photo
+        except Exception as exc: messagebox.showerror("圖片無法開啟", str(exc), parent=self.window)
     def refresh_library(self):
         if not hasattr(self, "library_tree"): return
         for row in self.library_tree.get_children(): self.library_tree.delete(row)
-        for item in reversed(self.library.list()): self.library_tree.insert("", "end", iid=item["id"], values=("★" if item.get("favorite") else "", time_text(item.get("saved_at")), item.get("source", ""), item.get("note", "")))
+        for item in reversed(self.library.list()): self.library_tree.insert("", "end", iid=item["id"], values=("★" if item.get("favorite") else "", time_text(item.get("saved_at")), item.get("source", "")))
     def select_library_image(self, _event=None):
         selected = self.library_tree.selection()
         if selected:
             item = next((x for x in self.library.list() if x["id"] == selected[0]), None)
             if item: self._selected_item = item; self._select_image(item["path"], "圖片庫")
-    def toggle_favorite(self, _event=None):
-        selected = self.library_tree.selection()
-        if selected:
-            item = next((x for x in self.library.list() if x["id"] == selected[0]), None)
-            if item: self.library.set_favorite(item["id"], not item.get("favorite")); self.refresh_library()
 
-    def _worker(self, operation, work, success=None):
-        if self._busy: self._append("系統", "已有工作進行中，請稍候"); return
-        self._busy = True; self._generation += 1; generation = self._generation; self.send_button.config(state="disabled"); self._append("系統", operation + "中……")
-        def run():
-            try: result = (True, work())
-            except Exception as exc: result = (False, str(exc))
-            def done():
-                if self._closed or generation != self._generation: return
-                self._busy = False; self.send_button.config(state="normal")
-                if result[0]:
-                    if success: success(result[1])
-                    else: self._append("系統", operation + "完成")
-                else: self._append("錯誤", result[1])
-            self._schedule(0, done)
-        threading.Thread(target=run, daemon=True).start()
-    def test_connection(self):
-        self._worker("檢查 Ollama", self._client().test_connection, self._models_loaded)
-    def _models_loaded(self, names):
-        self.model["values"] = names; chosen = choose_model(names, self.model.get()); self.model.set(chosen)
-        self._append("系統", "Ollama 連線成功；可用模型：{}；已選擇：{}".format(", ".join(names) or "無", chosen or "無"))
-    def send_test(self):
-        profiles = self._sync_profiles()
-        try: configured = combine_prompt_profiles(profiles)
-        except ValueError: configured = ""
-        user = self.user_text.get("1.0", "end").strip(); prompt = "\n\n".join(x for x in (configured, user) if x)
-        if not prompt: messagebox.showwarning("提問", "請輸入文字或選擇提問配置", parent=self.window); return
-        if not self.model.get().strip(): messagebox.showwarning("模型", "請先檢查 Ollama 並選擇模型", parent=self.window); return
-        self._append("使用者", prompt + ("\n[附件：{}]".format(os.path.basename(self.selected_image)) if self.selected_image else ""))
-        self._worker("等待 AI 回答", lambda: self._client().chat(prompt, self.selected_image, self.system.get()), lambda answer: self._append("AI", answer))
-    def _append(self, role, text):
-        self.response.config(state="normal"); self.response.insert("end", "{}：{}\n\n".format(role, text)); self.response.config(state="disabled"); self.response.see("end")
-    def _sync_profiles(self):
-        for profile, var in self.profile_vars: profile["enabled"] = var.get()
-        return [x[0] for x in self.profile_vars]
-    def toggle_monitor(self):
-        if self.monitor and self.monitor.enabled: self.monitor.stop(); self.on_state and self.on_state(False); self._append("系統", "AI Monitor 已停用"); return
+    def _ctrl_press(self, _event):
+        now = time.monotonic()
+        if now - self._last_ctrl < .35: self._toggle_zoom(); self._last_ctrl = 0
+        else: self._last_ctrl = now
+    def _toggle_zoom(self):
+        if self.zoom_window:
+            self.zoom_window.destroy(); self.zoom_window = None; self.window.focus_force(); return
+        if self.selected_image is None and self.displayed_frame is None: return
+        self.zoom_window = tk.Toplevel(self.window); self.zoom_window.title("圖片放大檢視"); self.zoom_label = ttk.Label(self.zoom_window, anchor="center"); self.zoom_label.pack(fill="both", expand=True)
+        self.zoom_window.bind("<Escape>", lambda _e: self._toggle_zoom()); self.zoom_window.bind("<Configure>", lambda _e: self._render_zoom()); self._render_zoom()
+    def _render_zoom(self):
+        if not self.zoom_window: return
         try:
-            if not self.model.get().strip(): raise ValueError("請先選擇模型")
-            self.monitor = AIMonitor(self.camera, self._client(), self._sync_profiles(), self.config["ai"].get("interval", 5), self.alarm); self.monitor.start(); self.on_state and self.on_state(True); self._append("系統", "AI Monitor 已啟用")
-        except Exception as exc: messagebox.showerror("無法啟用 AI", str(exc), parent=self.window)
+            from PIL import Image, ImageTk
+            if self.selected_image: image = Image.open(self.selected_image).convert("RGB")
+            else:
+                import cv2
+                image = Image.fromarray(cv2.cvtColor(self.displayed_frame, cv2.COLOR_BGR2RGB))
+            image.thumbnail((max(1, self.zoom_window.winfo_width()), max(1, self.zoom_window.winfo_height()))); photo = ImageTk.PhotoImage(image); self.zoom_label.config(image=photo); self.zoom_label.image = photo
+        except Exception: pass
     def close(self):
+        if self._closed: return
+        try: self._save(announce=False)
+        except Exception: pass
         self._closed = True; self._generation += 1
         if self.monitor: self.monitor.stop()
-        self.camera.stop(); self.alarm.stop()
+        self.alarm.stop(); self.camera.stop()
         for after_id in list(self._after_ids):
             try: self.window.after_cancel(after_id)
             except Exception: pass
-        ai = self.config["ai"]; ai.update({"camera_index": self.camera_index.get(), "camera_backend": self.backend.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get(), "model": self.model.get(), "timeout": float(self.timeout.get()), "system_prompt": self.system.get(), "prompt_profiles": self._sync_profiles(), "enabled": False})
-        self.on_save(self.config); self.on_state and self.on_state(False); self.window.destroy()
+        self.config["ai"]["enabled"] = False; self.on_save(self.config); self.on_state and self.on_state(False); self.window.destroy()
 
 
 def time_text(timestamp):
-    import time
     try: return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(timestamp)))
     except Exception: return ""
