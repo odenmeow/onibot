@@ -14,12 +14,14 @@ import socket
 import threading
 import time
 import uuid
+import os
 import RPi.GPIO as GPIO
 
 HOST = "0.0.0.0"
 PORT = 5000
 
-ACTIVE_LOW = False
+BACKEND_CONFIG_FILE = os.environ.get("ONIBOT_BACKEND_CONFIG", os.path.join(os.path.dirname(__file__), "backend_config.json"))
+ACTIVE_LOW = True
 DEFAULT_PRESS_TIME = 0.25
 BUFF_SKIP_MODE_WALK = "walk"          # 走過：不按，但保留原時間軸（照等）
 BUFF_SKIP_MODE_PASS = "pass"          # 略過：不按，並壓縮時間軸（不等）
@@ -404,11 +406,45 @@ def set_active_low(active_low):
     return get_gpio_polarity_info()
 
 
+def load_gpio_polarity():
+    """Load polarity before configuring outputs; absent/broken config is safely active-low."""
+    global ACTIVE_LOW, PRESS_LEVEL, RELEASE_LEVEL
+    trigger = "low"
+    try:
+        with open(BACKEND_CONFIG_FILE, "r", encoding="utf-8") as stream:
+            trigger = str(json.load(stream).get("gpio_polarity", "low")).lower()
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    ACTIVE_LOW = trigger != "high"
+    PRESS_LEVEL = get_press_level()
+    RELEASE_LEVEL = get_release_level()
+    return get_gpio_polarity_info()
+
+
+def save_gpio_polarity():
+    data = {}
+    try:
+        with open(BACKEND_CONFIG_FILE, "r", encoding="utf-8") as stream:
+            data = json.load(stream)
+    except (OSError, ValueError, TypeError):
+        pass
+    if not isinstance(data, dict):
+        data = {}
+    data["gpio_polarity"] = "low" if ACTIVE_LOW else "high"
+    tmp = BACKEND_CONFIG_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as stream:
+        json.dump(data, stream, ensure_ascii=False, indent=2)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(tmp, BACKEND_CONFIG_FILE)
+
+
 PRESS_LEVEL = get_press_level()
 RELEASE_LEVEL = get_release_level()
 
 
 def setup_gpio():
+    load_gpio_polarity()
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
     for pin in BUTTONS.values():
@@ -1209,6 +1245,7 @@ def handle_request(data):
                 phase="set_gpio_polarity",
                 status="error"
             )
+        save_gpio_polarity()
         return {
             "status": "ok",
             "message": "GPIO 已設定為{}，並全部釋放".format(gpio_polarity["trigger_label"]),

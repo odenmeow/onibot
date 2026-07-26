@@ -13,6 +13,7 @@ import uuid
 import tkinter as tk
 from tkinter import ttk, simpledialog, colorchooser, messagebox
 from pynput import keyboard
+from ai_config_dialog import AIConfigDialog
 
 DEFAULT_PI_HOST = "192.168.100.140"
 PI_PORT = 5000
@@ -154,6 +155,12 @@ def ensure_dirs():
 
 
 def load_config():
+    ai_defaults = {
+        "enabled": False, "camera_index": 0, "preview_mode": "auto",
+        "base_url": "http://127.0.0.1:11434", "model": "", "timeout": 30,
+        "system_prompt": "", "interval": 5, "sound_enabled": True,
+        "sound_path": "", "accept_lowercase_o": False, "prompt_profiles": []
+    }
     if not os.path.exists(CONFIG_FILE):
         return {
             "pi_host": DEFAULT_PI_HOST,
@@ -169,6 +176,7 @@ def load_config():
             "ack_timeout_ms": ACK_TIMEOUT_MS,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
+            "ai": dict(ai_defaults),
             "ui_layout": {
                 "paned_sash_x": None,
                 "left_paned_sashes": [],
@@ -198,6 +206,12 @@ def load_config():
             if re.fullmatch(r"#[0-9a-f]{6}", text) and text not in normalized_recent:
                 normalized_recent.append(text)
         normalized_recent = normalized_recent[:7]
+        raw_ai = data.get("ai", {}) if isinstance(data.get("ai", {}), dict) else {}
+        normalized_ai = dict(ai_defaults)
+        normalized_ai.update({key: raw_ai[key] for key in ai_defaults if key in raw_ai})
+        normalized_ai["enabled"] = False  # never resurrect a crashed monitor session
+        if not isinstance(normalized_ai["prompt_profiles"], list):
+            normalized_ai["prompt_profiles"] = []
         return {
             "pi_host": data.get("pi_host", DEFAULT_PI_HOST),
             "send_delay_sec": float(data.get("send_delay_sec", 1.0)),
@@ -212,6 +226,7 @@ def load_config():
             "ack_timeout_ms": int(data.get("ack_timeout_ms", ACK_TIMEOUT_MS)),
             "hint_note_text": str(data.get("hint_note_text", DEFAULT_HINT_NOTE_TEXT)),
             "ui_recent_colors": normalized_recent,
+            "ai": normalized_ai,
             "ui_layout": {
                 "paned_sash_x": ui_layout.get("paned_sash_x"),
                 "paned_ratio": ui_layout.get("paned_ratio"),
@@ -240,6 +255,7 @@ def load_config():
             "ack_timeout_ms": ACK_TIMEOUT_MS,
             "hint_note_text": DEFAULT_HINT_NOTE_TEXT,
             "ui_recent_colors": [],
+            "ai": dict(ai_defaults),
             "ui_layout": {
                 "paned_sash_x": None,
                 "left_paned_sashes": [],
@@ -2056,6 +2072,17 @@ class App:
 
     def on_close(self):
         try:
+            dialog = getattr(self, "ai_dialog", None)
+            if dialog is not None:
+                dialog.close()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "connected", False):
+                self.request_pi({"action": "release_gpio"}, write_response=False)
+        except Exception:
+            pass
+        try:
             self.daily_log_stop_event.set()
             if getattr(self, "daily_log_queue", None) is not None:
                 self.daily_log_queue.put_nowait(None)
@@ -2489,6 +2516,8 @@ class App:
             trigger = str(info.get("trigger_level", "")).strip().lower()
             if trigger in {"low", "high"}:
                 self.gpio_trigger_level = trigger
+                # status/hello is authoritative; no manual polarity-button prerequisite.
+                self.applied_gpio_trigger_level = trigger
         if not hasattr(self, "gpio_polarity_var"):
             return
         if not isinstance(info, dict):
@@ -2885,6 +2914,7 @@ class App:
         self.connected = False
         self.offline_mode = True
         self.applied_gpio_trigger_level = ""
+        self.ai_dialog = None
         self.control_request_lock = threading.Lock()
         self.status_request_lock = threading.Lock()
         self.communication_log_path = COMMUNICATION_LOG_FILE
@@ -3066,8 +3096,10 @@ class App:
             tk.Button(connection_btn_row, text="測試連線", command=self.ping_pi, width=10),
             tk.Button(connection_btn_row, text="我要離線", command=self.go_offline, width=10),
             tk.Button(connection_btn_row, text="低位觸發", command=lambda: self.set_gpio_polarity("low"), width=10),
-            tk.Button(connection_btn_row, text="釋放GPIO", command=self.release_gpio, width=10),
+            tk.Button(connection_btn_row, text="AI配置", command=self.open_ai_config, width=10),
         ]
+        self.ai_toggle_button = tk.Button(connection_btn_row, text="AI啟用", command=self.toggle_ai, width=10, bg="#d9d9d9")
+        self.connection_buttons.append(self.ai_toggle_button)
         for btn in self.connection_buttons:
             btn.pack(side="left", padx=4)
         self.update_auto_connect_ui()
@@ -6047,6 +6079,34 @@ class App:
         except Exception as e:
             self.set_frontend_error(str(e))
             self.show_error("釋放 GPIO 失敗", str(e))
+
+    def open_ai_config(self):
+        existing = getattr(self, "ai_dialog", None)
+        if existing is not None:
+            try:
+                existing.window.lift()
+                return
+            except Exception:
+                self.ai_dialog = None
+        self.ai_dialog = AIConfigDialog(
+            self.root, self.config, save_config, self._set_ai_enabled_ui
+        )
+
+    def _set_ai_enabled_ui(self, enabled):
+        self.config.setdefault("ai", {})["enabled"] = bool(enabled)
+        button = getattr(self, "ai_toggle_button", None)
+        if button is not None:
+            button.config(
+                text="AI停用" if enabled else "AI啟用",
+                bg="#91d18b" if enabled else "#d9d9d9"
+            )
+        save_config(self.config)
+
+    def toggle_ai(self):
+        self.open_ai_config()
+        dialog = getattr(self, "ai_dialog", None)
+        if dialog is not None:
+            dialog.toggle_monitor()
 
     def set_gpio_polarity(self, trigger_level):
         label = "高位觸發" if trigger_level == "high" else "低位觸發"
