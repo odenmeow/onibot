@@ -30,7 +30,8 @@ class AIConfigDialog:
         self.monitor = None; self.devices = []; self.capabilities = []
         self.displayed_frame = self.selected_image = self._selected_item = self.zoom_window = None
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
-        self._draft_after = None; self._last_ctrl = 0
+        self._draft_after = self._system_after = None; self._last_ctrl = 0
+        self._probe_cancel = threading.Event()
         self.profiles = [dict(x) for x in ai.get("prompt_profiles", []) if isinstance(x, dict)]
         self._build(ai); self._schedule(100, self.scan_cameras); self._schedule(150, self._poll_preview)
         self.window.bind_all("<KeyPress-Control_L>", self._ctrl_press, add="+")
@@ -51,9 +52,12 @@ class AIConfigDialog:
         self.resolution = tk.StringVar(value=self._resolution_text(ai.get("camera_width"), ai.get("camera_height")))
         ttk.Label(preview, text="解析度").grid(row=2, column=4); self.res_box = ttk.Combobox(preview, textvariable=self.resolution, state="readonly", width=12); self.res_box.grid(row=2, column=5)
         self.fps = tk.StringVar(value=str(ai.get("camera_fps") or "自動")); ttk.Label(preview, text="FPS").grid(row=2, column=6); self.fps_box = ttk.Combobox(preview, textvariable=self.fps, state="readonly", width=7); self.fps_box.grid(row=2, column=7)
-        self.fourcc = tk.StringVar(value=ai.get("camera_fourcc", "MJPG") or "自動"); ttk.Label(preview, text="FourCC").grid(row=2, column=8); ttk.Combobox(preview, textvariable=self.fourcc, values=("自動", "MJPG", "YUYV"), width=7).grid(row=2, column=9)
+        self.res_box["values"] = ("自動", "640 × 480", "1280 × 720", "1920 × 1080")
+        self.fps_box["values"] = ("自動", "15", "30", "60")
+        self.fourcc = tk.StringVar(value=ai.get("camera_fourcc", "MJPG") or "自動"); ttk.Label(preview, text="FourCC").grid(row=2, column=8); ttk.Combobox(preview, textvariable=self.fourcc, values=("自動", "MJPG", "YUY2"), width=7).grid(row=2, column=9)
         ttk.Button(preview, text="重新掃描", command=self.scan_cameras).grid(row=2, column=10)
         ttk.Button(preview, text="套用相機設定", command=self.apply_camera).grid(row=2, column=11)
+        ttk.Button(preview, text="手動探測支援規格", command=self.probe_capabilities).grid(row=3, column=10, columnspan=2)
 
         qbox = ttk.LabelFrame(self.window, text="Ollama 與監控設定"); qbox.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8)
         self.base_url = self._entry(qbox, 0, "API 位址", ai.get("base_url", "http://127.0.0.1:11434"), 25)
@@ -67,6 +71,7 @@ class AIConfigDialog:
         left = ttk.Frame(self.window); left.grid(row=2, column=0, sticky="nsew", padx=(8, 4)); left.columnconfigure(0, weight=1); left.rowconfigure(2, weight=1)
         sysbox = ttk.LabelFrame(left, text="系統提示詞（多行）"); sysbox.grid(row=0, column=0, sticky="ew")
         self.system = tk.Text(sysbox, height=4); self.system.pack(fill="x"); self.system.insert("1.0", ai.get("system_prompt", ""))
+        self.system.bind("<KeyRelease>", self._system_changed)
         pbox = ttk.LabelFrame(left, text="提問配置（依畫面順序組合）"); pbox.grid(row=1, column=0, sticky="ew", pady=4)
         self.profile_tree = ttk.Treeview(pbox, columns=("enabled", "name"), show="headings", height=6); self.profile_tree.heading("enabled", text="狀態"); self.profile_tree.heading("name", text="名稱"); self.profile_tree.pack(fill="x")
         bar = ttk.Frame(pbox); bar.pack(fill="x")
@@ -122,12 +127,16 @@ class AIConfigDialog:
             self._schedule(0, done)
         threading.Thread(target=run, daemon=True, name="ai-{}".format(operation)).start()
 
-    def scan_cameras(self): self._worker("掃描相機", lambda: CameraCapture.discover(10, backend=self.config["ai"].get("camera_backend")), self._scanned)
+    def scan_cameras(self):
+        def scan():
+            if not self.camera.stop(): raise RuntimeError(self.camera.error)
+            return CameraCapture.discover(10, backend=self.config["ai"].get("camera_backend"))
+        self._worker("掃描相機", scan, self._scanned)
     def _scanned(self, devices):
         self.devices = devices; labels = [d["display_name"] + "（index {}）".format(d["index"]) for d in devices]; self.camera_box["values"] = labels
         ai = self.config["ai"]; selected = CameraCapture.select_device(devices, ai.get("camera_device_id", ""), ai.get("camera_name", ""), ai.get("camera_index"))
         if selected:
-            self.device_choice.set(labels[devices.index(selected)]); self._select_device(selected)
+            self.device_choice.set(labels[devices.index(selected)]); self.apply_camera()
         else:
             self.camera_status.config(text="狀態：找不到先前選擇的 USB 相機，請重新選擇（不會自動切換至虛擬相機）")
     def _current_device(self):
@@ -135,12 +144,19 @@ class AIConfigDialog:
         except (IndexError, TypeError): return None
     def _device_changed(self, _event=None):
         device = self._current_device()
-        if device: self._select_device(device)
-    def _select_device(self, device): self._worker("探測相機規格", lambda: CameraCapture.probe_capabilities(device), self._capabilities)
+        if device: self.camera_status.config(text="已選擇 {}；按「套用相機設定」後才會開啟".format(device["name"]))
+    def probe_capabilities(self):
+        device = self._current_device()
+        if not device: return
+        self._probe_cancel.clear()
+        def probe():
+            if not self.camera.stop(): raise RuntimeError(self.camera.error)
+            return CameraCapture.probe_capabilities(device, cancelled=self._probe_cancel.is_set)
+        self._worker("手動探測相機規格", probe, self._capabilities)
     def _capabilities(self, modes):
         self.capabilities = modes
-        resolutions = ["自動"] + list(dict.fromkeys(self._resolution_text(x["width"], x["height"]) for x in modes))
-        fps = ["自動"] + list(dict.fromkeys(str(int(x["fps"])) if float(x["fps"]).is_integer() else str(x["fps"]) for x in modes))
+        resolutions = list(dict.fromkeys(["自動", "640 × 480", "1280 × 720", "1920 × 1080"] + [self._resolution_text(x["width"], x["height"]) for x in modes]))
+        fps = list(dict.fromkeys(["自動", "15", "30", "60"] + [str(int(x["fps"])) if float(x["fps"]).is_integer() else str(x["fps"]) for x in modes]))
         self.res_box["values"], self.fps_box["values"] = resolutions, fps
         if self.resolution.get() not in resolutions: self.resolution.set("自動")
         if self.fps.get() not in fps: self.fps.set("自動")
@@ -153,15 +169,21 @@ class AIConfigDialog:
         if not device: messagebox.showwarning("相機", "請先選擇相機裝置", parent=self.window); return
         parts = self.resolution.get().replace(" ", "").split("×"); w, h = (map(int, parts) if len(parts) == 2 else (None, None))
         fps = None if self.fps.get() == "自動" else float(self.fps.get()); fourcc = None if self.fourcc.get() == "自動" else self.fourcc.get()
-        self.camera.device_name = device["name"]; self.camera.configure(device_id=device["device_id"], index=device["index"], backend=device["backend"], width=w, height=h, fps=fps, fourcc=fourcc)
+        self.camera.device_name = device["name"]
+        if not self.camera.configure(device_id=device["device_id"], index=device["index"], backend=device["backend"], width=w, height=h, fps=fps, fourcc=fourcc):
+            messagebox.showwarning("相機", self.camera.error, parent=self.window); return
         if save: self.save_settings()
 
     def _poll_preview(self):
         d = self._current_device() or {}; actual = self.camera.actual
         requested = self._resolution_text(self.camera.width, self.camera.height) + " @ " + (str(self.camera.fps) if self.camera.fps else "自動") + " FPS"
-        actual_text = self._resolution_text(actual.get("width"), actual.get("height")) + " @ {:.1f} FPS".format(actual.get("fps", 0))
+        actual_fps = "{:.1f}".format(actual["fps"]) if actual.get("fps") else "驅動未回報"
+        actual_text = self._resolution_text(actual.get("width"), actual.get("height")) + " @ " + actual_fps + " FPS / " + (actual.get("fourcc") or "驅動未回報")
+        requested += " / " + (self.fourcc.get() if self.fourcc.get() != "自動" else "自動")
+        used = self.camera.fallback
+        used_text = self._resolution_text(used.get("width"), used.get("height")) + " @ " + (str(used.get("fps")) if used.get("fps") else "自動") + " FPS / " + (used.get("fourcc") or "自動")
         status = "畫面讀取正常" if self.camera.state == "connected" else (self.camera.error or self.camera.state)
-        self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}　實際規格：{}\n狀態：{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(self.camera.backend, self.camera.backend), requested, actual_text, status))
+        self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}\nfallback 後使用值：{}　實際規格：{}\n狀態：{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(used.get("backend", self.camera.backend), used.get("backend", self.camera.backend)), requested, used_text, actual_text, status))
         if self.mode.get() == "auto": self.show_latest()
         if self.monitor:
             while not self.monitor.results.empty():
@@ -186,6 +208,12 @@ class AIConfigDialog:
             except Exception: pass
         self._draft_after = self.window.after(700, self._autosave_draft)
     def _autosave_draft(self): self._draft_after = None; self._save(announce=False)
+    def _system_changed(self, _event=None):
+        if self._system_after:
+            try: self.window.after_cancel(self._system_after)
+            except Exception: pass
+        self._system_after = self.window.after(700, self._autosave_system)
+    def _autosave_system(self): self._system_after = None; self._save(announce=False)
     def clear_draft(self): self.user_text.delete("1.0", "end"); self._save(announce=False)
     def _save(self, announce=True):
         ai = self.config.setdefault("ai", {}); device = self._current_device()
@@ -211,17 +239,17 @@ class AIConfigDialog:
     def copy_profile(self):
         i = self._profile_index()
         if i is not None:
-            copy = dict(self.profiles[i]); copy.update(id=uuid.uuid4().hex, name=copy.get("name", "") + "（複製）"); self.profiles.insert(i + 1, copy); self._refresh_profiles()
+            copy = dict(self.profiles[i]); copy.update(id=uuid.uuid4().hex, name=copy.get("name", "") + "（複製）"); self.profiles.insert(i + 1, copy); self._refresh_profiles(); self._save(announce=False)
     def delete_profile(self):
         i = self._profile_index()
-        if i is not None: del self.profiles[i]; self._refresh_profiles()
+        if i is not None: del self.profiles[i]; self._refresh_profiles(); self._save(announce=False)
     def move_profile(self, delta):
         i = self._profile_index()
         if i is None or not 0 <= i + delta < len(self.profiles): return
-        self.profiles[i], self.profiles[i + delta] = self.profiles[i + delta], self.profiles[i]; self._refresh_profiles(); self.profile_tree.selection_set(self.profiles[i + delta]["id"])
+        self.profiles[i], self.profiles[i + delta] = self.profiles[i + delta], self.profiles[i]; self._refresh_profiles(); self.profile_tree.selection_set(self.profiles[i + delta]["id"]); self._save(announce=False)
     def toggle_profile(self):
         i = self._profile_index()
-        if i is not None: self.profiles[i]["enabled"] = not self.profiles[i].get("enabled"); self._refresh_profiles()
+        if i is not None: self.profiles[i]["enabled"] = not self.profiles[i].get("enabled"); self._refresh_profiles(); self._save(announce=False)
     def _profile_editor(self, index=None):
         old = self.profiles[index] if index is not None else {"id": uuid.uuid4().hex, "name": "", "prompt": "", "enabled": True}
         win = tk.Toplevel(self.window); win.title("編輯提問配置"); win.transient(self.window); win.grab_set()
@@ -232,7 +260,7 @@ class AIConfigDialog:
             value = {"id": old["id"], "name": name.get().strip() or "未命名", "prompt": prompt.get("1.0", "end-1c"), "enabled": enabled.get()}
             if index is None: self.profiles.append(value)
             else: self.profiles[index] = value
-            self._refresh_profiles(); win.destroy()
+            self._refresh_profiles(); self._save(announce=False); win.destroy()
         ttk.Button(win, text="保存", command=save).pack(side="left"); ttk.Button(win, text="取消", command=win.destroy).pack(side="left")
 
     def _client(self): return QwenClient(self.base_url.get(), self.model.get(), float(self.timeout.get()))
@@ -307,6 +335,7 @@ class AIConfigDialog:
         try: self._save(announce=False)
         except Exception: pass
         self._closed = True; self._generation += 1
+        self._probe_cancel.set()
         if self.monitor: self.monitor.stop()
         self.alarm.stop(); self.camera.stop()
         for after_id in list(self._after_ids):

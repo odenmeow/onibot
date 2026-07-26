@@ -18,6 +18,7 @@ except ImportError:  # camera support is optional on development machines
 
 TYPE_LABELS = {"usb": "USB", "integrated": "內建", "virtual": "虛擬", "unknown": "相機"}
 BACKEND_LABELS = {"dshow": "DirectShow", "msmf": "Media Foundation", "v4l2": "V4L2", "auto": "自動"}
+_UNSET = object()
 
 
 def classify_device(name, device_id=""):
@@ -44,13 +45,14 @@ class CameraCapture:
         self.fps = settings.get("fps"); self.fourcc = settings.get("fourcc")
         self.capture_factory, self.retry_delay = capture_factory, retry_delay
         self.actual = {}; self.error = ""; self.state = "stopped"
+        self.last_operation = ""; self.fallback = {}
         self._lock = threading.Lock(); self._stop = threading.Event()
         self._thread = self._capture = self._frame = None
 
-    def _open(self, index):
+    def _open(self, index, backend=None):
         if self.capture_factory is not None: return self.capture_factory(index)
         if cv2 is None: raise RuntimeError("無法載入 OpenCV；請安裝 opencv-python 並確認 DLL 可正常載入")
-        constant = self.BACKENDS.get(self.backend)
+        constant = self.BACKENDS.get(backend or self.backend)
         api = getattr(cv2, constant, None) if constant else None
         return cv2.VideoCapture(index) if api is None else cv2.VideoCapture(index, api)
 
@@ -75,9 +77,11 @@ class CameraCapture:
         pnp = cls._windows_names()
         devices = []
         for position, index in enumerate(indexes):
-            info = pnp[position] if position < len(pnp) else {}
-            name = str(info.get("FriendlyName") or ("Camera {}".format(index)))
-            device_id = str(info.get("InstanceId") or "{}:{}".format(backend, name))
+            # PnP and DirectShow do not promise the same ordering.  Never bind a
+            # PnP identity to an OpenCV index merely because both are Nth.
+            info = pnp[position] if len(pnp) == 1 and len(indexes) == 1 else {}
+            name = str(info.get("FriendlyName") or ("Camera {}（名稱對應未驗證）".format(index)))
+            device_id = str(info.get("InstanceId") or "{}:index:{}".format(backend, index))
             kind = classify_device(name, device_id)
             devices.append({"name": name, "display_name": "[{}] {}".format(TYPE_LABELS[kind], name),
                             "device_id": device_id, "index": index, "device_type": kind, "backend": backend})
@@ -94,32 +98,44 @@ class CameraCapture:
                 if cap is not None and cap.isOpened(): found.append(index)
             except Exception: pass
             finally:
-                if cap is not None: cap.release()
+                if cap is not None:
+                    try: cap.release()
+                    except Exception: pass
         return found
 
     @classmethod
-    def probe_capabilities(cls, device, capture_factory=None):
+    def probe_capabilities(cls, device, capture_factory=None, cancelled=None):
         """Verify common settings with a real frame; return unique actual modes."""
         results = []
         if cv2 is None and capture_factory is None: return results
         for width, height in cls.COMMON_RESOLUTIONS:
             for fps in cls.COMMON_FPS:
-                reader = cls(device["index"], capture_factory, backend=device.get("backend", "auto"),
-                             width=width, height=height, fps=fps)
-                cap = None
-                try:
-                    cap = reader._open(reader.index)
-                    if not cap or not cap.isOpened(): continue
-                    reader._apply(cap, validate=False)
-                    ok, frame = cap.read()
-                    if not ok or frame is None: continue
-                    actual = reader._actual(cap)
-                    mode = (actual["width"], actual["height"], round(actual["fps"] or fps, 2))
-                    if mode not in [(x["width"], x["height"], x["fps"]) for x in results]:
-                        results.append(dict(width=mode[0], height=mode[1], fps=mode[2]))
-                except Exception: pass
-                finally:
-                    if cap is not None: cap.release()
+                for fourcc in (("MJPG", None) if (width, height) == (1920, 1080) else (None,)):
+                    if cancelled and cancelled(): return results
+                    reader = cls(device["index"], capture_factory, backend=device.get("backend", "auto"),
+                                 width=width, height=height, fps=fps, fourcc=fourcc)
+                    cap = None
+                    try:
+                        cap = reader._open(reader.index)
+                        if not cap or not cap.isOpened(): continue
+                        reader._apply(cap, validate=False)
+                        ok, frame = cap.read()
+                        if not ok or frame is None: continue
+                        actual = reader._actual(cap)
+                        mode = (actual["width"], actual["height"], round(actual["fps"] or fps, 2))
+                        if mode not in [(x["width"], x["height"], x["fps"]) for x in results]:
+                            results.append(dict(width=mode[0], height=mode[1], fps=mode[2]))
+                    except Exception: pass
+                    finally:
+                        if cap is not None:
+                            try: cap.release()
+                            except Exception: pass
+                        if cancelled:
+                            deadline = time.monotonic() + .15
+                            while time.monotonic() < deadline:
+                                if cancelled(): return results
+                                time.sleep(.02)
+                        else: time.sleep(.15)
         return results
 
     @staticmethod
@@ -134,19 +150,40 @@ class CameraCapture:
 
     def _actual(self, cap):
         if cv2 is None: return {}
-        return {"width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                "fps": float(cap.get(cv2.CAP_PROP_FPS)), "fourcc": self.fourcc or ""}
+        values = {}
+        for name, prop in (("width", cv2.CAP_PROP_FRAME_WIDTH), ("height", cv2.CAP_PROP_FRAME_HEIGHT),
+                           ("fps", cv2.CAP_PROP_FPS), ("fourcc", cv2.CAP_PROP_FOURCC)):
+            try: values[name] = cap.get(prop)
+            except Exception as exc: self._record_error("cap.get({})".format(name), exc); values[name] = 0
+        code = int(values["fourcc"] or 0)
+        values["fourcc"] = "".join(chr((code >> (8 * i)) & 0xff) for i in range(4)).strip("\x00 ")
+        values["width"], values["height"] = int(values["width"] or 0), int(values["height"] or 0)
+        values["fps"] = float(values["fps"] or 0) or None
+        return values
+
+    def _context(self):
+        return "backend={} index={} width={} height={} fps={} fourcc={}".format(
+            self.backend, self.index, self.width, self.height, self.fps, self.fourcc)
+
+    def _record_error(self, operation, exc):
+        self.last_operation = operation
+        self.error = "相機操作失敗（{}；{}）：{}".format(operation, self._context(), exc)
 
     def _apply(self, cap, validate=True):
         if cv2 is not None:
             if self.fourcc:
                 code = str(self.fourcc)[:4]
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*code))
-            if self.width: cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.width))
-            if self.height: cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.height))
-            if self.fps: cap.set(cv2.CAP_PROP_FPS, float(self.fps))
+                try: value = cv2.VideoWriter_fourcc(*code)
+                except Exception as exc: self._record_error("VideoWriter_fourcc", exc); raise
+                try: cap.set(cv2.CAP_PROP_FOURCC, value)
+                except Exception as exc: self._record_error("cap.set(fourcc)", exc); raise
+            for name, prop, value in (("width", cv2.CAP_PROP_FRAME_WIDTH, self.width), ("height", cv2.CAP_PROP_FRAME_HEIGHT, self.height), ("fps", cv2.CAP_PROP_FPS, self.fps)):
+                if value is not None:
+                    try: cap.set(prop, float(value))
+                    except Exception as exc: self._record_error("cap.set({})".format(name), exc); raise
         if validate:
-            ok, frame = cap.read()
+            try: ok, frame = cap.read()
+            except Exception as exc: self._record_error("cap.read(validate)", exc); raise
             if not ok or frame is None: raise RuntimeError("可開啟裝置但無法讀取 frame；相機可能被 OBS 或其他程式占用")
             with self._lock: self._frame = frame.copy()
         self.actual = self._actual(cap)
@@ -155,27 +192,25 @@ class CameraCapture:
     def running(self): return bool(self._thread and self._thread.is_alive())
 
     def start(self):
-        if self.running: return
+        if self.running or (self._thread is not None and self._thread.is_alive()): return False
         if cv2 is None and self.capture_factory is None:
-            self.state, self.error = "dependency_error", "無法載入 OpenCV；請安裝 opencv-python 並確認 DLL 可正常載入"; return
+            self.state, self.error = "dependency_error", "無法載入 OpenCV；請安裝 opencv-python 並確認 DLL 可正常載入"; return False
         self.state = "starting"; self._stop.clear()
         self._thread = threading.Thread(target=self._read_loop, daemon=True, name="ai-camera"); self._thread.start()
+        return True
 
     def _read_loop(self):
         cap = None
         try:
-            cap = self._open(self.index)
+            cap = self._open_with_fallback()
             with self._lock: self._capture = cap
             if cap is None or not cap.isOpened():
                 raise RuntimeError("{} 開啟失敗（backend: {}，{}，index {}）；請確認裝置是否被占用".format(BACKEND_LABELS.get(self.backend, self.backend), self.backend, self.device_name or "相機", self.index))
-            try: self._apply(cap)
-            except RuntimeError:
-                # MJPG is an optimisation, not a reason to permanently lose video.
-                if str(self.fourcc).upper() == "MJPG": self.fourcc = None; self._apply(cap)
-                else: raise
             self.state, self.error = "connected", ""
             while not self._stop.is_set():
-                ok, frame = cap.read()
+                try: ok, frame = cap.read()
+                except Exception as exc:
+                    self._record_error("cap.read(loop)", exc); self.state = "read_error"; break
                 if ok and frame is not None:
                     with self._lock: self._frame = frame.copy()
                     self.state, self.error = "connected", ""
@@ -183,31 +218,64 @@ class CameraCapture:
                     self.state, self.error = "read_error", "可開啟裝置但無法讀取 frame"
                     self._stop.wait(self.retry_delay)
         except Exception as exc:
-            self.state = "dependency_error" if cv2 is None and self.capture_factory is None else "open_error"
-            self.error = str(exc)
+            self.state = "dependency_error" if cv2 is None and self.capture_factory is None else "configure_error"
+            if not self.error: self._record_error("VideoCapture/open/configure", exc)
         finally:
             with self._lock: self._capture = None
-            if cap is not None: cap.release()
+            if cap is not None:
+                try: cap.release()
+                except Exception as exc: self._record_error("cap.release", exc)
+
+    def _open_with_fallback(self):
+        # A failed attempt is fully released before opening the same index again.
+        attempts = [(self.backend, self.fourcc, self.width, self.height, self.fps)]
+        if os.name == "nt" and self.backend == "dshow" and self.capture_factory is None:
+            attempts += [("dshow", None, self.width, self.height, self.fps), ("dshow", None, None, None, None),
+                         ("msmf", None, None, None, None), ("auto", None, None, None, None)]
+        original = (self.backend, self.fourcc, self.width, self.height, self.fps)
+        last = None
+        for backend, fourcc, width, height, fps in attempts:
+            cap = None
+            try:
+                self.backend, self.fourcc, self.width, self.height, self.fps = backend, fourcc, width, height, fps
+                cap = self._open(self.index, backend)
+                if cap is None or not cap.isOpened(): raise RuntimeError("裝置無法開啟")
+                self._apply(cap)
+                self.fallback = {"backend": backend, "width": width, "height": height, "fps": fps, "fourcc": fourcc}
+                self.backend, self.fourcc, self.width, self.height, self.fps = original
+                return cap
+            except Exception as exc:
+                last = exc
+                if cap is not None:
+                    try: cap.release()
+                    except Exception: pass
+                time.sleep(.15)
+        self.backend, self.fourcc, self.width, self.height, self.fps = original
+        raise last or RuntimeError("相機開啟失敗")
 
     def latest_frame(self):
         with self._lock: return None if self._frame is None else self._frame.copy()
 
-    def configure(self, device_id=None, index=None, backend=None, width=None, height=None, fps=None, fourcc=None):
+    def configure(self, device_id=_UNSET, index=_UNSET, backend=_UNSET, width=_UNSET, height=_UNSET, fps=_UNSET, fourcc=_UNSET):
         # Compatibility with the former configure(index, backend) positional API.
-        if isinstance(device_id, int): device_id, index = None, device_id
-        self.stop()
-        if device_id is not None: self.device_id = str(device_id)
-        if index is not None: self.index = int(index)
-        if backend is not None: self.backend = str(backend).lower()
+        if isinstance(device_id, int): device_id, index = _UNSET, device_id
+        if not self.stop(): return False
+        if device_id is not _UNSET: self.device_id = str(device_id or "")
+        if index is not _UNSET: self.index = int(index)
+        if backend is not _UNSET: self.backend = str(backend or "auto").lower()
         for key, value in (("width", width), ("height", height), ("fps", fps), ("fourcc", fourcc)):
-            if value is not None: setattr(self, key, value)
+            if value is not _UNSET: setattr(self, key, value)
         with self._lock: self._frame = None
-        self.start()
+        return self.start()
 
     def reconnect(self, index=None): self.configure(index=index)
 
     def stop(self):
         self._stop.set(); thread = self._thread
         if thread and thread is not threading.current_thread(): thread.join(timeout=2)
+        if thread and thread.is_alive():
+            self.state, self.error = "stop_timeout", "相機仍在釋放中，請稍候再重新套用設定"
+            return False
         self._thread = None
         if self.state not in ("dependency_error", "open_error", "read_error"): self.state = "stopped"
+        return True
