@@ -50,6 +50,19 @@ class CameraTests(unittest.TestCase):
         while reader.running: time.sleep(.01)
         self.assertIn("3", reader.error); self.assertIn("dshow", reader.error)
 
+    def test_configure_explicit_none_clears_requested_mode(self):
+        reader = CameraCapture(width=1920, height=1080, fps=30, fourcc="MJPG")
+        with mock.patch.object(reader, "stop", return_value=True), mock.patch.object(reader, "start", return_value=True):
+            self.assertTrue(reader.configure(width=None, height=None, fps=None, fourcc=None))
+        self.assertIsNone(reader.width); self.assertIsNone(reader.height)
+        self.assertIsNone(reader.fps); self.assertIsNone(reader.fourcc)
+
+    def test_configure_does_not_start_when_stop_times_out(self):
+        reader = CameraCapture(width=640)
+        with mock.patch.object(reader, "stop", return_value=False), mock.patch.object(reader, "start") as start:
+            self.assertFalse(reader.configure(width=1920))
+        start.assert_not_called(); self.assertEqual(reader.width, 640)
+
 
 class QwenTests(unittest.TestCase):
     def test_choose_model_prefers_saved_then_vision(self):
