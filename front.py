@@ -156,7 +156,7 @@ def ensure_dirs():
 
 def load_config():
     ai_defaults = {
-        "enabled": False, "camera_index": 0, "preview_mode": "auto",
+        "enabled": False, "camera_index": 0, "camera_backend": "auto", "preview_mode": "auto",
         "base_url": "http://127.0.0.1:11434", "model": "", "timeout": 30,
         "system_prompt": "", "interval": 5, "sound_enabled": True,
         "sound_path": "", "accept_lowercase_o": False, "prompt_profiles": []

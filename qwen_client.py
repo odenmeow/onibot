@@ -23,7 +23,11 @@ class QwenClient:
             messages.append({"role": "system", "content": system_prompt.strip()})
         user = {"role": "user", "content": str(text)}
         if image is not None:
-            raw = image if isinstance(image, bytes) else open(image, "rb").read()
+            if isinstance(image, bytes):
+                raw = image
+            else:
+                with open(image, "rb") as stream:
+                    raw = stream.read()
             user["images"] = [base64.b64encode(raw).decode("ascii")]
         messages.append(user)
         return {"model": self.model, "stream": False, "messages": messages}
@@ -58,6 +62,8 @@ class QwenClient:
         return names
 
     def chat(self, text, image=None, system_prompt=""):
+        if not self.model.strip():
+            raise QwenError("尚未選擇模型")
         data = self._request("/api/chat", self.build_payload(text, image, system_prompt))
         message = data.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
@@ -67,3 +73,16 @@ class QwenClient:
             raise QwenError("回應缺少 message.content")
         return message["content"]
 
+
+def choose_model(names, preferred=""):
+    """Choose deterministically: saved model, vision-looking model, then first."""
+    names = [str(name).strip() for name in names if str(name).strip()]
+    if preferred:
+        for name in names:
+            if name == preferred or name.split(":")[0] == preferred:
+                return name
+    for name in names:
+        lowered = name.lower()
+        if any(token in lowered for token in ("-vl", "vision", "llava")):
+            return name
+    return names[0] if names else ""
