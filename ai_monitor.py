@@ -4,6 +4,7 @@ import queue
 import socket
 import threading
 import time
+import uuid
 
 from qwen_client import QwenError
 
@@ -142,7 +143,9 @@ class AIMonitor:
     def _save_capture(self, encoded, started):
         if not self.history_dir: return "", ""
         os.makedirs(self.history_dir, exist_ok=True)
-        filename = "auto_{}.jpg".format(time.strftime("%Y%m%d_%H%M%S", time.localtime(started)))
+        milliseconds = int(started * 1000) % 1000
+        filename = "auto_{}_{:03d}.jpg".format(
+            time.strftime("%Y%m%d_%H%M%S", time.localtime(started)), milliseconds)
         path = os.path.join(self.history_dir, filename)
         with open(path, "wb") as stream: stream.write(encoded)
         return filename, path
@@ -162,18 +165,22 @@ class AIMonitor:
                 except ImportError as exc: raise RuntimeError("未安裝 OpenCV") from exc
                 answer = self.client.chat(prompt, image=encoded)
                 ended = time.time()
-                value = {"captured_at": started, "sent_at": started, "ended_at": ended,
+                value = {"history_id": uuid.uuid4().hex, "captured_at": started, "sent_at": started, "ended_at": ended,
                          "elapsed_sec": ended - started, "text": answer, "answer": answer,
-                         "error": "", "filename": filename, "path": path, "tag": tags, "prompt": prompt}
+                         "error": "", "filename": filename, "path": path, "tag": tags,
+                         "profile_tags": [str(p.get("id", "")) for p in self.profiles if p.get("enabled")],
+                         "mode": "auto", "prompt": prompt}
                 if generation == self._generation and not self._stop.is_set():
                     self.results.put((generation, "answer", value))
                     if self.alarm_on_detected and is_alarm_response(answer) and self.alarm: self.alarm.play("detected")
             except Exception as exc:
                 ended, timeout = time.time(), is_timeout_error(exc)
                 error = "AI 回答逾時" if timeout else str(exc)
-                value = {"captured_at": started, "sent_at": started, "ended_at": ended,
+                value = {"history_id": uuid.uuid4().hex, "captured_at": started, "sent_at": started, "ended_at": ended,
                          "elapsed_sec": ended - started, "text": "", "answer": "", "error": error,
                          "filename": filename, "path": path, "tag": tags, "prompt": prompt,
+                         "profile_tags": [str(p.get("id", "")) for p in self.profiles if p.get("enabled")],
+                         "mode": "auto",
                          "timeout_sec": self.client.timeout if timeout else None}
                 if generation == self._generation and not self._stop.is_set():
                     self.results.put((generation, "timeout" if timeout else "error", value))

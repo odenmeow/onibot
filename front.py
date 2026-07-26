@@ -168,7 +168,9 @@ def load_config():
         "system_prompt": "", "user_prompt_draft": "", "after_answer_delay": 0,
         "alarm_on_detected": True, "alarm_on_timeout": True, "alarm_on_error": False,
         "sound_mode": "system_alarm", "sound_path": "", "accept_lowercase_o": False,
-        "prompt_profiles": [], "question_history": []
+        "prompt_profiles": [], "question_history": [],
+        "ai_window_layout": {"geometry": "1180x850", "main_sash": None, "main_order": ["left", "right"],
+                             "camera_state": "docked", "detached_geometry": "800x600"}
     }
     if not os.path.exists(CONFIG_FILE):
         return {
