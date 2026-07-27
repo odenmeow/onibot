@@ -40,6 +40,7 @@ class AIConfigDialog:
         self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
         self._draft_after = self._system_after = None
+        self._sections = {}
         self._probe_cancel = threading.Event()
         self.profiles = [dict(x) for x in ai.get("prompt_profiles", []) if isinstance(x, dict)]
         self._build(ai); self._schedule(100, self.scan_cameras); self._schedule(150, self._poll_preview)
@@ -101,18 +102,21 @@ class AIConfigDialog:
 
         self.main_paned = tk.PanedWindow(self.window, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         self.main_paned.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8)
-        left = ttk.Frame(self.main_paned); left.columnconfigure(0, weight=1); left.rowconfigure(2, weight=1)
+        left = ttk.Frame(self.main_paned); left.columnconfigure(0, weight=1); left.rowconfigure(0, weight=1)
         self._layout_panes = {"left": left}
-        sysbox = self._section(left, "共用系統提示詞（選填）", "用來設定 AI 永遠都要遵守的角色、回答格式或共同規則。送出手動提問與 AI Monitor 每一輪自動判斷時都會套用；若提問配置已包含全部規則，這裡可以留白。", row=0, column=0, sticky="ew")
+        self.left_paned = tk.PanedWindow(left, orient=tk.VERTICAL, sashrelief=tk.RAISED,
+                                         sashwidth=6, showhandle=True)
+        self.left_paned.grid(row=0, column=0, sticky="nsew")
+        sysbox = self._section(self.left_paned, "共用系統提示詞（選填）", "用來設定 AI 永遠都要遵守的角色、回答格式或共同規則。送出手動提問與 AI Monitor 每一輪自動判斷時都會套用；若提問配置已包含全部規則，這裡可以留白。")
         self.system = tk.Text(sysbox, height=4); self.system.pack(fill="x"); self.system.insert("1.0", ai.get("system_prompt", ""))
         self.system.bind("<KeyRelease>", self._system_changed)
-        pbox = self._section(left, "提問範本（手動與自動共用）", "這裡可保存多組常用命令，不必記住以前的寫法。啟用一組就是選用該範本；也可同時啟用多組，系統會依畫面順序合併。手動送出與 AI Monitor 都會使用目前啟用的範本。", row=1, column=0, sticky="ew", pady=4)
+        pbox = self._section(self.left_paned, "提問範本（手動與自動共用）", "這裡可保存多組常用命令，不必記住以前的寫法。啟用一組就是選用該範本；也可同時啟用多組，系統會依畫面順序合併。手動送出與 AI Monitor 都會使用目前啟用的範本。")
         self.profile_tree = ttk.Treeview(pbox, columns=("enabled", "name"), show="headings", height=6); self.profile_tree.heading("enabled", text="狀態"); self.profile_tree.heading("name", text="名稱"); self.profile_tree.pack(fill="x")
         bar = ttk.Frame(pbox); bar.pack(fill="x")
         for label, command in (("新增提問配置", self.add_profile), ("編輯", self.edit_profile), ("複製", self.copy_profile), ("刪除", self.delete_profile), ("上移", lambda: self.move_profile(-1)), ("下移", lambda: self.move_profile(1)), ("啟用／停用", self.toggle_profile)):
             ttk.Button(bar, text=label, command=command).pack(side="left")
         self._refresh_profiles()
-        images = self._section(left, "圖片庫／附件", "選擇手動提問的圖片，或管理從相機保存的圖片；雙擊開啟後，可用滾輪以滑鼠位置為中心縮放。", row=2, column=0, sticky="nsew")
+        images = self._section(self.left_paned, "圖片庫／附件", "選擇手動提問的圖片，或管理從相機保存的圖片；雙擊開啟後，可用滾輪以滑鼠位置為中心縮放。")
         self.image_info = ttk.Label(images, text="本次提問尚未附加圖片"); self.image_info.pack(fill="x")
         self.attachment_preview = ttk.Label(images, text="無附件", anchor="center"); self.attachment_preview.pack(fill="x")
         self.attachment_preview.bind("<Double-Button-1>", self._on_attachment_double_click)
@@ -122,46 +126,54 @@ class AIConfigDialog:
         for key, label in (("favorite", "最愛"), ("time", "保存時間"), ("source", "來源")): self.library_tree.heading(key, text=label)
         self.library_tree.pack(fill="both", expand=True); self.library_tree.bind("<<TreeviewSelect>>", self.select_library_image)
         self.library_tree.bind("<Double-Button-1>", self._on_library_double_click); self.refresh_library()
+        for content, minimum in ((sysbox, 75), (pbox, 150), (images, 160)):
+            self.left_paned.add(content._section_outer, minsize=minimum, stretch="always")
+            self._configure_section_pane(content, minimum)
 
-        right = ttk.Frame(self.main_paned); right.columnconfigure(0, weight=1); right.rowconfigure(4, weight=1)
+        right = ttk.Frame(self.main_paned); right.columnconfigure(0, weight=1); right.rowconfigure(0, weight=1)
         self._layout_panes["right"] = right
-        for pane_name in self.ai_layout.get("main_order", ["left", "right"]):
-            pane = self._layout_panes.get(pane_name)
-            if pane is not None: self.main_paned.add(pane, minsize=320, stretch="always")
-        for pane_name, pane in self._layout_panes.items():
-            if str(pane) not in self.main_paned.panes(): self.main_paned.add(pane, minsize=320, stretch="always")
-        ttk.Label(right, text="手動追加提問（僅手動送出；Ctrl+Enter）").grid(row=0, column=0, sticky="w")
-        self.user_text = tk.Text(right, height=7); self.user_text.grid(row=1, column=0, sticky="ew"); self.user_text.insert("1.0", ai.get("user_prompt_draft", ""))
+        # Left and right now have stable meanings.  The sash is the only horizontal
+        # layout control, avoiding the accidental pane swaps caused by drag handles.
+        self.main_paned.add(left, minsize=320, stretch="always")
+        self.main_paned.add(right, minsize=320, stretch="always")
+        self.right_paned = tk.PanedWindow(right, orient=tk.VERTICAL, sashrelief=tk.RAISED,
+                                          sashwidth=6, showhandle=True)
+        self.right_paned.grid(row=0, column=0, sticky="nsew")
+        question = self._section(self.right_paned, "手動追加提問", "僅在手動送出時追加；按 Ctrl+Enter 可直接送出。")
+        self.user_text = tk.Text(question, height=7); self.user_text.pack(fill="both", expand=True); self.user_text.insert("1.0", ai.get("user_prompt_draft", ""))
         self.user_text.bind("<KeyRelease>", self._draft_changed); self.user_text.bind("<Control-Return>", self._send_shortcut)
-        controls = ttk.Frame(right); controls.grid(row=2, column=0, sticky="ew")
+        controls = ttk.Frame(question); controls.pack(fill="x")
         self.send_button = ttk.Button(controls, text="送出提問", command=self.send_test); self.send_button.pack(side="left")
         ttk.Button(controls, text="清除提問", command=self.clear_draft).pack(side="left")
         ttk.Button(controls, text="清除 Console", command=self.clear_console).pack(side="left")
         self.monitor_button = ttk.Button(controls, text="啟用 AI Monitor", command=self.toggle_monitor); self.monitor_button.pack(side="left")
         ttk.Button(controls, text="停止鬧鐘", command=self.alarm.stop).pack(side="left")
-        self.monitor_status = ttk.Label(right, text="AI Monitor：已停止"); self.monitor_status.grid(row=3, column=0, sticky="w")
-        self.response = tk.Text(right, state="disabled"); self.response.grid(row=4, column=0, sticky="nsew")
-        history_box = self._section(right, "最近 1000 次提問歷史", "包含 AI Monitor 自動判斷與「送出提問」的手動測試；雙擊可查看當次保存的圖片。", row=5, column=0, sticky="ew")
+        console = self._section(self.right_paned, "AI Monitor／Console", "顯示監控狀態、系統訊息與 AI 回答。")
+        self.monitor_status = ttk.Label(console, text="AI Monitor：已停止"); self.monitor_status.pack(fill="x")
+        self.response = tk.Text(console, state="disabled"); self.response.pack(fill="both", expand=True)
+        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "包含 AI Monitor 自動判斷與「送出提問」的手動測試；雙擊可查看當次保存的圖片。")
         self.history_tree = ttk.Treeview(history_box, columns=("summary",), show="headings", height=5); self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果"); self.history_tree.pack(fill="x")
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
-        for name, pane, row in (("left", left, 3), ("right", right, 6)):
-            handle = ttk.Label(pane, text="☰ 拖曳到另一側交換內容區塊", anchor="center", cursor="fleur")
-            handle.grid(row=row, column=0, sticky="ew", pady=2)
-            handle.bind("<ButtonPress-1>", lambda _e, key=name: setattr(self, "_dragged_pane", key))
-            handle.bind("<ButtonRelease-1>", self._finish_pane_drag)
+        for content, minimum in ((question, 130), (console, 120), (history_box, 110)):
+            self.right_paned.add(content._section_outer, minsize=minimum, stretch="always")
+            self._configure_section_pane(content, minimum)
         bottom = ttk.Frame(self.window); bottom.grid(row=3, column=0, columnspan=2, sticky="e", padx=8, pady=5)
         ttk.Button(bottom, text="保存設定", command=self.save_settings).pack(side="left")
+        ttk.Button(bottom, text="保存 UI 配置", command=self.save_ui_layout).pack(side="left")
         ttk.Button(bottom, text="套用並重新連接相機", command=lambda: self.apply_camera(save=True)).pack(side="left")
         ttk.Button(bottom, text="關閉", command=self.close).pack(side="left")
 
     def _section(self, parent, title, help_text, **grid_options):
         """Create a compact section whose explanation is available on demand."""
         outer = ttk.Frame(parent, relief="groove", borderwidth=1)
-        outer.grid(**grid_options)
+        if grid_options: outer.grid(**grid_options)
         outer.columnconfigure(0, weight=1)
         header = ttk.Frame(outer)
         header.grid(row=0, column=0, sticky="ew", padx=5, pady=(2, 0))
-        ttk.Label(header, text=title).pack(side="left")
+        collapsed = bool(self.ai_layout.get("collapsed", {}).get(title, False))
+        toggle = ttk.Button(header, text="▶" if collapsed else "▼", width=2)
+        toggle.pack(side="left")
+        ttk.Label(header, text=title).pack(side="left", padx=(3, 0))
         help_button = ttk.Button(header, text="?", width=2, takefocus=True)
         help_button.pack(side="left", padx=(4, 0))
         self._tooltip(help_button, help_text)
@@ -170,7 +182,36 @@ class AIConfigDialog:
         content.grid(row=1, column=0, sticky="nsew", padx=4, pady=(1, 4))
         content.columnconfigure(0, weight=1)
         outer.rowconfigure(1, weight=1)
+        content._section_outer = outer
+        self._sections[title] = (content, toggle)
+        toggle.configure(command=lambda key=title: self._toggle_section(key))
+        if collapsed: content.grid_remove(); outer.rowconfigure(1, weight=0)
         return content
+
+    def _toggle_section(self, title):
+        """Collapse a block to its title, leaving neighbouring content available."""
+        content, button = self._sections[title]
+        collapsed = content.winfo_manager() != ""
+        if collapsed:
+            content.grid_remove(); content._section_outer.rowconfigure(1, weight=0)
+        else:
+            content.grid(); content._section_outer.rowconfigure(1, weight=1)
+        button.configure(text="▶" if collapsed else "▼")
+        self.ai_layout.setdefault("collapsed", {})[title] = collapsed
+        outer = content._section_outer
+        if isinstance(outer.master, tk.PanedWindow):
+            minimum = 32 if collapsed else getattr(outer, "_expanded_minsize", 80)
+            try: outer.master.paneconfigure(outer, minsize=minimum)
+            except tk.TclError: pass
+
+    @staticmethod
+    def _configure_section_pane(content, minimum):
+        """Remember an expanded minimum while allowing a collapsed title-only pane."""
+        outer = content._section_outer
+        outer._expanded_minsize = minimum
+        if content.winfo_manager() == "":
+            try: outer.master.paneconfigure(outer, minsize=32)
+            except tk.TclError: pass
 
     def _show_help(self, title, text, anchor):
         messagebox.showinfo(title, text, parent=self.window)
@@ -318,25 +359,23 @@ class AIConfigDialog:
             sash = self.ai_layout.get("main_sash")
             if sash is not None: self.main_paned.sash_place(0, int(sash), 0)
         except (tk.TclError, TypeError, ValueError): pass
+        self._restore_sashes(self.left_paned, self.ai_layout.get("left_sashes", []))
+        self._restore_sashes(self.right_paned, self.ai_layout.get("right_sashes", []))
         self.set_camera_view(self.camera_view_state)
 
-    def _finish_pane_drag(self, event):
-        """Dropping a section handle across the centre exchanges both panes."""
-        name = getattr(self, "_dragged_pane", None); self._dragged_pane = None
-        if not name: return
-        centre = self.main_paned.winfo_rootx() + self.main_paned.winfo_width() // 2
-        order = self._current_pane_order()
-        wanted = 0 if event.x_root < centre else len(order) - 1
-        current = order.index(name)
-        if current == wanted: return
-        order[current], order[wanted] = order[wanted], order[current]
-        for pane in self.main_paned.panes(): self.main_paned.forget(pane)
-        for key in order: self.main_paned.add(self._layout_panes[key], minsize=320, stretch="always")
-        self.ai_layout["main_order"] = order; self._save_ai_layout()
+    @staticmethod
+    def _restore_sashes(paned, positions):
+        for index, position in enumerate(positions):
+            try: paned.sash_place(index, 0, int(position))
+            except (tk.TclError, TypeError, ValueError): break
 
-    def _current_pane_order(self):
-        paths = list(self.main_paned.panes())
-        return sorted(self._layout_panes, key=lambda key: paths.index(str(self._layout_panes[key])))
+    @staticmethod
+    def _sash_positions(paned):
+        positions = []
+        for index in range(max(0, len(paned.panes()) - 1)):
+            try: positions.append(paned.sash_coord(index)[1])
+            except (tk.TclError, AttributeError): break
+        return positions
 
     def _save_ai_layout(self):
         if self._closed: return
@@ -344,8 +383,11 @@ class AIConfigDialog:
         except tk.TclError: pass
         try: self.ai_layout["main_sash"] = self.main_paned.sash_coord(0)[0]
         except (tk.TclError, AttributeError): pass
-        try: self.ai_layout["main_order"] = self._current_pane_order()
-        except (tk.TclError, ValueError): pass
+        if hasattr(self, "left_paned"):
+            self.ai_layout["left_sashes"] = self._sash_positions(self.left_paned)
+        if hasattr(self, "right_paned"):
+            self.ai_layout["right_sashes"] = self._sash_positions(self.right_paned)
+        self.ai_layout.pop("main_order", None)
         self.ai_layout["camera_state"] = self.camera_view_state
         if self.detached_window:
             try: self.ai_layout["detached_geometry"] = self.detached_window.geometry()
@@ -382,6 +424,12 @@ class AIConfigDialog:
     def save_settings(self):
         try: self._save()
         except ValueError as exc: messagebox.showerror("無法保存", str(exc), parent=self.window)
+
+    def save_ui_layout(self):
+        """Persist only window, divider, collapse and preview layout settings."""
+        self._save_ai_layout()
+        self.on_save(self.config)
+        self._append("系統", "UI 配置已保存")
 
     def _refresh_profiles(self):
         for row in self.profile_tree.get_children(): self.profile_tree.delete(row)

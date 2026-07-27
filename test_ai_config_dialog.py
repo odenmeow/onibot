@@ -43,6 +43,28 @@ class FakeTree:
 
 
 class AIConfigDialogTests(unittest.TestCase):
+    def test_sash_positions_capture_all_vertical_dividers(self):
+        paned = SimpleNamespace(
+            panes=lambda: ("one", "two", "three"),
+            sash_coord=lambda index: ((100, 140), (100, 420))[index],
+        )
+
+        self.assertEqual(AIConfigDialog._sash_positions(paned), [140, 420])
+
+    def test_save_ui_layout_does_not_validate_or_replace_ai_settings(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {"timeout": "draft-invalid-value"}}
+        dialog._save_ai_layout = mock.Mock()
+        dialog.on_save = mock.Mock()
+        dialog._append = mock.Mock()
+
+        dialog.save_ui_layout()
+
+        dialog._save_ai_layout.assert_called_once_with()
+        dialog.on_save.assert_called_once_with(dialog.config)
+        self.assertEqual(dialog.config["ai"]["timeout"], "draft-invalid-value")
+        dialog._append.assert_called_once_with("系統", "UI 配置已保存")
+
     def test_clear_draft_only_clears_question_and_keeps_history(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
         dialog.user_text = FakeText("提問")
