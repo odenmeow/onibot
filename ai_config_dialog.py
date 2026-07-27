@@ -103,10 +103,10 @@ class AIConfigDialog:
         self.main_paned.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8)
         left = ttk.Frame(self.main_paned); left.columnconfigure(0, weight=1); left.rowconfigure(2, weight=1)
         self._layout_panes = {"left": left}
-        sysbox = self._section(left, "系統提示詞（多行）", "這段文字會套用至所有手動提問及 AI Monitor 請求。", row=0, column=0, sticky="ew")
+        sysbox = self._section(left, "共用系統提示詞（選填）", "用來設定 AI 永遠都要遵守的角色、回答格式或共同規則。送出手動提問與 AI Monitor 每一輪自動判斷時都會套用；若提問配置已包含全部規則，這裡可以留白。", row=0, column=0, sticky="ew")
         self.system = tk.Text(sysbox, height=4); self.system.pack(fill="x"); self.system.insert("1.0", ai.get("system_prompt", ""))
         self.system.bind("<KeyRelease>", self._system_changed)
-        pbox = self._section(left, "提問配置（依畫面順序組合）", "只有啟用的配置會依畫面順序組合並送出。", row=1, column=0, sticky="ew", pady=4)
+        pbox = self._section(left, "提問範本（手動與自動共用）", "這裡可保存多組常用命令，不必記住以前的寫法。啟用一組就是選用該範本；也可同時啟用多組，系統會依畫面順序合併。手動送出與 AI Monitor 都會使用目前啟用的範本。", row=1, column=0, sticky="ew", pady=4)
         self.profile_tree = ttk.Treeview(pbox, columns=("enabled", "name"), show="headings", height=6); self.profile_tree.heading("enabled", text="狀態"); self.profile_tree.heading("name", text="名稱"); self.profile_tree.pack(fill="x")
         bar = ttk.Frame(pbox); bar.pack(fill="x")
         for label, command in (("新增提問配置", self.add_profile), ("編輯", self.edit_profile), ("複製", self.copy_profile), ("刪除", self.delete_profile), ("上移", lambda: self.move_profile(-1)), ("下移", lambda: self.move_profile(1)), ("啟用／停用", self.toggle_profile)):
@@ -130,7 +130,7 @@ class AIConfigDialog:
             if pane is not None: self.main_paned.add(pane, minsize=320, stretch="always")
         for pane_name, pane in self._layout_panes.items():
             if str(pane) not in self.main_paned.panes(): self.main_paned.add(pane, minsize=320, stretch="always")
-        ttk.Label(right, text="使用者提問（Ctrl+Enter 送出）").grid(row=0, column=0, sticky="w")
+        ttk.Label(right, text="手動追加提問（僅手動送出；Ctrl+Enter）").grid(row=0, column=0, sticky="w")
         self.user_text = tk.Text(right, height=7); self.user_text.grid(row=1, column=0, sticky="ew"); self.user_text.insert("1.0", ai.get("user_prompt_draft", ""))
         self.user_text.bind("<KeyRelease>", self._draft_changed); self.user_text.bind("<Control-Return>", self._send_shortcut)
         controls = ttk.Frame(right); controls.grid(row=2, column=0, sticky="ew")
@@ -481,7 +481,8 @@ class AIConfigDialog:
             self._save(announce=False); self._configure_alarm()
             self.monitor = AIMonitor(self.camera, self._client(), self.profiles, float(self.after_answer_delay.get()), self.alarm,
                 self.alarm_on_detected.get(), self.alarm_on_timeout.get(), self.alarm_on_error.get(),
-                self.config["ai"].get("stop_on_timeout", False), os.path.join(os.path.dirname(__file__), "saved_ai_images", "monitor")); self.monitor.start()
+                self.config["ai"].get("stop_on_timeout", False), os.path.join(os.path.dirname(__file__), "saved_ai_images", "monitor"),
+                system_prompt=self.system.get("1.0", "end-1c")); self.monitor.start()
             self.monitor_button.config(text="停用 AI Monitor"); self.monitor_status.config(text="AI Monitor：運行中"); self.on_state and self.on_state(True)
         except Exception as exc: self.monitor_status.config(text="AI Monitor：發生錯誤"); messagebox.showerror("無法啟用 AI", str(exc), parent=self.window)
 
