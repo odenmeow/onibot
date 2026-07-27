@@ -6,7 +6,10 @@ import time
 import urllib.error
 import urllib.request
 
-MIN_NUM_PREDICT = 256
+# Qwen3-VL can consume a few hundred internal reasoning tokens even when Ollama
+# is asked not to expose thinking.  A 256-token cap can therefore end the
+# generation before the model emits its (very short) answer.
+MIN_NUM_PREDICT = 1024
 
 
 class QwenError(RuntimeError):
@@ -25,6 +28,10 @@ class QwenClient:
         self.num_predict = max(MIN_NUM_PREDICT, int(num_predict))
 
     def build_payload(self, text, image=None, system_prompt=""):
+        """Build one isolated turn; model keep-alive never carries chat history."""
+        # Deliberately create this list locally on every call.  Ollama keeps the
+        # model weights resident via keep_alive, but only these messages form
+        # the conversation; no prior user/image/assistant turn is resent.
         messages = []
         if system_prompt.strip():
             messages.append({"role": "system", "content": system_prompt.strip()})
@@ -76,7 +83,8 @@ class QwenClient:
         payload = self.build_payload(text, image, system_prompt)
         request = urllib.request.Request(self.base_url + "/api/chat",
             data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-        response, pieces, deadline = None, [], time.monotonic() + self.timeout
+        response, pieces, thinking_pieces = None, [], []
+        done_reason, deadline = "", time.monotonic() + self.timeout
         try:
             response = self.opener(request, timeout=self.timeout)
             while True:
@@ -92,6 +100,9 @@ class QwenClient:
                 message = data.get("message", {})
                 content = message.get("content", "") if isinstance(message, dict) else ""
                 if isinstance(content, str): pieces.append(content)
+                thinking = message.get("thinking", "") if isinstance(message, dict) else ""
+                if isinstance(thinking, str): thinking_pieces.append(thinking)
+                if data.get("done_reason"): done_reason = str(data["done_reason"])
                 if data.get("done"): break
         except (socket.timeout, TimeoutError) as exc:
             raise QwenError("API timeout") from exc
@@ -104,7 +115,12 @@ class QwenClient:
         finally:
             if response is not None: response.close()
         answer = "".join(pieces)
-        if not answer.strip(): raise QwenError("回應缺少 message.content")
+        if not answer.strip():
+            if done_reason == "length":
+                raise QwenError("模型輸出 token 已用完，尚未產生答案；請提高「最多輸出 token」")
+            if "".join(thinking_pieces).strip():
+                raise QwenError("模型只回傳思考內容，沒有產生答案；此次提問仍未包含先前對話")
+            raise QwenError("Ollama 回應缺少答案（message.content）")
         return answer
 
     def preload(self):
