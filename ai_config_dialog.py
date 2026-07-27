@@ -37,6 +37,7 @@ class AIConfigDialog:
         self.zoom_window = self._viewer_image = self._viewer_photo = None
         self._viewer_scale = self._viewer_offset = self._viewer_drag = None
         self._viewer_after = self.detached_window = self.detached_preview = None
+        self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
         self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
         self._draft_after = self._system_after = None
@@ -360,12 +361,59 @@ class AIConfigDialog:
         try:
             from PIL import Image, ImageTk
             import cv2
-            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)); image.thumbnail((560, 250)); photo = ImageTk.PhotoImage(image)
+            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             if self.camera_view_state == "docked":
+                image.thumbnail((560, 250)); photo = ImageTk.PhotoImage(image)
                 self.preview_label.config(image=photo, text=""); self.preview_label.image = photo
             elif self.camera_view_state == "detached" and self.detached_preview:
-                self.detached_preview.config(image=photo, text=""); self.detached_preview.image = photo
+                self._render_detached_preview(image)
         except Exception as exc: self.preview_label.config(text="預覽失敗：{}".format(exc), image="")
+
+    def _detached_fit_scale(self, image_width, image_height):
+        return min(max(1, self.detached_preview.winfo_width()) / image_width,
+                   max(1, self.detached_preview.winfo_height()) / image_height)
+
+    def _render_detached_preview(self, image):
+        """Render a live frame using the detached preview's zoom transform."""
+        from PIL import Image, ImageTk
+        canvas_width = max(1, self.detached_preview.winfo_width())
+        canvas_height = max(1, self.detached_preview.winfo_height())
+        fit_scale = self._detached_fit_scale(image.width, image.height)
+        if self._detached_scale is None or self._detached_scale < fit_scale:
+            self._detached_scale = fit_scale
+            self._detached_offset = ((canvas_width - image.width * fit_scale) / 2,
+                                     (canvas_height - image.height * fit_scale) / 2)
+        size = (max(1, round(image.width * self._detached_scale)),
+                max(1, round(image.height * self._detached_scale)))
+        resized = image.resize(size, Image.Resampling.LANCZOS)
+        self._detached_photo = ImageTk.PhotoImage(resized)
+        self.detached_preview.delete("frame")
+        self.detached_preview.create_image(*self._detached_offset, anchor="nw",
+                                           image=self._detached_photo, tags="frame")
+        if hasattr(self, "detached_status"):
+            self.detached_status.config(text="滾輪或 ＋／－ 縮放｜按住左鍵拖曳｜{:.0f}%".format(self._detached_scale * 100))
+
+    def _zoom_detached(self, factor, pointer=None):
+        if self._detached_scale is None or self.displayed_frame is None: return "break"
+        height, width = self.displayed_frame.shape[:2]
+        fit_scale = self._detached_fit_scale(width, height)
+        if pointer is None:
+            pointer = (self.detached_preview.winfo_width() / 2,
+                       self.detached_preview.winfo_height() / 2)
+        self._detached_scale, self._detached_offset = self._zoom_at(
+            self._detached_scale, self._detached_offset, pointer, factor, fit_scale)
+        return "break"
+
+    def _on_detached_wheel(self, event):
+        direction = event.delta if getattr(event, "delta", 0) else (1 if event.num == 4 else -1)
+        return self._zoom_detached(1.15 if direction > 0 else 1 / 1.15, (event.x, event.y))
+
+    def _start_detached_drag(self, event): self._detached_drag = (event.x, event.y)
+    def _drag_detached(self, event):
+        if self._detached_drag is None or self._detached_offset is None: return
+        self._detached_offset = (self._detached_offset[0] + event.x - self._detached_drag[0],
+                                 self._detached_offset[1] + event.y - self._detached_drag[1])
+        self._detached_drag = (event.x, event.y)
 
     def set_camera_view(self, state):
         """Switch only the live picture; camera controls always remain docked."""
@@ -373,6 +421,7 @@ class AIConfigDialog:
         if self.detached_window:
             self.ai_layout["detached_geometry"] = self.detached_window.geometry()
             self.detached_window.destroy(); self.detached_window = self.detached_preview = None
+            self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
         self.camera_view_state = state; self.ai_layout["camera_state"] = state
         if state == "docked":
             self.preview_label.grid()
@@ -381,10 +430,20 @@ class AIConfigDialog:
         if state == "detached":
             win = self.detached_window = tk.Toplevel(self.window); win.title("相機預覽")
             win.geometry(self.ai_layout.get("detached_geometry", "800x600")); win.minsize(400, 300)
-            self.detached_preview = ttk.Label(win, text="尚無畫面", anchor="center")
+            self.detached_status = ttk.Label(win, text="滾輪或 ＋／－ 縮放｜按住左鍵拖曳")
+            self.detached_status.pack(fill="x", padx=8, pady=4)
+            self.detached_preview = tk.Canvas(win, highlightthickness=0, background="#202020", cursor="fleur")
             self.detached_preview.pack(fill="both", expand=True)
             self.detached_preview.bind("<Double-Button-1>", self._on_camera_double_click)
-            ttk.Button(win, text="重新 Dock", command=lambda: self.set_camera_view("docked")).pack()
+            self.detached_preview.bind("<MouseWheel>", self._on_detached_wheel)
+            self.detached_preview.bind("<Button-4>", self._on_detached_wheel)
+            self.detached_preview.bind("<Button-5>", self._on_detached_wheel)
+            self.detached_preview.bind("<ButtonPress-1>", self._start_detached_drag)
+            self.detached_preview.bind("<B1-Motion>", self._drag_detached)
+            actions = ttk.Frame(win); actions.pack(pady=5)
+            ttk.Button(actions, text="－", width=4, command=lambda: self._zoom_detached(1 / 1.15)).pack(side="left")
+            ttk.Button(actions, text="＋", width=4, command=lambda: self._zoom_detached(1.15)).pack(side="left", padx=4)
+            ttk.Button(actions, text="重新 Dock", command=lambda: self.set_camera_view("docked")).pack(side="left")
             win.protocol("WM_DELETE_WINDOW", lambda: self.set_camera_view("docked"))
         self._save_ai_layout()
 
