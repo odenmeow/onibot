@@ -165,7 +165,7 @@ def load_config():
         "camera_backend": "dshow" if os.name == "nt" else "v4l2", "camera_width": 1280,
         "camera_height": 720, "camera_fps": 30, "camera_fourcc": "MJPG", "preview_mode": "auto",
         "base_url": "http://127.0.0.1:11434", "model": "qwen3-vl:8b", "timeout": 30,
-        "keep_alive": "30m",
+        "keep_alive": "30m", "think": False, "num_predict": 8,
         "system_prompt": "", "user_prompt_draft": "", "after_answer_delay": 0,
         "alarm_on_detected": True, "alarm_on_timeout": True, "alarm_on_error": False,
         "sound_mode": "system_alarm", "sound_path": "", "accept_lowercase_o": False,
