@@ -115,6 +115,34 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(dialog.history_tree.rows, [])
         self.assertEqual(dialog._history_by_id, {})
 
+    def test_manual_history_filename_has_manual_timestamp_prefix(self):
+        filename = AIConfigDialog._manual_filename(0)
+        expected_date = time.strftime("%Y%m%d_%H%M%S", time.localtime(0))
+        self.assertEqual(filename, "manual_{}_000.jpg".format(expected_date))
+
+    def test_manual_question_is_added_to_shared_history(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.profiles = [{"id": "profile-1", "name": "測試配置", "prompt": "配置內容", "enabled": True}]
+        dialog.user_text = FakeText("手動問題")
+        dialog.system = FakeText("系統提示")
+        dialog.selected_image = "/source/image.png"
+        dialog.config = {"ai": {"question_history": []}}
+        dialog._save = mock.Mock()
+        dialog._append = mock.Mock()
+        dialog._archive_manual_image = mock.Mock(return_value=("manual_20260727_120000_000.jpg", "/history/manual.jpg"))
+        dialog._client = mock.Mock(return_value=SimpleNamespace(chat=mock.Mock(return_value="O")))
+        dialog._worker = lambda _operation, work, success, _failure: success(work())
+        dialog._record_history = mock.Mock()
+
+        dialog.send_test()
+
+        history = dialog._record_history.call_args.args[0]
+        self.assertEqual(history["mode"], "manual")
+        self.assertEqual(history["filename"], "manual_20260727_120000_000.jpg")
+        self.assertEqual(history["answer"], "O")
+        self.assertEqual(history["tag"], "測試配置")
+        self.assertIn("手動問題", history["prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

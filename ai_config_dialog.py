@@ -47,7 +47,7 @@ class AIConfigDialog:
 
     def _build(self, ai):
         self.window.columnconfigure((0, 1), weight=1); self.window.rowconfigure(2, weight=1)
-        preview = ttk.LabelFrame(self.window, text="相機裝置與預覽"); preview.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=8, pady=5)
+        preview = self._section(self.window, "相機裝置與預覽", "選擇相機、顯示方式及要求的解析度、FPS 與 FourCC；實際規格取決於驅動與裝置支援。", row=0, column=0, columnspan=2, sticky="nsew", padx=8, pady=5)
         preview.columnconfigure(0, weight=1)
         self.preview_label = ttk.Label(preview, text="尚無畫面", anchor="center"); self.preview_label.grid(row=0, column=0, columnspan=12, sticky="nsew")
         self.preview_label.bind("<Double-Button-1>", self._on_camera_double_click)
@@ -71,7 +71,7 @@ class AIConfigDialog:
         ttk.Button(camera_actions, text="分離預覽", command=lambda: self.set_camera_view("detached")).pack(side="left")
         ttk.Button(preview, text="手動探測支援規格", command=self.probe_capabilities).grid(row=3, column=10, columnspan=2)
 
-        qbox = ttk.LabelFrame(self.window, text="Ollama 與監控設定"); qbox.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8)
+        qbox = self._section(self.window, "Ollama 與監控設定", "設定 Ollama 位址與模型、回答逾時、每輪等待時間及三種警報。停止鬧鐘會立即停止目前聲音。", row=1, column=0, columnspan=2, sticky="ew", padx=8)
         self.base_url = self._entry(qbox, 0, "API 位址", ai.get("base_url", "http://127.0.0.1:11434"), 25)
         ttk.Label(qbox, text="模型").grid(row=0, column=2); self.model = ttk.Combobox(qbox, width=20); self.model.set(ai.get("model", "qwen3-vl:8b")); self.model.grid(row=0, column=3)
         ttk.Button(qbox, text="檢查 Ollama", command=self.test_connection).grid(row=0, column=4, padx=4)
@@ -96,34 +96,22 @@ class AIConfigDialog:
         self.test_sound_button = ttk.Button(qbox, text="測試聲音", command=self.test_sound); self.test_sound_button.grid(row=3, column=4)
         ttk.Button(qbox, text="停止鬧鐘", command=self.alarm.stop).grid(row=3, column=5)
         self.sound_status = ttk.Label(qbox, text=""); self.sound_status.grid(row=4, column=0, columnspan=6, sticky="w")
-        help_box = ttk.LabelFrame(qbox, text="AI 配置說明")
-        help_box.grid(row=5, column=0, columnspan=6, sticky="ew", padx=4, pady=(4, 6))
-        help_box.columnconfigure(0, weight=1)
-        help_text = (
-            "API 位址：Ollama 服務位置；模型：用來處理圖片與提問的視覺語言模型。\n"
-            "AI 回答逾時：單次請求的最長等待秒數；回答完成後等待：AI Monitor 開始下一輪前的等待秒數。\n"
-            "三個警報選項會分別在回答 O、回答逾時及系統錯誤時觸發。警報聲音可選系統聲音、自訂檔案或靜音；「停止鬧鐘」會立即停止目前播放中的警報。\n"
-            "系統提示詞會套用至所有 AI 請求；提問配置依畫面順序組合，只有啟用項目會送出。\n"
-            "「送出提問」只執行一次；AI Monitor 會持續擷取畫面並重複判斷。自動／手動預覽只控制相機預覽，不代表 AI Monitor 是否啟用。\n"
-            "解析度、FPS、FourCC 是要求相機使用的規格，實際結果仍取決於驅動與裝置支援。"
-        )
-        ttk.Label(help_box, text=help_text, justify="left", wraplength=1000).grid(row=0, column=0, sticky="ew", padx=6, pady=4)
         self._sound_mode_changed()
 
         self.main_paned = tk.PanedWindow(self.window, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         self.main_paned.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8)
         left = ttk.Frame(self.main_paned); left.columnconfigure(0, weight=1); left.rowconfigure(2, weight=1)
         self._layout_panes = {"left": left}
-        sysbox = ttk.LabelFrame(left, text="系統提示詞（多行）"); sysbox.grid(row=0, column=0, sticky="ew")
+        sysbox = self._section(left, "系統提示詞（多行）", "這段文字會套用至所有手動提問及 AI Monitor 請求。", row=0, column=0, sticky="ew")
         self.system = tk.Text(sysbox, height=4); self.system.pack(fill="x"); self.system.insert("1.0", ai.get("system_prompt", ""))
         self.system.bind("<KeyRelease>", self._system_changed)
-        pbox = ttk.LabelFrame(left, text="提問配置（依畫面順序組合）"); pbox.grid(row=1, column=0, sticky="ew", pady=4)
+        pbox = self._section(left, "提問配置（依畫面順序組合）", "只有啟用的配置會依畫面順序組合並送出。", row=1, column=0, sticky="ew", pady=4)
         self.profile_tree = ttk.Treeview(pbox, columns=("enabled", "name"), show="headings", height=6); self.profile_tree.heading("enabled", text="狀態"); self.profile_tree.heading("name", text="名稱"); self.profile_tree.pack(fill="x")
         bar = ttk.Frame(pbox); bar.pack(fill="x")
         for label, command in (("新增提問配置", self.add_profile), ("編輯", self.edit_profile), ("複製", self.copy_profile), ("刪除", self.delete_profile), ("上移", lambda: self.move_profile(-1)), ("下移", lambda: self.move_profile(1)), ("啟用／停用", self.toggle_profile)):
             ttk.Button(bar, text=label, command=command).pack(side="left")
         self._refresh_profiles()
-        images = ttk.LabelFrame(left, text="圖片庫／附件"); images.grid(row=2, column=0, sticky="nsew")
+        images = self._section(left, "圖片庫／附件", "選擇手動提問的圖片，或管理從相機保存的圖片；雙擊可放大檢視。", row=2, column=0, sticky="nsew")
         self.image_info = ttk.Label(images, text="本次提問尚未附加圖片"); self.image_info.pack(fill="x")
         self.attachment_preview = ttk.Label(images, text="無附件", anchor="center"); self.attachment_preview.pack(fill="x")
         self.attachment_preview.bind("<Double-Button-1>", self._on_attachment_double_click)
@@ -152,7 +140,7 @@ class AIConfigDialog:
         ttk.Button(controls, text="停止鬧鐘", command=self.alarm.stop).pack(side="left")
         self.monitor_status = ttk.Label(right, text="AI Monitor：已停止"); self.monitor_status.grid(row=3, column=0, sticky="w")
         self.response = tk.Text(right, state="disabled"); self.response.grid(row=4, column=0, sticky="nsew")
-        history_box = ttk.LabelFrame(right, text="最近 1000 次提問歷史"); history_box.grid(row=5, column=0, sticky="ew")
+        history_box = self._section(right, "最近 1000 次提問歷史", "包含 AI Monitor 自動判斷與「送出提問」的手動測試；雙擊可查看當次保存的圖片。", row=5, column=0, sticky="ew")
         self.history_tree = ttk.Treeview(history_box, columns=("summary",), show="headings", height=5); self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果"); self.history_tree.pack(fill="x")
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
         for name, pane, row in (("left", left, 3), ("right", right, 6)):
@@ -164,6 +152,27 @@ class AIConfigDialog:
         ttk.Button(bottom, text="保存設定", command=self.save_settings).pack(side="left")
         ttk.Button(bottom, text="套用並重新連接相機", command=lambda: self.apply_camera(save=True)).pack(side="left")
         ttk.Button(bottom, text="關閉", command=self.close).pack(side="left")
+
+    def _section(self, parent, title, help_text, **grid_options):
+        """Create a compact section whose explanation is available on demand."""
+        outer = ttk.Frame(parent, relief="groove", borderwidth=1)
+        outer.grid(**grid_options)
+        outer.columnconfigure(0, weight=1)
+        header = ttk.Frame(outer)
+        header.grid(row=0, column=0, sticky="ew", padx=5, pady=(2, 0))
+        ttk.Label(header, text=title).pack(side="left")
+        help_button = ttk.Button(header, text="?", width=2, takefocus=True)
+        help_button.pack(side="left", padx=(4, 0))
+        self._tooltip(help_button, help_text)
+        help_button.configure(command=lambda: self._show_help(title, help_text, help_button))
+        content = ttk.Frame(outer)
+        content.grid(row=1, column=0, sticky="nsew", padx=4, pady=(1, 4))
+        content.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+        return content
+
+    def _show_help(self, title, text, anchor):
+        messagebox.showinfo(title, text, parent=self.window)
 
     @staticmethod
     def _entry(parent, column, label, value, width=20, row=0, suffix=""):
@@ -185,7 +194,7 @@ class AIConfigDialog:
         holder = {}
         def run(): self._after_ids.discard(holder.get("id")); callback()
         holder["id"] = self.window.after(delay, run); self._after_ids.add(holder["id"])
-    def _worker(self, operation, work, success=None):
+    def _worker(self, operation, work, success=None, failure=None):
         if self._busy: self._append("系統", "已有工作進行中，請稍候"); return
         self._busy = True; self._generation += 1; generation = self._generation; self._append("系統", operation + "中……")
         def run():
@@ -195,6 +204,7 @@ class AIConfigDialog:
                 if self._closed or generation != self._generation: return
                 self._busy = False
                 if result[0]: success(result[1]) if success else self._append("系統", operation + "完成")
+                elif failure: failure(result[1])
                 else: self._append("錯誤", result[1])
             self._schedule(0, done)
         threading.Thread(target=run, daemon=True, name="ai-{}".format(operation)).start()
@@ -418,7 +428,51 @@ class AIConfigDialog:
         except ValueError: configured = ""
         user = self.user_text.get("1.0", "end-1c").strip(); prompt = "\n\n".join(x for x in (configured, user) if x)
         if not prompt: messagebox.showwarning("提問", "請輸入文字或啟用提問配置", parent=self.window); return
-        self._append("使用者", prompt); self._worker("等待 AI 回答", lambda: self._client().chat(prompt, self.selected_image, self.system.get("1.0", "end-1c")), lambda x: self._append("AI", x))
+        started = time.time()
+        filename, path = self._archive_manual_image(self.selected_image, started)
+        profile_tags = [str(p.get("id", "")) for p in self.profiles if p.get("enabled")]
+        tags = ", ".join(str(p.get("name", "")) for p in self.profiles if p.get("enabled"))
+        base_history = {"history_id": uuid.uuid4().hex, "captured_at": started,
+                        "sent_at": started, "filename": filename, "path": path,
+                        "tag": tags, "profile_tags": profile_tags, "mode": "manual",
+                        "prompt": prompt}
+
+        def completed(answer):
+            ended = time.time()
+            self._append("AI", answer, ended)
+            self._record_history(dict(base_history, ended_at=ended,
+                                      elapsed_sec=ended - started, answer=answer,
+                                      text=answer, error=""))
+
+        def failed(error):
+            ended = time.time()
+            self._append("錯誤", error, ended)
+            self._record_history(dict(base_history, ended_at=ended,
+                                      elapsed_sec=ended - started, answer="",
+                                      text="", error=error))
+
+        self._append("使用者", prompt)
+        self._worker("等待 AI 回答", lambda: self._client().chat(
+            prompt, self.selected_image, self.system.get("1.0", "end-1c")), completed, failed)
+
+    @staticmethod
+    def _manual_filename(started):
+        milliseconds = int(started * 1000) % 1000
+        return "manual_{}_{:03d}.jpg".format(
+            time.strftime("%Y%m%d_%H%M%S", time.localtime(started)), milliseconds)
+
+    def _archive_manual_image(self, source_path, started):
+        """Keep the exact image used by a manual test beside monitor captures."""
+        if not source_path:
+            return "", ""
+        from PIL import Image
+        history_dir = os.path.join(os.path.dirname(__file__), "saved_ai_images", "monitor")
+        os.makedirs(history_dir, exist_ok=True)
+        filename = self._manual_filename(started)
+        path = os.path.join(history_dir, filename)
+        with Image.open(source_path) as image:
+            image.convert("RGB").save(path, "JPEG")
+        return filename, path
     def toggle_monitor(self):
         if self.monitor and self.monitor.enabled:
             self.monitor.stop(); self.monitor_button.config(text="啟用 AI Monitor"); self.monitor_status.config(text="AI Monitor：已停止"); self.on_state and self.on_state(False); return
