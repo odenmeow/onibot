@@ -1,11 +1,20 @@
 import json
 import os
+import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
 import camera_capture
+
+if "pynput" not in sys.modules:
+    pynput_stub = types.ModuleType("pynput")
+    pynput_stub.keyboard = types.SimpleNamespace(Listener=object)
+    sys.modules["pynput"] = pynput_stub
+
+import front
 from ai_monitor import AIMonitor, AlarmPlayer, is_timeout_error
 from camera_capture import CameraCapture, classify_device
 from image_library import ImageLibrary, ImageLibraryFullError
@@ -83,7 +92,30 @@ class QwenTests(unittest.TestCase):
         payload = QwenClient(model="vision:8b").build_payload("hi")
         self.assertTrue(payload["stream"])
         self.assertFalse(payload["think"])
-        self.assertEqual(payload["options"]["num_predict"], 8)
+        self.assertEqual(payload["options"]["num_predict"], 256)
+
+    def test_chat_raises_when_stream_contains_only_blank_content(self):
+        response = mock.Mock()
+        response.readline.side_effect = [
+            b'{"message":{"content":""},"done":false}\n',
+            b'{"message":{"content":"  "},"done":true}\n',
+        ]
+        client = QwenClient(model="vision:8b", opener=mock.Mock(return_value=response))
+        with self.assertRaisesRegex(QwenError, "message.content"):
+            client.chat("hi")
+        response.close.assert_called_once_with()
+
+    def test_chat_upgrades_too_small_num_predict(self):
+        payload = QwenClient(model="vision:8b", num_predict=8).build_payload("hi")
+        self.assertEqual(payload["options"]["num_predict"], 256)
+
+    def test_load_config_upgrades_legacy_num_predict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "front_config.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump({"ai": {"num_predict": 8}}, stream)
+            with mock.patch.object(front, "CONFIG_FILE", path):
+                self.assertEqual(front.load_config()["ai"]["num_predict"], 256)
 
     def test_chat_collects_stream_and_closes_response(self):
         response = mock.Mock()
