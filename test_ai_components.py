@@ -88,11 +88,34 @@ class QwenTests(unittest.TestCase):
         client = QwenClient(model="vision:8b", keep_alive="1h")
         self.assertEqual(client.build_payload("hi")["keep_alive"], "1h")
 
+    def test_consecutive_chats_keep_model_loaded_but_never_resend_history(self):
+        responses = []
+        for answer in ("first-answer", "second-answer"):
+            response = mock.Mock()
+            response.readline.side_effect = [json.dumps({
+                "message": {"content": answer}, "done": True,
+            }).encode("utf-8") + b"\n"]
+            responses.append(response)
+        opener = mock.Mock(side_effect=responses)
+        client = QwenClient(model="vision:8b", keep_alive="1h", opener=opener)
+
+        self.assertEqual(client.chat("first-question", image=b"first-image"), "first-answer")
+        self.assertEqual(client.chat("second-question", image=b"second-image"), "second-answer")
+
+        first = json.loads(opener.call_args_list[0].args[0].data)
+        second = json.loads(opener.call_args_list[1].args[0].data)
+        self.assertEqual(first["keep_alive"], "1h")
+        self.assertEqual(second["keep_alive"], "1h")
+        self.assertEqual([item["content"] for item in first["messages"]], ["first-question"])
+        self.assertEqual([item["content"] for item in second["messages"]], ["second-question"])
+        self.assertNotIn("first-question", json.dumps(second))
+        self.assertNotIn("first-answer", json.dumps(second))
+
     def test_chat_payload_defaults_to_fast_bounded_streaming(self):
         payload = QwenClient(model="vision:8b").build_payload("hi")
         self.assertTrue(payload["stream"])
         self.assertFalse(payload["think"])
-        self.assertEqual(payload["options"]["num_predict"], 256)
+        self.assertEqual(payload["options"]["num_predict"], 1024)
 
     def test_chat_raises_when_stream_contains_only_blank_content(self):
         response = mock.Mock()
@@ -107,7 +130,7 @@ class QwenTests(unittest.TestCase):
 
     def test_chat_upgrades_too_small_num_predict(self):
         payload = QwenClient(model="vision:8b", num_predict=8).build_payload("hi")
-        self.assertEqual(payload["options"]["num_predict"], 256)
+        self.assertEqual(payload["options"]["num_predict"], 1024)
 
     def test_load_config_upgrades_legacy_num_predict(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -115,7 +138,26 @@ class QwenTests(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as stream:
                 json.dump({"ai": {"num_predict": 8}}, stream)
             with mock.patch.object(front, "CONFIG_FILE", path):
-                self.assertEqual(front.load_config()["ai"]["num_predict"], 256)
+                self.assertEqual(front.load_config()["ai"]["num_predict"], 1024)
+
+    def test_chat_explains_thinking_exhausted_token_budget(self):
+        response = mock.Mock()
+        response.readline.side_effect = [
+            b'{"message":{"content":"","thinking":"checking"},"done":false}\n',
+            b'{"message":{"content":""},"done":true,"done_reason":"length"}\n',
+        ]
+        client = QwenClient(model="vision:8b", opener=mock.Mock(return_value=response))
+        with self.assertRaisesRegex(QwenError, "token.*用完"):
+            client.chat("hi")
+
+    def test_chat_does_not_mislabel_thinking_only_stop_as_token_exhaustion(self):
+        response = mock.Mock()
+        response.readline.side_effect = [
+            b'{"message":{"content":"","thinking":"checking"},"done":true,"done_reason":"stop"}\n',
+        ]
+        client = QwenClient(model="vision:8b", opener=mock.Mock(return_value=response))
+        with self.assertRaisesRegex(QwenError, "只回傳思考內容"):
+            client.chat("hi")
 
     def test_chat_collects_stream_and_closes_response(self):
         response = mock.Mock()
