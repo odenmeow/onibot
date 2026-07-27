@@ -94,6 +94,22 @@ class AIMonitorTests(unittest.TestCase):
             monitor.stop()
         self.assertGreaterEqual(time.monotonic() - started, .14)
 
+    def test_monitor_sends_shared_system_prompt(self):
+        camera = mock.Mock(); camera.latest_frame.return_value = object(); camera.error = ""
+        client = mock.Mock(timeout=30); client.chat.side_effect = ["X", RuntimeError("done")]
+        monitor = AIMonitor(camera, client, [{"enabled": True, "prompt": "判斷畫面"}],
+                            system_prompt="只回答 O 或 X")
+        encoded = mock.Mock(); encoded.tobytes.return_value = b"jpg"
+        cv2 = mock.Mock(); cv2.imencode.return_value = (True, encoded)
+        with mock.patch.dict("sys.modules", {"cv2": cv2}):
+            monitor.start()
+            deadline = time.time() + 1
+            while client.chat.call_count < 1 and time.time() < deadline: time.sleep(.01)
+            monitor.stop()
+
+        client.chat.assert_any_call("判斷畫面", image=b"jpg",
+                                    system_prompt="只回答 O 或 X")
+
     def test_builtin_alarm_does_not_require_sound_path(self):
         alarm = AlarmPlayer(sound_path="", sound_mode="system_alarm")
         with mock.patch.object(alarm, "_beep") as beep:

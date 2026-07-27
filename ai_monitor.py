@@ -111,12 +111,14 @@ class AIMonitor:
     """A single-flight monitor that waits *after* each completed attempt."""
     def __init__(self, camera, client, profiles, after_answer_delay=0, alarm=None,
                  alarm_on_detected=True, alarm_on_timeout=True, alarm_on_error=False,
-                 stop_on_timeout=False, history_dir=None, alarm_suppression_sec=10):
+                 stop_on_timeout=False, history_dir=None, alarm_suppression_sec=10,
+                 system_prompt=""):
         self.camera, self.client, self.profiles = camera, client, profiles
         self.after_answer_delay = max(0, float(after_answer_delay))
         self.alarm, self.alarm_on_detected = alarm, alarm_on_detected
         self.alarm_on_timeout, self.alarm_on_error = alarm_on_timeout, alarm_on_error
         self.stop_on_timeout, self.history_dir = stop_on_timeout, history_dir
+        self.system_prompt = str(system_prompt or "")
         self.alarm_suppression_sec, self._last_error_alarm = alarm_suppression_sec, {}
         self.results, self._lock, self._stop = queue.Queue(), threading.Lock(), threading.Event()
         self._thread, self._generation = None, 0
@@ -163,7 +165,8 @@ class AIMonitor:
                     if not ok: raise RuntimeError("圖片編碼失敗")
                     encoded = data.tobytes(); filename, path = self._save_capture(encoded, started)
                 except ImportError as exc: raise RuntimeError("未安裝 OpenCV") from exc
-                answer = self.client.chat(prompt, image=encoded)
+                answer = self.client.chat(prompt, image=encoded,
+                                          system_prompt=self.system_prompt)
                 ended = time.time()
                 value = {"history_id": uuid.uuid4().hex, "captured_at": started, "sent_at": started, "ended_at": ended,
                          "elapsed_sec": ended - started, "text": answer, "answer": answer,
