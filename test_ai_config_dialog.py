@@ -42,7 +42,25 @@ class FakeTree:
         self.rows.append((iid, values))
 
 
+class FakeColumnTree:
+    def __init__(self):
+        self.columns = {}
+
+    def column(self, name, **options):
+        self.columns[name] = options
+
+
 class AIConfigDialogTests(unittest.TestCase):
+    def test_image_library_columns_can_shrink_without_hiding_source(self):
+        tree = FakeColumnTree()
+
+        AIConfigDialog._configure_library_columns(tree)
+
+        self.assertEqual(tree.columns["favorite"], {"width": 45, "minwidth": 40, "stretch": False})
+        self.assertEqual(tree.columns["time"]["minwidth"], 75)
+        self.assertEqual(tree.columns["source"]["minwidth"], 45)
+        self.assertTrue(tree.columns["source"]["stretch"])
+
     def test_sash_positions_capture_all_vertical_dividers(self):
         paned = SimpleNamespace(
             panes=lambda: ("one", "two", "three"),
