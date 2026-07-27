@@ -78,8 +78,13 @@ class AIConfigDialog:
         self.base_url = self._entry(qbox, 0, "API 位址", ai.get("base_url", "http://127.0.0.1:11434"), 25)
         ttk.Label(qbox, text="模型").grid(row=0, column=2); self.model = ttk.Combobox(qbox, width=20); self.model.set(ai.get("model", "qwen3-vl:8b")); self.model.grid(row=0, column=3)
         ttk.Button(qbox, text="檢查 Ollama", command=self.test_connection).grid(row=0, column=4, padx=4)
+        ttk.Button(qbox, text="預先載入模型", command=self.preload_model).grid(row=0, column=5, padx=4)
         self.timeout = self._entry(qbox, 0, "AI 回答逾時", ai.get("timeout", 30), 6, row=1, suffix="秒")
         self.after_answer_delay = self._entry(qbox, 3, "回答完成後等待", ai.get("after_answer_delay", ai.get("interval", 0)), 6, row=1, suffix="秒")
+        ttk.Label(qbox, text="模型保留時間").grid(row=1, column=6, sticky="e")
+        self.keep_alive = ttk.Combobox(qbox, width=8, values=("5m", "15m", "30m", "1h", "-1"))
+        self.keep_alive.set(ai.get("keep_alive", "30m")); self.keep_alive.grid(row=1, column=7, sticky="w")
+        self._tooltip(self.keep_alive, "每次提問後讓模型留在記憶體的時間；-1 表示直到 Ollama 停止")
         self._tooltip(self.timeout, "單次送出圖片後，最多等待 AI 回答的時間")
         self._tooltip(self.after_answer_delay, "AI 回答或錯誤處理完成後，再等待幾秒開始下一輪；0 表示立刻繼續")
         self.alarm_on_detected = tk.BooleanVar(value=ai.get("alarm_on_detected", ai.get("sound_enabled", True)))
@@ -534,7 +539,7 @@ class AIConfigDialog:
         except ValueError: raise ValueError("AI 回答逾時與回答完成後等待必須是數字")
         if timeout <= 0 or delay < 0: raise ValueError("AI 回答逾時必須大於 0，回答完成後等待不可小於 0")
         parts = self.resolution.get().replace(" ", "").split("×"); w, h = (map(int, parts) if len(parts) == 2 else (None, None))
-        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "after_answer_delay": delay, "alarm_on_detected": self.alarm_on_detected.get(), "alarm_on_timeout": self.alarm_on_timeout.get(), "alarm_on_error": self.alarm_on_error.get(), "sound_mode": self._sound_mode_key(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
+        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "keep_alive": self.keep_alive.get().strip() or "30m", "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "after_answer_delay": delay, "alarm_on_detected": self.alarm_on_detected.get(), "alarm_on_timeout": self.alarm_on_timeout.get(), "alarm_on_error": self.alarm_on_error.get(), "sound_mode": self._sound_mode_key(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
         ai.pop("interval", None); ai.pop("sound_enabled", None)
         self.on_save(self.config)
         if announce: self._append("系統", "設定已保存")
@@ -584,8 +589,9 @@ class AIConfigDialog:
             self._refresh_profiles(); self._save(announce=False); win.destroy()
         ttk.Button(win, text="保存", command=save).pack(side="left"); ttk.Button(win, text="取消", command=win.destroy).pack(side="left")
 
-    def _client(self): return QwenClient(self.base_url.get(), self.model.get(), float(self.timeout.get()))
+    def _client(self): return QwenClient(self.base_url.get(), self.model.get(), float(self.timeout.get()), keep_alive=self.keep_alive.get())
     def test_connection(self): self._worker("檢查 Ollama", self._client().test_connection, self._models_loaded)
+    def preload_model(self): self._worker("預先載入模型", self._client().preload)
     def _models_loaded(self, names): self.model["values"] = names; self.model.set(choose_model(names, self.model.get())); self._append("系統", "Ollama 連線成功")
     def _send_shortcut(self, _event): self.send_test(); return "break"
     def send_test(self):

@@ -11,11 +11,13 @@ class QwenError(RuntimeError):
 
 
 class QwenClient:
-    def __init__(self, base_url="http://127.0.0.1:11434", model="", timeout=30, opener=None):
+    def __init__(self, base_url="http://127.0.0.1:11434", model="", timeout=30,
+                 opener=None, keep_alive="30m"):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = float(timeout)
         self.opener = opener or urllib.request.urlopen
+        self.keep_alive = str(keep_alive).strip() or "30m"
 
     def build_payload(self, text, image=None, system_prompt=""):
         messages = []
@@ -30,7 +32,8 @@ class QwenClient:
                     raw = stream.read()
             user["images"] = [base64.b64encode(raw).decode("ascii")]
         messages.append(user)
-        return {"model": self.model, "stream": False, "messages": messages}
+        return {"model": self.model, "stream": False, "messages": messages,
+                "keep_alive": self.keep_alive}
 
     def _request(self, path, payload=None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -72,6 +75,16 @@ class QwenClient:
                 raise QwenError("模型不支援圖片：{}".format(detail))
             raise QwenError("回應缺少 message.content")
         return message["content"]
+
+    def preload(self):
+        """Load the selected model without generating an answer."""
+        if not self.model.strip():
+            raise QwenError("尚未選擇模型")
+        self._request("/api/generate", {
+            "model": self.model, "prompt": "", "stream": False,
+            "keep_alive": self.keep_alive,
+        })
+        return True
 
 
 def choose_model(names, preferred=""):
