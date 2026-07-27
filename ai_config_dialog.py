@@ -123,8 +123,11 @@ class AIConfigDialog:
             ttk.Button(bar, text=label, command=command).grid(row=row, column=column, sticky="ew")
         self._refresh_profiles()
         images = self._section(self.left_paned, "圖片庫／附件", "選擇手動提問的圖片，或管理從相機保存的圖片；雙擊開啟後，可用滾輪以滑鼠位置為中心縮放。")
-        images.columnconfigure(0, weight=2, uniform="image-library")
-        images.columnconfigure(1, weight=1, uniform="image-library")
+        # Do not put these unequal columns in one ``uniform`` group.  Tk uses
+        # the widgets' requested widths when sizing a uniform group, which can
+        # make the library column wider than its pane and clip its right edge.
+        images.columnconfigure(0, weight=2)
+        images.columnconfigure(1, weight=1)
         images.rowconfigure(0, weight=1)
         attachment = ttk.Frame(images); attachment.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         attachment.columnconfigure(0, weight=1); attachment.rowconfigure(1, weight=1)
@@ -136,12 +139,17 @@ class AIConfigDialog:
             row, column = divmod(index, 2)
             image_actions.columnconfigure(column, weight=1, uniform="image-action")
             ttk.Button(image_actions, text=label, command=command).grid(row=row, column=column, sticky="ew")
-        self.library_tree = ttk.Treeview(images, columns=("favorite", "time", "source"), show="headings", height=5)
+        library = ttk.Frame(images)
+        library.grid(row=0, column=1, sticky="nsew")
+        library.columnconfigure(0, weight=1); library.rowconfigure(0, weight=1)
+        self.library_tree = ttk.Treeview(library, columns=("favorite", "time", "source"), show="headings", height=5)
         for key, label in (("favorite", "最愛"), ("time", "保存時間"), ("source", "來源")): self.library_tree.heading(key, text=label)
-        self.library_tree.column("favorite", width=45, minwidth=40, stretch=False)
-        self.library_tree.column("time", width=105, minwidth=75)
-        self.library_tree.column("source", width=60, minwidth=45)
-        self.library_tree.grid(row=0, column=1, sticky="nsew"); self.library_tree.bind("<<TreeviewSelect>>", self.select_library_image)
+        self._configure_library_columns(self.library_tree)
+        library_scroll = ttk.Scrollbar(library, orient="horizontal", command=self.library_tree.xview)
+        self.library_tree.configure(xscrollcommand=library_scroll.set)
+        self.library_tree.grid(row=0, column=0, sticky="nsew")
+        library_scroll.grid(row=1, column=0, sticky="ew")
+        self.library_tree.bind("<<TreeviewSelect>>", self.select_library_image)
         self.library_tree.bind("<Double-Button-1>", self._on_library_double_click); self.refresh_library()
         for content, minimum in ((sysbox, 75), (pbox, 150), (images, 160)):
             self.left_paned.add(content._section_outer, minsize=minimum, stretch="always")
@@ -179,6 +187,13 @@ class AIConfigDialog:
         ttk.Button(bottom, text="保存 UI 配置", command=self.save_ui_layout).pack(side="left")
         ttk.Button(bottom, text="套用並重新連接相機", command=lambda: self.apply_camera(save=True)).pack(side="left")
         ttk.Button(bottom, text="關閉", command=self.close).pack(side="left")
+
+    @staticmethod
+    def _configure_library_columns(tree):
+        """Keep every image-library heading reachable in a narrow pane."""
+        tree.column("favorite", width=45, minwidth=40, stretch=False)
+        tree.column("time", width=105, minwidth=75, stretch=True)
+        tree.column("source", width=60, minwidth=45, stretch=True)
 
     def _section(self, parent, title, help_text, **grid_options):
         """Create a compact section whose explanation is available on demand."""
