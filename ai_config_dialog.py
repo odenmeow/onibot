@@ -17,6 +17,9 @@ from image_library import ImageLibrary
 from qwen_client import QwenClient, choose_model
 
 
+QUESTION_HISTORY_LIMIT = 1000
+
+
 class AIConfigDialog:
     def __init__(self, parent, config, on_save, on_state=None):
         self.config, self.on_save, self.on_state = config, on_save, on_state
@@ -93,6 +96,18 @@ class AIConfigDialog:
         self.test_sound_button = ttk.Button(qbox, text="測試聲音", command=self.test_sound); self.test_sound_button.grid(row=3, column=4)
         ttk.Button(qbox, text="停止鬧鐘", command=self.alarm.stop).grid(row=3, column=5)
         self.sound_status = ttk.Label(qbox, text=""); self.sound_status.grid(row=4, column=0, columnspan=6, sticky="w")
+        help_box = ttk.LabelFrame(qbox, text="AI 配置說明")
+        help_box.grid(row=5, column=0, columnspan=6, sticky="ew", padx=4, pady=(4, 6))
+        help_box.columnconfigure(0, weight=1)
+        help_text = (
+            "API 位址：Ollama 服務位置；模型：用來處理圖片與提問的視覺語言模型。\n"
+            "AI 回答逾時：單次請求的最長等待秒數；回答完成後等待：AI Monitor 開始下一輪前的等待秒數。\n"
+            "三個警報選項會分別在回答 O、回答逾時及系統錯誤時觸發。警報聲音可選系統聲音、自訂檔案或靜音；「停止鬧鐘」會立即停止目前播放中的警報。\n"
+            "系統提示詞會套用至所有 AI 請求；提問配置依畫面順序組合，只有啟用項目會送出。\n"
+            "「送出提問」只執行一次；AI Monitor 會持續擷取畫面並重複判斷。自動／手動預覽只控制相機預覽，不代表 AI Monitor 是否啟用。\n"
+            "解析度、FPS、FourCC 是要求相機使用的規格，實際結果仍取決於驅動與裝置支援。"
+        )
+        ttk.Label(help_box, text=help_text, justify="left", wraplength=1000).grid(row=0, column=0, sticky="ew", padx=6, pady=4)
         self._sound_mode_changed()
 
         self.main_paned = tk.PanedWindow(self.window, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
@@ -131,12 +146,13 @@ class AIConfigDialog:
         self.user_text.bind("<KeyRelease>", self._draft_changed); self.user_text.bind("<Control-Return>", self._send_shortcut)
         controls = ttk.Frame(right); controls.grid(row=2, column=0, sticky="ew")
         self.send_button = ttk.Button(controls, text="送出提問", command=self.send_test); self.send_button.pack(side="left")
-        ttk.Button(controls, text="清除文字", command=self.clear_draft).pack(side="left")
+        ttk.Button(controls, text="清除提問", command=self.clear_draft).pack(side="left")
+        ttk.Button(controls, text="清除 Console", command=self.clear_console).pack(side="left")
         self.monitor_button = ttk.Button(controls, text="啟用 AI Monitor", command=self.toggle_monitor); self.monitor_button.pack(side="left")
         ttk.Button(controls, text="停止鬧鐘", command=self.alarm.stop).pack(side="left")
         self.monitor_status = ttk.Label(right, text="AI Monitor：已停止"); self.monitor_status.grid(row=3, column=0, sticky="w")
         self.response = tk.Text(right, state="disabled"); self.response.grid(row=4, column=0, sticky="nsew")
-        history_box = ttk.LabelFrame(right, text="最近 50 次提問歷史"); history_box.grid(row=5, column=0, sticky="ew")
+        history_box = ttk.LabelFrame(right, text="最近 1000 次提問歷史"); history_box.grid(row=5, column=0, sticky="ew")
         self.history_tree = ttk.Treeview(history_box, columns=("summary",), show="headings", height=5); self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果"); self.history_tree.pack(fill="x")
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
         for name, pane, row in (("left", left, 3), ("right", right, 6)):
@@ -245,10 +261,11 @@ class AIConfigDialog:
             while not self.monitor.results.empty():
                 _, kind, value = self.monitor.results.get_nowait()
                 self._record_history(value)
-                if kind == "answer": self._append("AI", value["text"])
+                ended_at = value.get("ended_at") if isinstance(value, dict) else None
+                if kind == "answer": self._append("AI", value["text"], ended_at)
                 elif kind == "timeout":
-                    waited = value.get("timeout_sec", self.timeout.get()); self._append("錯誤", "AI 回答逾時：已等待 {} 秒".format(_number_text(waited))); self.monitor_status.config(text="AI Monitor：AI 回答逾時（繼續運行）")
-                else: self._append("錯誤", value.get("error", "未知錯誤")); self.monitor_status.config(text="AI Monitor：發生錯誤（繼續運行）")
+                    waited = value.get("timeout_sec", self.timeout.get()); self._append("錯誤", "AI 回答逾時：已等待 {} 秒".format(_number_text(waited)), ended_at); self.monitor_status.config(text="AI Monitor：AI 回答逾時（繼續運行）")
+                else: self._append("錯誤", value.get("error", "未知錯誤"), ended_at); self.monitor_status.config(text="AI Monitor：發生錯誤（繼續運行）")
         self._schedule(150, self._poll_preview)
     def show_latest(self):
         frame = self.camera.latest_frame()
@@ -336,6 +353,10 @@ class AIConfigDialog:
         self._system_after = self.window.after(700, self._autosave_system)
     def _autosave_system(self): self._system_after = None; self._save(announce=False)
     def clear_draft(self): self.user_text.delete("1.0", "end"); self._save(announce=False)
+    def clear_console(self):
+        self.response.config(state="normal")
+        self.response.delete("1.0", "end")
+        self.response.config(state="disabled")
     def _save(self, announce=True):
         self._save_ai_layout()
         ai = self.config.setdefault("ai", {}); device = self._current_device()
@@ -429,13 +450,18 @@ class AIConfigDialog:
         if not isinstance(value, dict): return
         item = dict(value); item.setdefault("history_id", uuid.uuid4().hex)
         item.setdefault("mode", "auto"); item.setdefault("profile_tags", [])
-        history = self.config.setdefault("ai", {}).setdefault("question_history", []); history.append(item); del history[:-50]
+        ai = self.config.setdefault("ai", {})
+        history = ai.get("question_history")
+        if not isinstance(history, list): history = ai["question_history"] = []
+        history.append(item); del history[:-QUESTION_HISTORY_LIMIT]
         self.on_save(self.config); self._refresh_history()
     def _refresh_history(self):
         if not hasattr(self, "history_tree"): return
         for row in self.history_tree.get_children(): self.history_tree.delete(row)
         self._history_by_id = {}
-        history = self.config.get("ai", {}).get("question_history", [])[-50:]
+        history = self.config.get("ai", {}).get("question_history", [])
+        if not isinstance(history, list): history = []
+        history = history[-QUESTION_HISTORY_LIMIT:]
         for item in history:
             if isinstance(item, dict) and not item.get("history_id"): item["history_id"] = uuid.uuid4().hex
         for item in reversed(history):
@@ -456,8 +482,10 @@ class AIConfigDialog:
             return
         self._open_image_viewer("history", path=path, title="歷史圖片", metadata=item)
 
-    def _append(self, role, value):
-        self.response.config(state="normal"); self.response.insert("end", "{}：{}\n\n".format(role, value)); self.response.config(state="disabled"); self.response.see("end")
+    def _append(self, role, value, timestamp=None):
+        try: stamp = time.strftime("%H:%M:%S", time.localtime(float(timestamp) if timestamp is not None else time.time()))
+        except (TypeError, ValueError, OverflowError, OSError): stamp = time.strftime("%H:%M:%S", time.localtime())
+        self.response.config(state="normal"); self.response.insert("end", "[{}] {}：{}\n\n".format(stamp, role, value)); self.response.config(state="disabled"); self.response.see("end")
     def save_image(self):
         if self.displayed_frame is not None: self.library.save(self.displayed_frame); self.refresh_library()
     def pick_image(self):
