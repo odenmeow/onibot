@@ -191,12 +191,19 @@ class AIConfigDialog:
         question_scroll.configure(command=self.user_text.yview)
         question_scroll.pack(side="right", fill="y"); self.user_text.pack(side="left", fill="both", expand=True); self.user_text.insert("1.0", ai.get("user_prompt_draft", ""))
         self.user_text.bind("<KeyRelease>", self._draft_changed); self.user_text.bind("<Control-Return>", self._send_shortcut)
-        controls = ttk.Frame(question); controls.pack(fill="x")
-        self.send_button = ttk.Button(controls, text="送出提問", command=self.send_test); self.send_button.pack(side="left")
-        ttk.Button(controls, text="清除提問", command=self.clear_draft).pack(side="left")
-        ttk.Button(controls, text="清除 Console", command=self.clear_console).pack(side="left")
-        self.monitor_button = ttk.Button(controls, text="啟用 AI Monitor", command=self.toggle_monitor); self.monitor_button.pack(side="left")
-        ttk.Button(controls, text="停止鬧鐘", command=self.alarm.stop).pack(side="left")
+        # Actions intentionally live in their own pane.  Keeping them inside the
+        # editor made every manual/monitor action disappear when the question
+        # pane was collapsed or its sash was dragged upward.
+        controls = self._section(self.right_paned, "提問與監控操作", "這些操作獨立於手動追加提問區；收合或縮小提問內容後仍可使用。")
+        manual_actions = (("送出提問", self.send_test), ("清除提問", self.clear_draft),
+                          ("清除 Console", self.clear_console), ("啟用 AI Monitor", self.toggle_monitor),
+                          ("停止鬧鐘", self.alarm.stop))
+        for index, (label, command) in enumerate(manual_actions):
+            controls.columnconfigure(index, weight=1, uniform="manual-action")
+            button = ttk.Button(controls, text=label, command=command)
+            button.grid(row=0, column=index, sticky="ew")
+            if index == 0: self.send_button = button
+            elif index == 3: self.monitor_button = button
         console = self._section(self.right_paned, "AI Monitor／Console", "顯示監控狀態、系統訊息與 AI 回答。")
         self.monitor_status = ttk.Label(console, text="AI Monitor：已停止"); self.monitor_status.pack(fill="x")
         console_text = ttk.Frame(console); console_text.pack(fill="both", expand=True)
@@ -214,7 +221,7 @@ class AIConfigDialog:
         history_vertical_scroll.grid(row=0, column=1, sticky="ns")
         history_horizontal_scroll.grid(row=1, column=0, sticky="ew")
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
-        for content, minimum in ((question, 130), (console, 120), (history_box, 110)):
+        for content, minimum in ((question, 90), (controls, 62), (console, 120), (history_box, 110)):
             self.right_paned.add(content._section_outer, minsize=minimum, stretch="always")
             self._configure_section_pane(content, minimum)
         bottom = ttk.Frame(self.window); bottom.grid(row=3, column=0, columnspan=2, sticky="e", padx=8, pady=5)
