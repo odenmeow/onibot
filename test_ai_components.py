@@ -75,6 +75,23 @@ class QwenTests(unittest.TestCase):
         client = QwenClient(model="", opener=lambda *_a, **_k: self.fail("called"))
         with self.assertRaisesRegex(QwenError, "尚未選擇模型"): client.chat("hi")
 
+    def test_chat_keeps_model_loaded(self):
+        client = QwenClient(model="vision:8b", keep_alive="1h")
+        self.assertEqual(client.build_payload("hi")["keep_alive"], "1h")
+
+    def test_preload_uses_empty_generate_request(self):
+        response = mock.Mock(status=200)
+        response.read.return_value = b"{}"
+        opener = mock.Mock(return_value=response)
+        client = QwenClient(model="vision:8b", keep_alive="30m", opener=opener)
+        self.assertTrue(client.preload())
+        request = opener.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/generate")
+        self.assertEqual(json.loads(request.data), {
+            "model": "vision:8b", "prompt": "", "stream": False,
+            "keep_alive": "30m",
+        })
+
 
 class AIMonitorTests(unittest.TestCase):
     def test_qwen_timeout_is_classified(self):
