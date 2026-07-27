@@ -79,6 +79,41 @@ class QwenTests(unittest.TestCase):
         client = QwenClient(model="vision:8b", keep_alive="1h")
         self.assertEqual(client.build_payload("hi")["keep_alive"], "1h")
 
+    def test_chat_payload_defaults_to_fast_bounded_streaming(self):
+        payload = QwenClient(model="vision:8b").build_payload("hi")
+        self.assertTrue(payload["stream"])
+        self.assertFalse(payload["think"])
+        self.assertEqual(payload["options"]["num_predict"], 256)
+
+    def test_chat_raises_tiny_token_limit_to_avoid_empty_answer(self):
+        payload = QwenClient(model="vision:8b", num_predict=8).build_payload("hi")
+        self.assertEqual(payload["options"]["num_predict"], 256)
+
+    def test_chat_collects_stream_and_closes_response(self):
+        response = mock.Mock()
+        response.readline.side_effect = [
+            b'{"message":{"content":"O"},"done":false}\n',
+            b'{"message":{"content":"K"},"done":true}\n',
+        ]
+        client = QwenClient(model="vision:8b", opener=mock.Mock(return_value=response))
+        self.assertEqual(client.chat("hi"), "OK")
+        response.close.assert_called_once_with()
+
+    def test_chat_cancel_closes_response(self):
+        response = mock.Mock()
+        cancelled = mock.Mock(); cancelled.is_set.return_value = True
+        client = QwenClient(model="vision:8b", opener=mock.Mock(return_value=response))
+        with self.assertRaisesRegex(QwenError, "cancelled"):
+            client.chat("hi", cancel_event=cancelled)
+        response.close.assert_called_once_with()
+
+    def test_chat_rejects_stream_with_only_empty_content(self):
+        response = mock.Mock()
+        response.readline.return_value = b'{"message":{"content":""},"done":true}\n'
+        client = QwenClient(model="vision:8b", opener=mock.Mock(return_value=response))
+        with self.assertRaisesRegex(QwenError, "message.content"):
+            client.chat("hi")
+
     def test_preload_uses_empty_generate_request(self):
         response = mock.Mock(status=200)
         response.read.return_value = b"{}"
@@ -125,7 +160,8 @@ class AIMonitorTests(unittest.TestCase):
             monitor.stop()
 
         client.chat.assert_any_call("判斷畫面", image=b"jpg",
-                                    system_prompt="只回答 O 或 X")
+                                    system_prompt="只回答 O 或 X",
+                                    cancel_event=monitor._stop)
 
     def test_builtin_alarm_does_not_require_sound_path(self):
         alarm = AlarmPlayer(sound_path="", sound_mode="system_alarm")
