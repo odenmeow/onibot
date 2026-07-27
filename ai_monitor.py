@@ -166,7 +166,8 @@ class AIMonitor:
                     encoded = data.tobytes(); filename, path = self._save_capture(encoded, started)
                 except ImportError as exc: raise RuntimeError("未安裝 OpenCV") from exc
                 answer = self.client.chat(prompt, image=encoded,
-                                          system_prompt=self.system_prompt)
+                                          system_prompt=self.system_prompt,
+                                          cancel_event=self._stop)
                 ended = time.time()
                 value = {"history_id": uuid.uuid4().hex, "captured_at": started, "sent_at": started, "ended_at": ended,
                          "elapsed_sec": ended - started, "text": answer, "answer": answer,
