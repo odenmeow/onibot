@@ -6,6 +6,8 @@ import time
 import urllib.error
 import urllib.request
 
+MIN_NUM_PREDICT = 256
+
 
 class QwenError(RuntimeError):
     pass
@@ -13,14 +15,14 @@ class QwenError(RuntimeError):
 
 class QwenClient:
     def __init__(self, base_url="http://127.0.0.1:11434", model="", timeout=30,
-                 opener=None, keep_alive="30m", think=False, num_predict=8):
+                 opener=None, keep_alive="30m", think=False, num_predict=MIN_NUM_PREDICT):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = float(timeout)
         self.opener = opener or urllib.request.urlopen
         self.keep_alive = str(keep_alive).strip() or "30m"
         self.think = bool(think)
-        self.num_predict = max(1, int(num_predict))
+        self.num_predict = max(MIN_NUM_PREDICT, int(num_predict))
 
     def build_payload(self, text, image=None, system_prompt=""):
         messages = []
@@ -101,8 +103,9 @@ class QwenClient:
             raise QwenError("無法連線：{}".format(exc)) from exc
         finally:
             if response is not None: response.close()
-        if not pieces: raise QwenError("回應缺少 message.content")
-        return "".join(pieces)
+        answer = "".join(pieces)
+        if not answer.strip(): raise QwenError("回應缺少 message.content")
+        return answer
 
     def preload(self):
         """Load the selected model without generating an answer."""
