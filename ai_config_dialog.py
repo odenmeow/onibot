@@ -35,6 +35,7 @@ class AIConfigDialog:
         self.monitor = None; self.devices = []; self.capabilities = []
         self.displayed_frame = self.selected_image = self._selected_item = None
         self.zoom_window = self._viewer_image = self._viewer_photo = None
+        self._viewer_scale = self._viewer_offset = self._viewer_drag = None
         self._viewer_after = self.detached_window = self.detached_preview = None
         self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
@@ -111,7 +112,7 @@ class AIConfigDialog:
         for label, command in (("新增提問配置", self.add_profile), ("編輯", self.edit_profile), ("複製", self.copy_profile), ("刪除", self.delete_profile), ("上移", lambda: self.move_profile(-1)), ("下移", lambda: self.move_profile(1)), ("啟用／停用", self.toggle_profile)):
             ttk.Button(bar, text=label, command=command).pack(side="left")
         self._refresh_profiles()
-        images = self._section(left, "圖片庫／附件", "選擇手動提問的圖片，或管理從相機保存的圖片；雙擊可放大檢視。", row=2, column=0, sticky="nsew")
+        images = self._section(left, "圖片庫／附件", "選擇手動提問的圖片，或管理從相機保存的圖片；雙擊開啟後，可用滾輪以滑鼠位置為中心縮放。", row=2, column=0, sticky="nsew")
         self.image_info = ttk.Label(images, text="本次提問尚未附加圖片"); self.image_info.pack(fill="x")
         self.attachment_preview = ttk.Label(images, text="無附件", anchor="center"); self.attachment_preview.pack(fill="x")
         self.attachment_preview.bind("<Double-Button-1>", self._on_attachment_double_click)
@@ -596,10 +597,20 @@ class AIConfigDialog:
         viewer.geometry("900x700"); viewer.minsize(800, 600)
         source_labels = {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}
         ttk.Label(viewer, text="{}   原始解析度：{}×{}   來源：{}".format(filename, image.width, image.height, source_labels.get(source_type, source_type))).pack(fill="x", padx=8, pady=5)
-        self.zoom_label = ttk.Label(viewer, anchor="center"); self.zoom_label.pack(fill="both", expand=True)
+        self.viewer_status = ttk.Label(viewer, text="滾輪縮放（以滑鼠位置為中心）｜按住左鍵拖曳圖片")
+        self.viewer_status.pack(fill="x", padx=8)
+        self.zoom_canvas = tk.Canvas(viewer, highlightthickness=0, background="#202020", cursor="fleur")
+        self.zoom_canvas.pack(fill="both", expand=True)
         ttk.Button(viewer, text="關閉", command=self._close_image_viewer).pack(pady=5)
         viewer.bind("<Escape>", lambda _e: self._close_image_viewer())
-        viewer.bind("<Configure>", self._queue_viewer_render); viewer.protocol("WM_DELETE_WINDOW", self._close_image_viewer)
+        self.zoom_canvas.bind("<Configure>", self._queue_viewer_render)
+        self.zoom_canvas.bind("<MouseWheel>", self._on_viewer_wheel)
+        self.zoom_canvas.bind("<Button-4>", self._on_viewer_wheel)
+        self.zoom_canvas.bind("<Button-5>", self._on_viewer_wheel)
+        self.zoom_canvas.bind("<ButtonPress-1>", self._start_viewer_drag)
+        self.zoom_canvas.bind("<B1-Motion>", self._drag_viewer)
+        viewer.protocol("WM_DELETE_WINDOW", self._close_image_viewer)
+        self._viewer_scale = None; self._viewer_offset = None; self._viewer_drag = None
         self._queue_viewer_render()
 
     def _queue_viewer_render(self, _event=None):
@@ -611,10 +622,60 @@ class AIConfigDialog:
     def _render_viewer(self):
         self._viewer_after = None
         if not self.zoom_window or self._viewer_image is None: return
-        from PIL import ImageTk
-        image = self._viewer_image.copy()
-        image.thumbnail((max(1, self.zoom_label.winfo_width() - 12), max(1, self.zoom_label.winfo_height() - 12)))
-        self._viewer_photo = ImageTk.PhotoImage(image); self.zoom_label.config(image=self._viewer_photo)
+        from PIL import Image, ImageTk
+        canvas_width = max(1, self.zoom_canvas.winfo_width())
+        canvas_height = max(1, self.zoom_canvas.winfo_height())
+        fit_scale = min(canvas_width / self._viewer_image.width,
+                        canvas_height / self._viewer_image.height)
+        if self._viewer_scale is None:
+            self._viewer_scale = fit_scale
+            self._viewer_offset = (
+                (canvas_width - self._viewer_image.width * fit_scale) / 2,
+                (canvas_height - self._viewer_image.height * fit_scale) / 2,
+            )
+        elif self._viewer_scale < fit_scale:
+            self._viewer_scale = fit_scale
+            self._viewer_offset = (
+                (canvas_width - self._viewer_image.width * fit_scale) / 2,
+                (canvas_height - self._viewer_image.height * fit_scale) / 2,
+            )
+        size = (max(1, round(self._viewer_image.width * self._viewer_scale)),
+                max(1, round(self._viewer_image.height * self._viewer_scale)))
+        image = self._viewer_image.resize(size, Image.Resampling.LANCZOS)
+        self._viewer_photo = ImageTk.PhotoImage(image)
+        self.zoom_canvas.delete("all")
+        self.zoom_canvas.create_image(*self._viewer_offset, anchor="nw", image=self._viewer_photo)
+        self.viewer_status.config(text="滾輪縮放（以滑鼠位置為中心）｜按住左鍵拖曳圖片｜{:.0f}%".format(self._viewer_scale * 100))
+
+    @staticmethod
+    def _zoom_at(scale, offset, pointer, factor, minimum, maximum=8.0):
+        """Return a zoom transform that keeps the pixel below ``pointer`` fixed."""
+        maximum = max(maximum, minimum)
+        new_scale = min(max(scale * factor, minimum), maximum)
+        ratio = new_scale / scale
+        return new_scale, (pointer[0] - (pointer[0] - offset[0]) * ratio,
+                           pointer[1] - (pointer[1] - offset[1]) * ratio)
+
+    def _on_viewer_wheel(self, event):
+        if self._viewer_scale is None or self._viewer_image is None: return "break"
+        direction = event.delta if getattr(event, "delta", 0) else (1 if event.num == 4 else -1)
+        factor = 1.15 if direction > 0 else 1 / 1.15
+        fit_scale = min(self.zoom_canvas.winfo_width() / self._viewer_image.width,
+                        self.zoom_canvas.winfo_height() / self._viewer_image.height)
+        self._viewer_scale, self._viewer_offset = self._zoom_at(
+            self._viewer_scale, self._viewer_offset, (event.x, event.y), factor, fit_scale)
+        self._render_viewer()
+        return "break"
+
+    def _start_viewer_drag(self, event):
+        self._viewer_drag = (event.x, event.y)
+
+    def _drag_viewer(self, event):
+        if self._viewer_drag is None or self._viewer_offset is None: return
+        dx, dy = event.x - self._viewer_drag[0], event.y - self._viewer_drag[1]
+        self._viewer_offset = (self._viewer_offset[0] + dx, self._viewer_offset[1] + dy)
+        self._viewer_drag = (event.x, event.y)
+        self._render_viewer()
     def _close_image_viewer(self):
         if self._viewer_after and self.zoom_window:
             try: self.zoom_window.after_cancel(self._viewer_after)
@@ -627,6 +688,7 @@ class AIConfigDialog:
             try: self._viewer_image.close()
             except Exception: pass
         self.zoom_window = self._viewer_image = self._viewer_photo = None
+        self._viewer_scale = self._viewer_offset = self._viewer_drag = None
     def close(self):
         if self._closed: return
         self._save_ai_layout(); self._close_image_viewer()

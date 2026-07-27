@@ -143,6 +143,23 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(history["tag"], "測試配置")
         self.assertIn("手動問題", history["prompt"])
 
+    def test_viewer_zoom_keeps_pixel_below_pointer_fixed(self):
+        scale, offset = AIConfigDialog._zoom_at(
+            0.5, (100, 50), (400, 250), 2, minimum=0.25)
+
+        self.assertEqual(scale, 1.0)
+        self.assertEqual(offset, (-200, -150))
+        before = ((400 - 100) / 0.5, (250 - 50) / 0.5)
+        after = ((400 - offset[0]) / scale, (250 - offset[1]) / scale)
+        self.assertEqual(after, before)
+
+    def test_viewer_zoom_respects_fit_and_maximum_scale(self):
+        zoomed_out = AIConfigDialog._zoom_at(1, (0, 0), (20, 20), 0.1, minimum=0.5)
+        zoomed_in = AIConfigDialog._zoom_at(4, (0, 0), (20, 20), 4, minimum=0.5)
+
+        self.assertEqual(zoomed_out[0], 0.5)
+        self.assertEqual(zoomed_in[0], 8.0)
+
 
 if __name__ == "__main__":
     unittest.main()
