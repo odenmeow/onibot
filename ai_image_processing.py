@@ -1,6 +1,7 @@
 """Shared, non-destructive image preparation used by previews and Ollama."""
 import io
 import math
+import os
 
 
 def normalize_crop_roi(first, second=None):
@@ -24,6 +25,8 @@ def map_canvas_point_to_image(x, y, image_width, image_height, scale=1.0,
 def _pil(image):
     from PIL import Image
     if isinstance(image, Image.Image): return image.copy()
+    if isinstance(image, (str, os.PathLike)):
+        with Image.open(os.fspath(image)) as opened: return opened.copy()
     if isinstance(image, (bytes, bytearray, memoryview)):
         with Image.open(io.BytesIO(bytes(image))) as opened: return opened.copy()
     # OpenCV arrays are BGR/BGRA.
