@@ -50,6 +50,11 @@ class FakeColumnTree:
         self.columns[name] = options
 
 
+class FakeLabel:
+    def __init__(self): self.options = {}
+    def config(self, **options): self.options.update(options)
+
+
 class AIConfigDialogTests(unittest.TestCase):
     def test_image_library_columns_can_shrink_without_hiding_source(self):
         tree = FakeColumnTree()
@@ -182,6 +187,46 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(history["answer"], "O")
         self.assertEqual(history["tag"], "測試配置")
         self.assertIn("手動問題", history["prompt"])
+
+    @mock.patch("ai_config_dialog.prepare_and_encode_ai_image")
+    def test_manual_attachment_does_not_reuse_persisted_crop(self, prepare):
+        prepare.return_value = (b"processed", {
+            "original_size": (1516, 837), "cropped_size": (1516, 837),
+            "output_size": (1280, 707), "format": "PNG", "bytes": 9,
+        })
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.profiles = [{"id": "profile-1", "name": "測試", "prompt": "判斷", "enabled": True}]
+        dialog.user_text = FakeText("問題"); dialog.system = FakeText()
+        dialog.selected_image = "/source/new-image.png"
+        dialog.attachment_crop_roi = None
+        dialog.config = {"ai": {"attachment_ai_image": {
+            "enabled": True, "crop_enabled": True, "crop": [.1, .1, .9, .9],
+            "resize_enabled": True, "target_width": 1280, "target_height": 720,
+        }}}
+        dialog._save = mock.Mock(); dialog._append = mock.Mock()
+        dialog._archive_manual_image = mock.Mock(return_value=("manual.png", "/history/manual.png"))
+        dialog._client = mock.Mock(return_value=SimpleNamespace(chat=mock.Mock(return_value="O")))
+        dialog._worker = lambda _operation, work, success, _failure: success(work())
+        dialog._record_history = mock.Mock()
+
+        dialog.send_test()
+
+        sent_settings = prepare.call_args.args[1]
+        self.assertFalse(sent_settings["crop_enabled"])
+        self.assertEqual(sent_settings["crop"], [.1, .1, .9, .9])
+        self.assertTrue(any("未裁切" in call.args[1] for call in dialog._append.call_args_list))
+
+    def test_clear_attachment_resets_current_crop_and_status(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.selected_image = "/source/image.png"
+        dialog.attachment_crop_roi = (.1, .1, .9, .9)
+        dialog.image_info = FakeLabel(); dialog.attachment_preview = FakeLabel()
+        dialog.attachment_crop_status = FakeLabel()
+
+        dialog.clear_image()
+
+        self.assertIsNone(dialog.attachment_crop_roi)
+        self.assertIn("未套用", dialog.attachment_crop_status.options["text"])
 
     def test_viewer_zoom_keeps_pixel_below_pointer_fixed(self):
         scale, offset = AIConfigDialog._zoom_at(
