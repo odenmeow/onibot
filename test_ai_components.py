@@ -47,6 +47,20 @@ class AIImageProcessingTests(unittest.TestCase):
         self.assertEqual(metadata["cropped_size"], (200, 200))
         self.assertEqual(metadata["output_size"], (80, 80))
 
+    def test_attachment_file_path_is_opened_and_encoded(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "attachment.png")
+            Image.new("RGB", (40, 20), "white").save(source)
+
+            encoded, metadata = prepare_and_encode_ai_image(source, {
+                "enabled": True, "output_format": "png",
+            }, "attachment")
+
+        self.assertTrue(encoded.startswith(b"\x89PNG"))
+        self.assertEqual(metadata["original_size"], (40, 20))
+        self.assertEqual(metadata["output_size"], (40, 20))
+
     def test_master_switch_prevents_crop_and_resize(self):
         from PIL import Image
         source = Image.new("RGB", (400, 200), "white")
