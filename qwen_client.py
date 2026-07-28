@@ -18,7 +18,8 @@ class QwenError(RuntimeError):
 
 class QwenClient:
     def __init__(self, base_url="http://127.0.0.1:11434", model="", timeout=30,
-                 opener=None, keep_alive="30m", think=False, num_predict=MIN_NUM_PREDICT):
+                 opener=None, keep_alive="30m", think=False, num_predict=MIN_NUM_PREDICT,
+                 options=None, option_mode="legacy"):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = float(timeout)
@@ -26,6 +27,8 @@ class QwenClient:
         self.keep_alive = str(keep_alive).strip() or "30m"
         self.think = bool(think)
         self.num_predict = max(MIN_NUM_PREDICT, int(num_predict))
+        self.options = None if options is None else dict(options)
+        self.option_mode = option_mode
 
     def build_payload(self, text, image=None, system_prompt=""):
         """Build one isolated turn; model keep-alive never carries chat history."""
@@ -44,9 +47,15 @@ class QwenClient:
                     raw = stream.read()
             user["images"] = [base64.b64encode(raw).decode("ascii")]
         messages.append(user)
-        return {"model": self.model, "stream": True, "messages": messages,
-                "keep_alive": self.keep_alive, "think": self.think,
-                "options": {"num_predict": self.num_predict}}
+        payload = {"model": self.model, "stream": True, "messages": messages,
+                   "keep_alive": self.keep_alive, "think": self.think}
+        # Legacy callers retain the prior safe cap.  New configuration modes
+        # send only explicitly composed options, leaving Modelfile sampling
+        # defaults untouched in model_default mode.
+        payload["options"] = ({"num_predict": self.num_predict} if self.options is None
+                              else dict(self.options))
+        if not payload["options"]: payload.pop("options")
+        return payload
 
     def _request(self, path, payload=None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
