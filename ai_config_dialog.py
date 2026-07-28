@@ -45,7 +45,9 @@ class AIConfigDialog:
         self._draft_after = self._system_after = None
         self._sections = {}
         self._probe_cancel = threading.Event()
-        self.attachment_crop_roi = (0.0, 0.0, 1.0, 1.0)
+        # Attachment crops are deliberately per-selection.  A crop saved for a
+        # previous manual image must never silently affect the next attachment.
+        self.attachment_crop_roi = None
         self.profiles = [dict(x) for x in ai.get("prompt_profiles", []) if isinstance(x, dict)]
         self._build(ai); self._schedule(100, self.scan_cameras); self._schedule(150, self._poll_preview)
         self._schedule(80, self._restore_ai_layout)
@@ -156,6 +158,8 @@ class AIConfigDialog:
         attachment = ttk.Frame(images); attachment.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         attachment.columnconfigure(0, weight=1); attachment.rowconfigure(1, weight=1)
         self.image_info = ttk.Label(attachment, text="本次提問尚未附加圖片"); self.image_info.grid(row=0, column=0, sticky="ew")
+        self.attachment_crop_status = ttk.Label(attachment, text="裁切：未套用（手動附件每次重新選圖都會重設）")
+        self.attachment_crop_status.grid(row=3, column=0, sticky="w")
         self.attachment_preview = ttk.Label(attachment, text="無附件", anchor="center"); self.attachment_preview.grid(row=1, column=0, sticky="nsew")
         self.attachment_preview.bind("<Double-Button-1>", self._on_attachment_double_click)
         image_actions = ttk.Frame(attachment); image_actions.grid(row=2, column=0, sticky="ew")
@@ -745,7 +749,8 @@ class AIConfigDialog:
             self.on_save(self.config)
             if settings_key == "attachment_ai_image":
                 self.attachment_crop_roi = roi
-                self._select_image(self.selected_image, "附件（裁切已啟用）")
+                self._select_image(self.selected_image, "附件", reset_crop=False)
+                self._update_attachment_crop_status()
             win.destroy()
 
         canvas.bind("<Configure>", render); canvas.bind("<ButtonPress-1>", press); canvas.bind("<B1-Motion>", drag)
@@ -764,7 +769,13 @@ class AIConfigDialog:
         if not prompt: messagebox.showwarning("提問", "請輸入文字或啟用提問配置", parent=self.window); return
         started = time.time()
         image_input, image_meta = self.selected_image, None
-        settings = self.config.get("ai", {}).get("attachment_ai_image", {})
+        settings = dict(self.config.get("ai", {}).get("attachment_ai_image", {}))
+        # Resize/format settings are persistent, but a manual crop is only valid
+        # after the user explicitly crops the currently selected attachment.
+        attachment_crop_roi = getattr(self, "attachment_crop_roi", None)
+        settings["crop_enabled"] = attachment_crop_roi is not None
+        if attachment_crop_roi is not None:
+            settings["crop"] = list(attachment_crop_roi)
         if self.selected_image and settings.get("enabled"):
             try:
                 image_input, image_meta = prepare_and_encode_ai_image(self.selected_image, settings, "attachment")
@@ -794,9 +805,13 @@ class AIConfigDialog:
 
         self._append("使用者", prompt)
         if image_meta:
-            self._append("系統", "附件已套用 AI 影像設定：{}×{} → {}×{}，{}，{} bytes".format(
-                *image_meta["original_size"], *image_meta["output_size"],
-                image_meta["format"], image_meta["bytes"]))
+            crop_note = "裁切 {}×{}".format(*image_meta["cropped_size"]) if settings.get("crop_enabled") else "未裁切"
+            resize_note = "{}，目標框 {}×{}，{}放大".format(
+                settings.get("resize_mode", "contain"), settings.get("target_width", 1280),
+                settings.get("target_height", 720), "允許" if settings.get("allow_upscale") else "禁止")
+            self._append("系統", "附件影像處理：原圖 {}×{} → {} → 輸出 {}×{}（{}）；{}，{} bytes".format(
+                *image_meta["original_size"], crop_note, *image_meta["output_size"],
+                resize_note, image_meta["format"], image_meta["bytes"]))
         self._worker("等待 AI 回答", lambda: self._client().chat(
             prompt, image_input, self.system.get("1.0", "end-1c")), completed, failed)
 
@@ -900,12 +915,26 @@ class AIConfigDialog:
     def use_latest(self):
         if self.displayed_frame is not None:
             item = self.library.save(self.displayed_frame, source="camera"); self.refresh_library(); self._select_image(item["path"], "最新相機畫面")
-    def clear_image(self): self.selected_image = None; self.image_info.config(text="本次提問尚未附加圖片"); self.attachment_preview.config(image="", text="無附件")
-    def _select_image(self, path, source):
+    def clear_image(self):
+        self.selected_image = None; self.attachment_crop_roi = None
+        self.image_info.config(text="本次提問尚未附加圖片"); self.attachment_preview.config(image="", text="無附件")
+        self._update_attachment_crop_status()
+    def _update_attachment_crop_status(self):
+        if not hasattr(self, "attachment_crop_status"): return
+        if self.attachment_crop_roi is None:
+            text = "裁切：未套用（手動附件每次重新選圖都會重設）"
+        else:
+            left, top, right, bottom = self.attachment_crop_roi
+            text = "裁切：已套用到本次附件（範圍 {:.1%}～{:.1%} × {:.1%}～{:.1%}）".format(left, right, top, bottom)
+        self.attachment_crop_status.config(text=text)
+    def _select_image(self, path, source, reset_crop=True):
         try:
             from PIL import Image, ImageTk
             with Image.open(path) as im: size = "{}×{}".format(*im.size); thumb = im.convert("RGB"); thumb.thumbnail((400, 130)); photo = ImageTk.PhotoImage(thumb)
-            self.selected_image = path; self.image_info.config(text="已附加：{}（{}，{}）".format(os.path.basename(path), size, source)); self.attachment_preview.config(image=photo, text=""); self.attachment_preview.image = photo
+            self.selected_image = path
+            if reset_crop: self.attachment_crop_roi = None
+            self.image_info.config(text="已附加：{}（{}，{}）".format(os.path.basename(path), size, source)); self.attachment_preview.config(image=photo, text=""); self.attachment_preview.image = photo
+            self._update_attachment_crop_status()
         except Exception as exc: messagebox.showerror("圖片無法開啟", str(exc), parent=self.window)
     def refresh_library(self):
         if not hasattr(self, "library_tree"): return
