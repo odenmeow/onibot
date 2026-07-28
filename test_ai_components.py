@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import os
 import sys
 import tempfile
@@ -16,6 +17,7 @@ if "pynput" not in sys.modules:
 
 import front
 from ai_monitor import AIMonitor, AlarmPlayer, is_timeout_error
+from ai_image_processing import prepare_and_encode_ai_image
 from camera_capture import CameraCapture, classify_device
 from image_library import ImageLibrary, ImageLibraryFullError
 from qwen_client import QwenClient, QwenError, choose_model
@@ -26,6 +28,36 @@ class FakeCapture:
     def isOpened(self): return self.opened
     def read(self): return (self.frame is not None, self.frame)
     def release(self): self.released = True
+
+
+@unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow is an optional AI dependency")
+class AIImageProcessingTests(unittest.TestCase):
+    def test_enabled_settings_crop_and_resize_the_transmitted_copy(self):
+        from PIL import Image
+        source = Image.new("RGB", (400, 200), "white")
+
+        encoded, metadata = prepare_and_encode_ai_image(source, {
+            "enabled": True, "crop_enabled": True, "crop": [.25, 0, .75, 1],
+            "resize_enabled": True, "target_width": 80, "target_height": 80,
+            "resize_mode": "contain", "output_format": "png",
+        }, "attachment")
+
+        self.assertTrue(encoded.startswith(b"\x89PNG"))
+        self.assertEqual(metadata["original_size"], (400, 200))
+        self.assertEqual(metadata["cropped_size"], (200, 200))
+        self.assertEqual(metadata["output_size"], (80, 80))
+
+    def test_master_switch_prevents_crop_and_resize(self):
+        from PIL import Image
+        source = Image.new("RGB", (400, 200), "white")
+
+        _encoded, metadata = prepare_and_encode_ai_image(source, {
+            "enabled": False, "crop_enabled": True, "crop": [.25, 0, .75, 1],
+            "resize_enabled": True, "target_width": 80, "target_height": 80,
+        }, "attachment")
+
+        self.assertEqual(metadata["cropped_size"], (400, 200))
+        self.assertEqual(metadata["output_size"], (400, 200))
 
 
 class CameraTests(unittest.TestCase):

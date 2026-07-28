@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 from ai_monitor import AIMonitor, AlarmPlayer, combine_prompt_profiles
 from camera_capture import BACKEND_LABELS, TYPE_LABELS, CameraCapture
 from image_library import ImageLibrary
+from ai_image_processing import map_canvas_point_to_image, prepare_and_encode_ai_image
 from qwen_client import QwenClient, choose_model
 from ollama_runtime_options import build_ollama_options, QWEN_OX_PRESET
 
@@ -670,7 +671,7 @@ class AIConfigDialog:
             "align_qwen_grid": False, "output_format": "jpeg", "jpeg_quality": 95, "crop": [0, 0, 1, 1]},
             "attachment_ai_image": {"enabled": False, "crop_enabled": False, "resize_enabled": False,
             "target_width": 1280, "target_height": 720, "resize_mode": "contain", "allow_upscale": False,
-            "align_qwen_grid": False, "output_format": "png", "jpeg_quality": 95}}
+            "align_qwen_grid": False, "output_format": "png", "jpeg_quality": 95, "crop": [0, 0, 1, 1]}}
         for key, title in (("camera_ai_image", "相機自動擷取"), ("attachment_ai_image", "附件／圖片庫")):
             data = dict(defaults[key]); data.update(ai.get(key, {})); tab = ttk.Frame(notebook); notebook.add(tab, text=title)
             rowvars = variables[key] = {name: tk.BooleanVar(value=data[name]) for name in ("enabled", "crop_enabled", "resize_enabled", "allow_upscale", "align_qwen_grid")}
@@ -695,11 +696,62 @@ class AIConfigDialog:
         ttk.Button(win, text="保存", command=save).pack(side="right", padx=8, pady=6)
 
     def crop_camera(self):
-        messagebox.showinfo("裁切畫面", "請在預覽依序點選兩個對角；裁切 ROI 會以相對座標保存。", parent=self.window)
+        if self.displayed_frame is None:
+            messagebox.showwarning("裁切畫面", "相機尚無可用畫面", parent=self.window); return
+        from PIL import Image
+        import cv2
+        image = Image.fromarray(cv2.cvtColor(self.displayed_frame, cv2.COLOR_BGR2RGB))
+        self._open_crop_dialog(image, "camera_ai_image", "裁切相機畫面")
 
     def crop_attachment(self):
         if not self.selected_image: messagebox.showwarning("附件裁切", "請先選取附件", parent=self.window); return
-        messagebox.showinfo("附件裁切", "附件裁切使用處理後副本，不會覆寫原始檔案。", parent=self.window)
+        from PIL import Image
+        with Image.open(self.selected_image) as opened: image = opened.convert("RGB")
+        self._open_crop_dialog(image, "attachment_ai_image", "附件裁切")
+
+    def _open_crop_dialog(self, image, settings_key, title):
+        """Select a real ROI and persist it for the matching AI image source."""
+        from PIL import ImageTk
+        win = tk.Toplevel(self.window); win.title(title); win.geometry("900x650"); win.minsize(600, 450)
+        ttk.Label(win, text="按住左鍵拖曳裁切範圍；儲存後會自動啟用此來源的影像前處理與裁切。",
+                  anchor="w").pack(fill="x", padx=8, pady=6)
+        canvas = tk.Canvas(win, background="#202020", cursor="crosshair", highlightthickness=0)
+        canvas.pack(fill="both", expand=True, padx=8)
+        state = {"start": None, "end": None, "scale": 1.0, "offset": (0.0, 0.0), "photo": None}
+
+        def render(_event=None):
+            width, height = max(1, canvas.winfo_width()), max(1, canvas.winfo_height())
+            scale = min(width / image.width, height / image.height)
+            size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+            state["scale"], state["offset"] = scale, ((width - size[0]) / 2, (height - size[1]) / 2)
+            state["photo"] = ImageTk.PhotoImage(image.resize(size))
+            canvas.delete("all"); canvas.create_image(*state["offset"], anchor="nw", image=state["photo"])
+            if state["start"] and state["end"]:
+                canvas.create_rectangle(*state["start"], *state["end"], outline="#ff4040", width=3, tags="roi")
+
+        def press(event): state["start"] = state["end"] = (event.x, event.y); render()
+        def drag(event): state["end"] = (event.x, event.y); render()
+        def save_crop():
+            if not state["start"] or not state["end"] or state["start"] == state["end"]:
+                messagebox.showwarning(title, "請先拖曳出非空白的裁切範圍", parent=win); return
+            first = map_canvas_point_to_image(*state["start"], image.width, image.height,
+                                              state["scale"], state["offset"], relative=True)
+            second = map_canvas_point_to_image(*state["end"], image.width, image.height,
+                                               state["scale"], state["offset"], relative=True)
+            from ai_image_processing import normalize_crop_roi
+            roi = normalize_crop_roi(first, second)
+            settings = self.config.setdefault("ai", {}).setdefault(settings_key, {})
+            settings.update({"enabled": True, "crop_enabled": True, "crop": list(roi)})
+            self.on_save(self.config)
+            if settings_key == "attachment_ai_image":
+                self.attachment_crop_roi = roi
+                self._select_image(self.selected_image, "附件（裁切已啟用）")
+            win.destroy()
+
+        canvas.bind("<Configure>", render); canvas.bind("<ButtonPress-1>", press); canvas.bind("<B1-Motion>", drag)
+        buttons = ttk.Frame(win); buttons.pack(fill="x", padx=8, pady=8)
+        ttk.Button(buttons, text="取消", command=win.destroy).pack(side="right")
+        ttk.Button(buttons, text="儲存裁切範圍", command=save_crop).pack(side="right", padx=6)
     def test_connection(self): self._worker("檢查 Ollama", self._client().test_connection, self._models_loaded)
     def preload_model(self): self._worker("預先載入模型", self._client().preload)
     def _models_loaded(self, names): self.model["values"] = names; self.model.set(choose_model(names, self.model.get())); self._append("系統", "Ollama 連線成功")
@@ -711,13 +763,20 @@ class AIConfigDialog:
         user = self.user_text.get("1.0", "end-1c").strip(); prompt = "\n\n".join(x for x in (configured, user) if x)
         if not prompt: messagebox.showwarning("提問", "請輸入文字或啟用提問配置", parent=self.window); return
         started = time.time()
-        filename, path = self._archive_manual_image(self.selected_image, started)
+        image_input, image_meta = self.selected_image, None
+        settings = self.config.get("ai", {}).get("attachment_ai_image", {})
+        if self.selected_image and settings.get("enabled"):
+            try:
+                image_input, image_meta = prepare_and_encode_ai_image(self.selected_image, settings, "attachment")
+            except Exception as exc:
+                messagebox.showerror("附件處理失敗", str(exc), parent=self.window); return
+        filename, path = self._archive_manual_image(image_input, started)
         profile_tags = [str(p.get("id", "")) for p in self.profiles if p.get("enabled")]
         tags = ", ".join(str(p.get("name", "")) for p in self.profiles if p.get("enabled"))
         base_history = {"history_id": uuid.uuid4().hex, "captured_at": started,
                         "sent_at": started, "filename": filename, "path": path,
                         "tag": tags, "profile_tags": profile_tags, "mode": "manual",
-                        "prompt": prompt}
+                        "prompt": prompt, "image_metadata": image_meta or {}}
 
         def completed(answer):
             ended = time.time()
@@ -734,14 +793,19 @@ class AIConfigDialog:
                                       text="", error=error))
 
         self._append("使用者", prompt)
+        if image_meta:
+            self._append("系統", "附件已套用 AI 影像設定：{}×{} → {}×{}，{}，{} bytes".format(
+                *image_meta["original_size"], *image_meta["output_size"],
+                image_meta["format"], image_meta["bytes"]))
         self._worker("等待 AI 回答", lambda: self._client().chat(
-            prompt, self.selected_image, self.system.get("1.0", "end-1c")), completed, failed)
+            prompt, image_input, self.system.get("1.0", "end-1c")), completed, failed)
 
     @staticmethod
-    def _manual_filename(started):
+    def _manual_filename(started, extension="jpg"):
         milliseconds = int(started * 1000) % 1000
-        return "manual_{}_{:03d}.jpg".format(
-            time.strftime("%Y%m%d_%H%M%S", time.localtime(started)), milliseconds)
+        return "manual_{}_{:03d}.{}".format(
+            time.strftime("%Y%m%d_%H%M%S", time.localtime(started)), milliseconds,
+            str(extension).lower().lstrip(".") or "jpg")
 
     def _archive_manual_image(self, source_path, started):
         """Keep the exact image used by a manual test beside monitor captures."""
@@ -750,10 +814,14 @@ class AIConfigDialog:
         from PIL import Image
         history_dir = os.path.join(os.path.dirname(__file__), "saved_ai_images", "monitor")
         os.makedirs(history_dir, exist_ok=True)
-        filename = self._manual_filename(started)
+        extension = "png" if isinstance(source_path, bytes) and source_path.startswith(b"\x89PNG\r\n\x1a\n") else "jpg"
+        filename = self._manual_filename(started, extension)
         path = os.path.join(history_dir, filename)
-        with Image.open(source_path) as image:
-            image.convert("RGB").save(path, "JPEG")
+        if isinstance(source_path, bytes):
+            with open(path, "wb") as stream: stream.write(source_path)
+        else:
+            with Image.open(source_path) as image:
+                image.convert("RGB").save(path, "JPEG")
         return filename, path
     def toggle_monitor(self):
         if self.monitor and self.monitor.enabled:
@@ -763,7 +831,8 @@ class AIConfigDialog:
             self.monitor = AIMonitor(self.camera, self._client(), self.profiles, float(self.after_answer_delay.get()), self.alarm,
                 self.alarm_on_detected.get(), self.alarm_on_timeout.get(), self.alarm_on_error.get(),
                 self.config["ai"].get("stop_on_timeout", False), os.path.join(os.path.dirname(__file__), "saved_ai_images", "monitor"),
-                system_prompt=self.system.get("1.0", "end-1c")); self.monitor.start()
+                system_prompt=self.system.get("1.0", "end-1c"),
+                image_settings=self.config["ai"].get("camera_ai_image", {})); self.monitor.start()
             self.monitor_button.config(text="停用 AI Monitor"); self.monitor_status.config(text="AI Monitor：運行中"); self.on_state and self.on_state(True)
         except Exception as exc: self.monitor_status.config(text="AI Monitor：發生錯誤"); messagebox.showerror("無法啟用 AI", str(exc), parent=self.window)
 

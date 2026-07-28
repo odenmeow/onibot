@@ -40,14 +40,17 @@ def prepare_ai_image(image, settings=None, source_type="camera"):
     """Crop, resize and pad a copy; return image plus dimensions metadata."""
     from PIL import Image, ImageOps
     settings = dict(settings or {}); result = _pil(image)
+    # ``enabled`` is the master switch shown in the UI.  Settings dictionaries
+    # created before that switch existed remain active for API compatibility.
+    active = settings.get("enabled", True)
     original = result.size
-    if settings.get("crop_enabled"):
+    if active and settings.get("crop_enabled"):
         roi = normalize_crop_roi(settings.get("crop", (0, 0, 1, 1)))
         box = (round(roi[0] * result.width), round(roi[1] * result.height),
                round(roi[2] * result.width), round(roi[3] * result.height))
         result = result.crop(box)
     cropped = result.size
-    if settings.get("resize_enabled"):
+    if active and settings.get("resize_enabled"):
         target = (max(1, int(settings.get("target_width", 1280))),
                   max(1, int(settings.get("target_height", 720))))
         mode = settings.get("resize_mode", "contain")
@@ -56,7 +59,7 @@ def prepare_ai_image(image, settings=None, source_type="camera"):
         if mode == "stretch": result = result.resize(target, Image.Resampling.LANCZOS)
         elif mode == "cover": result = ImageOps.fit(result, target, Image.Resampling.LANCZOS)
         else: result = ImageOps.contain(result, target, Image.Resampling.LANCZOS)
-    if settings.get("align_qwen_grid"):
+    if active and settings.get("align_qwen_grid"):
         size = (int(math.ceil(result.width / 32.0) * 32), int(math.ceil(result.height / 32.0) * 32))
         result = ImageOps.pad(result, size, method=Image.Resampling.LANCZOS, color=(0, 0, 0), centering=(.5, .5))
     metadata = {"source_type": source_type, "original_size": original,

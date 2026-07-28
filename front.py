@@ -175,7 +175,7 @@ def load_config():
         "attachment_ai_image": {"enabled": False, "crop_enabled": False, "resize_enabled": False,
             "target_width": 1280, "target_height": 720, "aspect_ratio": "source",
             "resize_mode": "contain", "allow_upscale": False, "align_qwen_grid": False,
-            "output_format": "png", "jpeg_quality": 95},
+            "output_format": "png", "jpeg_quality": 95, "crop": [0.0, 0.0, 1.0, 1.0]},
         "system_prompt": "", "user_prompt_draft": "", "after_answer_delay": 0,
         "alarm_on_detected": True, "alarm_on_timeout": True, "alarm_on_error": False,
         "sound_mode": "system_alarm", "sound_path": "", "accept_lowercase_o": False,
