@@ -15,6 +15,7 @@ from ai_monitor import AIMonitor, AlarmPlayer, combine_prompt_profiles
 from camera_capture import BACKEND_LABELS, TYPE_LABELS, CameraCapture
 from image_library import ImageLibrary
 from qwen_client import QwenClient, choose_model
+from ollama_runtime_options import build_ollama_options, QWEN_OX_PRESET
 
 
 QUESTION_HISTORY_LIMIT = 1000
@@ -43,6 +44,7 @@ class AIConfigDialog:
         self._draft_after = self._system_after = None
         self._sections = {}
         self._probe_cancel = threading.Event()
+        self.attachment_crop_roi = (0.0, 0.0, 1.0, 1.0)
         self.profiles = [dict(x) for x in ai.get("prompt_profiles", []) if isinstance(x, dict)]
         self._build(ai); self._schedule(100, self.scan_cameras); self._schedule(150, self._poll_preview)
         self._schedule(80, self._restore_ai_layout)
@@ -72,7 +74,8 @@ class AIConfigDialog:
         ttk.Button(camera_actions, text="顯示預覽", command=lambda: self.set_camera_view("docked")).pack(side="left")
         ttk.Button(camera_actions, text="隱藏預覽", command=lambda: self.set_camera_view("hidden")).pack(side="left")
         ttk.Button(camera_actions, text="分離預覽", command=lambda: self.set_camera_view("detached")).pack(side="left")
-        ttk.Button(preview, text="手動探測支援規格", command=self.probe_capabilities).grid(row=3, column=10, columnspan=2)
+        ttk.Button(camera_actions, text="裁切畫面", command=self.crop_camera).pack(side="left")
+        ttk.Button(preview, text="完整偵測裝置規格", command=self.probe_capabilities).grid(row=3, column=10, columnspan=2)
 
         qbox = self._section(self.window, "Ollama 與監控設定", "設定 Ollama 位址與模型、回答逾時、每輪等待時間及三種警報。停止鬧鐘會立即停止目前聲音。", row=1, column=0, columnspan=2, sticky="ew", padx=8)
         self.base_url = self._entry(qbox, 0, "API 位址", ai.get("base_url", "http://127.0.0.1:11434"), 25)
@@ -87,6 +90,8 @@ class AIConfigDialog:
         self.think = tk.BooleanVar(value=ai.get("think", False))
         ttk.Checkbutton(qbox, text="啟用思考", variable=self.think).grid(row=2, column=6, sticky="w")
         self.num_predict = self._entry(qbox, 6, "最多輸出 token", ai.get("num_predict", 1024), 6, row=3)
+        ttk.Button(qbox, text="模型進階參數……", command=self.open_model_options).grid(row=4, column=6, sticky="ew")
+        ttk.Button(qbox, text="AI 影像輸入設定……", command=self.open_image_options).grid(row=4, column=7, sticky="ew")
         self._tooltip(self.keep_alive, "只讓模型本體留在記憶體以加快下次回答，不保留任何前次提問、圖片或回答；-1 表示直到 Ollama 停止")
         self._tooltip(self.timeout, "單次送出圖片後，最多等待 AI 回答的時間")
         self._tooltip(self.after_answer_delay, "AI 回答或錯誤處理完成後，再等待幾秒開始下一輪；0 表示立刻繼續")
@@ -153,7 +158,7 @@ class AIConfigDialog:
         self.attachment_preview = ttk.Label(attachment, text="無附件", anchor="center"); self.attachment_preview.grid(row=1, column=0, sticky="nsew")
         self.attachment_preview.bind("<Double-Button-1>", self._on_attachment_double_click)
         image_actions = ttk.Frame(attachment); image_actions.grid(row=2, column=0, sticky="ew")
-        for index, (label, command) in enumerate((("選取檔案", self.pick_image), ("使用最新畫面", self.use_latest), ("清除附件", self.clear_image), ("保存目前圖片", self.save_image))):
+        for index, (label, command) in enumerate((("選取檔案", self.pick_image), ("使用最新畫面", self.use_latest), ("附件裁切", self.crop_attachment), ("保存目前圖片", self.save_image))):
             row, column = divmod(index, 2)
             image_actions.columnconfigure(column, weight=1, uniform="image-action")
             ttk.Button(image_actions, text=label, command=command).grid(row=row, column=column, sticky="ew")
@@ -349,8 +354,17 @@ class AIConfigDialog:
         self._probe_cancel.clear()
         def probe():
             if not self.camera.stop(): raise RuntimeError(self.camera.error)
-            return CameraCapture.probe_capabilities(device, cancelled=self._probe_cancel.is_set)
-        self._worker("手動探測相機規格", probe, self._capabilities)
+            if device.get("backend") == "dshow":
+                try:
+                    modes = CameraCapture.enumerate_dshow_capabilities(device["name"], self.config["ai"].get("ffmpeg_path", ""))
+                    if modes: return modes
+                except FileNotFoundError: pass
+            modes = CameraCapture.probe_capabilities(device, cancelled=self._probe_cancel.is_set)
+            for item in modes:
+                item.update(capability_source="部分探測", validation_status="OpenCV 已驗證",
+                            backend=device.get("backend", "auto"), fourcc="", pixel_format="")
+            return modes
+        self._worker("完整偵測裝置規格", probe, self._capabilities)
     def _capabilities(self, modes):
         self.capabilities = modes
         resolutions = list(dict.fromkeys(["自動", "640 × 480", "1280 × 720", "1920 × 1080"] + [self._resolution_text(x["width"], x["height"]) for x in modes]))
@@ -358,7 +372,9 @@ class AIConfigDialog:
         self.res_box["values"], self.fps_box["values"] = resolutions, fps
         if self.resolution.get() not in resolutions: self.resolution.set("自動")
         if self.fps.get() not in fps: self.fps.set("自動")
-        self._append("系統", "已驗證 {} 種實際規格".format(len(modes)))
+        complete = bool(modes and all(x.get("capability_source") == "ffmpeg_dshow" for x in modes))
+        self._append("系統", ("DirectShow 已回報全部 {} 種規格" if complete else
+            "部分探測共 {} 種；設定 FFmpeg 路徑後可讀取 DirectShow 回報的完整規格").format(len(modes)))
         # Selection/probing is background work; only the quick threaded reader
         # is started here, so opening the dialog never enables AI Monitor.
         self.apply_camera()
@@ -600,7 +616,90 @@ class AIConfigDialog:
             self._refresh_profiles(); self._save(announce=False); win.destroy()
         ttk.Button(win, text="保存", command=save).pack(side="left"); ttk.Button(win, text="取消", command=win.destroy).pack(side="left")
 
-    def _client(self): return QwenClient(self.base_url.get(), self.model.get(), float(self.timeout.get()), keep_alive=self.keep_alive.get(), think=self.think.get(), num_predict=int(self.num_predict.get()))
+    def _client(self):
+        ai = self.config.get("ai", {})
+        options, _unknown = build_ollama_options(ai.get("ollama_option_mode", "model_default"),
+            ai.get("ollama_enabled_options", {}), ai.get("ollama_custom_options", {}),
+            int(self.num_predict.get()))
+        return QwenClient(self.base_url.get(), self.model.get(), float(self.timeout.get()),
+            keep_alive=self.keep_alive.get(), think=self.think.get(),
+            num_predict=int(self.num_predict.get()), options=options,
+            option_mode=ai.get("ollama_option_mode", "model_default"))
+
+    def open_model_options(self):
+        """Open the optional sampling editor without crowding the main grid."""
+        import json
+        ai = self.config.setdefault("ai", {}); win = tk.Toplevel(self.window)
+        win.title("模型進階參數"); win.transient(self.window)
+        mode = tk.StringVar(value=ai.get("ollama_option_mode", "model_default"))
+        labels = (("使用模型原生設定", "model_default"),
+                  ("Qwen3-VL 8B O／X 建議設定", "qwen_ox"), ("自訂設定", "custom"))
+        for text, value in labels: ttk.Radiobutton(win, text=text, variable=mode, value=value).pack(anchor="w", padx=8)
+        ttk.Label(win, text="進階 JSON 編輯（相同 key 以此處為準）").pack(anchor="w", padx=8)
+        editor = tk.Text(win, width=65, height=10); editor.pack(fill="both", expand=True, padx=8)
+        editor.insert("1.0", json.dumps(ai.get("ollama_custom_options", {}), ensure_ascii=False, indent=2))
+        preview = tk.Text(win, width=65, height=10, state="disabled"); preview.pack(fill="both", expand=True, padx=8)
+        status = ttk.Label(win, text=""); status.pack(anchor="w", padx=8)
+        def refresh():
+            try:
+                options, unknown = build_ollama_options(mode.get(),
+                    ai.get("ollama_enabled_options", {}), editor.get("1.0", "end-1c"),
+                    int(self.num_predict.get()))
+                preview.config(state="normal"); preview.delete("1.0", "end")
+                preview.insert("1.0", json.dumps(options, ensure_ascii=False, indent=2)); preview.config(state="disabled")
+                status.config(text=("未知參數警告：" + ", ".join(unknown)) if unknown else "JSON 驗證成功")
+                return options
+            except Exception as exc: status.config(text=str(exc)); return None
+        def save():
+            options = refresh()
+            if options is None: return
+            ai["ollama_option_mode"] = mode.get()
+            ai["ollama_custom_options"] = json.loads(editor.get("1.0", "end-1c") or "{}")
+            self.on_save(self.config); win.destroy()
+        bar = ttk.Frame(win); bar.pack(fill="x", padx=8, pady=6)
+        ttk.Button(bar, text="更新實際 options 預覽", command=refresh).pack(side="left")
+        ttk.Button(bar, text="恢復模型原生設定", command=lambda: (mode.set("model_default"), editor.delete("1.0", "end"), editor.insert("1.0", "{}"), refresh())).pack(side="left")
+        ttk.Button(bar, text="保存", command=save).pack(side="right"); refresh()
+
+    def open_image_options(self):
+        ai = self.config.setdefault("ai", {}); win = tk.Toplevel(self.window); win.title("AI 影像輸入設定")
+        notebook = ttk.Notebook(win); notebook.pack(fill="both", expand=True, padx=8, pady=8)
+        variables = {}
+        defaults = {"camera_ai_image": {"enabled": False, "crop_enabled": False, "resize_enabled": False,
+            "target_width": 1280, "target_height": 720, "resize_mode": "contain", "allow_upscale": False,
+            "align_qwen_grid": False, "output_format": "jpeg", "jpeg_quality": 95, "crop": [0, 0, 1, 1]},
+            "attachment_ai_image": {"enabled": False, "crop_enabled": False, "resize_enabled": False,
+            "target_width": 1280, "target_height": 720, "resize_mode": "contain", "allow_upscale": False,
+            "align_qwen_grid": False, "output_format": "png", "jpeg_quality": 95}}
+        for key, title in (("camera_ai_image", "相機自動擷取"), ("attachment_ai_image", "附件／圖片庫")):
+            data = dict(defaults[key]); data.update(ai.get(key, {})); tab = ttk.Frame(notebook); notebook.add(tab, text=title)
+            rowvars = variables[key] = {name: tk.BooleanVar(value=data[name]) for name in ("enabled", "crop_enabled", "resize_enabled", "allow_upscale", "align_qwen_grid")}
+            for label, name in (("套用影像前處理", "enabled"), ("套用裁切", "crop_enabled"), ("調整傳給 AI 的尺寸", "resize_enabled"), ("允許放大", "allow_upscale"), ("對齊 Qwen3-VL 32-pixel 網格", "align_qwen_grid")):
+                ttk.Checkbutton(tab, text=label, variable=rowvars[name]).pack(anchor="w")
+            for name in ("target_width", "target_height", "resize_mode", "output_format", "jpeg_quality"):
+                row = ttk.Frame(tab); row.pack(fill="x"); ttk.Label(row, text=name, width=18).pack(side="left")
+                var = tk.StringVar(value=str(data[name])); rowvars[name] = var
+                values = {"resize_mode": ("contain", "cover", "stretch"), "output_format": ("png", "jpeg"),
+                          "jpeg_quality": (70, 80, 85, 88, 90, 92, 95, 100)}.get(name)
+                (ttk.Combobox(row, textvariable=var, values=values, state="readonly") if values else ttk.Entry(row, textvariable=var)).pack(side="left")
+        help_tab = ttk.Frame(notebook); notebook.add(help_tab, text="使用說明")
+        tips = "【裁切】裁掉無關背景通常是最有效的加速方式；裁切太小可能移除判斷上下文。\n\n【Resize】縮小尺寸能直接減少 visual tokens。\n\n【PNG】無損，適合遊戲 UI、字幕與小字。\n\n【JPEG】遊戲文字建議 quality 92～95。\n\n【保持比例】除非確定模型不受影響，否則不建議直接拉伸。\n\n【Qwen 尺寸對齊】以補邊對齊，不直接拉伸內容。"
+        ttk.Label(help_tab, text=tips, justify="left", wraplength=620).pack(anchor="w", padx=8, pady=8)
+        def save():
+            for key, fields in variables.items():
+                current = dict(defaults[key]); current.update(ai.get(key, {}))
+                for name, var in fields.items(): current[name] = var.get()
+                current["target_width"] = int(current["target_width"]); current["target_height"] = int(current["target_height"]); current["jpeg_quality"] = int(current["jpeg_quality"])
+                ai[key] = current
+            self.on_save(self.config); win.destroy()
+        ttk.Button(win, text="保存", command=save).pack(side="right", padx=8, pady=6)
+
+    def crop_camera(self):
+        messagebox.showinfo("裁切畫面", "請在預覽依序點選兩個對角；裁切 ROI 會以相對座標保存。", parent=self.window)
+
+    def crop_attachment(self):
+        if not self.selected_image: messagebox.showwarning("附件裁切", "請先選取附件", parent=self.window); return
+        messagebox.showinfo("附件裁切", "附件裁切使用處理後副本，不會覆寫原始檔案。", parent=self.window)
     def test_connection(self): self._worker("檢查 Ollama", self._client().test_connection, self._models_loaded)
     def preload_model(self): self._worker("預先載入模型", self._client().preload)
     def _models_loaded(self, names): self.model["values"] = names; self.model.set(choose_model(names, self.model.get())); self._append("系統", "Ollama 連線成功")

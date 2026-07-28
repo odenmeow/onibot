@@ -6,6 +6,8 @@ names and stable device IDs while numeric indexes remain runtime details.
 """
 import json
 import os
+import re
+import shutil
 import subprocess
 import threading
 import time
@@ -36,6 +38,51 @@ class CameraCapture:
     BACKENDS = {"auto": None, "dshow": "CAP_DSHOW", "msmf": "CAP_MSMF", "v4l2": "CAP_V4L2"}
     COMMON_RESOLUTIONS = ((640, 480), (1280, 720), (1920, 1080))
     COMMON_FPS = (15, 30, 60)
+
+    @staticmethod
+    def ffmpeg_path(configured=""):
+        path = os.path.expanduser(str(configured or "").strip())
+        return path if path and os.path.isfile(path) else shutil.which("ffmpeg")
+
+    @staticmethod
+    def parse_dshow_options(output, backend="dshow"):
+        """Parse every DirectShow mode emitted by FFmpeg (normally stderr)."""
+        modes = []
+        # Examples contain either pixel_format=... or vcodec=..., followed by
+        # min/max s=WxH fps=N; preserve ranges instead of inventing validation.
+        pattern = re.compile(
+            r"(?:pixel_format=(?P<pixel>\S+)|vcodec=(?P<codec>\S+)).*?"
+            r"min s=(?P<minw>\d+)x(?P<minh>\d+) fps=(?P<minfps>[\d.]+)"
+            r"(?: max s=(?P<maxw>\d+)x(?P<maxh>\d+) fps=(?P<maxfps>[\d.]+))?",
+            re.IGNORECASE)
+        for match in pattern.finditer(str(output or "")):
+            item = match.groupdict(); codec = item["codec"] or ""
+            fourcc = codec.upper()[:4] if codec else ""
+            modes.append({"width": int(item["minw"]), "height": int(item["minh"]),
+                "min_width": int(item["minw"]), "min_height": int(item["minh"]),
+                "max_width": int(item["maxw"] or item["minw"]),
+                "max_height": int(item["maxh"] or item["minh"]),
+                "fps": float(item["minfps"]), "min_fps": float(item["minfps"]),
+                "max_fps": float(item["maxfps"] or item["minfps"]),
+                "pixel_format": item["pixel"] or "", "video_codec": codec,
+                "fourcc": fourcc, "backend": backend, "capability_source": "ffmpeg_dshow",
+                "validation_status": "裝置回報"})
+        return modes
+
+    @classmethod
+    def enumerate_dshow_capabilities(cls, device_name, ffmpeg_path="", device_number=None,
+                                     timeout=20):
+        executable = cls.ffmpeg_path(ffmpeg_path)
+        if not executable: raise FileNotFoundError("找不到 FFmpeg；目前只能使用部分探測")
+        source = 'video="{}"'.format(str(device_name).replace('"', '\\"'))
+        command = [executable, "-hide_banner", "-list_options", "true", "-f", "dshow"]
+        if device_number is not None: command += ["-video_device_number", str(int(device_number))]
+        command += ["-i", source]
+        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # list_options commonly exits non-zero because no output is requested.
+        text = process.stderr.decode("utf-8", "replace") + "\n" + process.stdout.decode("utf-8", "replace")
+        return cls.parse_dshow_options(text)
 
     def __init__(self, index=0, capture_factory=None, retry_delay=.1, backend="auto", **settings):
         self.index, self.backend = int(index), str(backend or "auto").lower()
