@@ -47,7 +47,10 @@ class FakeTree:
         return "cell"
 
     def identify_column(self, x):
-        return "#1" if x < 100 else "#2"
+        if x < 100: return "#1"
+        if x < 200: return "#2"
+        if x < 300: return "#3"
+        return "#4"
 
     def identify_row(self, _y):
         return self.rows[0][0] if self.rows else ""
@@ -241,7 +244,7 @@ class AIConfigDialogTests(unittest.TestCase):
         dialog.on_save = mock.Mock(); dialog.history_tree = FakeTree(); dialog._history_by_id = {}
         dialog._refresh_history()
 
-        dialog._on_history_click(SimpleNamespace(x=150, y=5))
+        dialog._on_history_click(SimpleNamespace(x=350, y=5))
 
         self.assertNotIn("judgment_error", item)
         dialog.on_save.assert_not_called()
@@ -275,6 +278,41 @@ class AIConfigDialogTests(unittest.TestCase):
                 self.assertEqual(stream.read(), b"image")
             with open(os.path.join(target, "capture.txt"), encoding="utf-8") as stream:
                 self.assertEqual(stream.read(), "請判斷這張圖")
+
+    def test_started_and_endedat_include_every_history_row_between_them(self):
+        history = [
+            {"history_id": "before"},
+            {"history_id": "start", "export_started": True},
+            {"history_id": "middle-o", "answer": "O"},
+            {"history_id": "middle-x", "answer": "X"},
+            {"history_id": "end", "export_endedat": True},
+            {"history_id": "after"},
+        ]
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {"question_history": history}}
+
+        self.assertEqual(dialog._marked_history_range(),
+                         ["start", "middle-o", "middle-x", "end"])
+
+    def test_judgment_error_is_also_exported_to_directional_wrong_folder(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        with tempfile.TemporaryDirectory() as workspace:
+            source = os.path.join(workspace, "mistake.jpg")
+            with open(source, "wb") as stream: stream.write(b"image")
+            dialog._history_by_id = {
+                "wrong-o": {"history_id": "wrong-o", "tag": "測試", "answer": "O",
+                            "judgment_error": True, "filename": "mistake.jpg",
+                            "path": source, "prompt": "prompt"}
+            }
+
+            exported, skipped, _ = dialog._export_history_rows(["wrong-o"], workspace)
+
+            self.assertEqual((exported, skipped), (1, []))
+            self.assertTrue(os.path.isfile(os.path.join(workspace, "測試", "o", "mistake.jpg")))
+            wrong = os.path.join(workspace, "測試", "wrong", "seemsXasO")
+            self.assertTrue(os.path.isfile(os.path.join(wrong, "mistake.jpg")))
+            with open(os.path.join(wrong, "mistake.txt"), encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), "prompt")
 
     def test_history_export_skips_missing_images_and_non_ox_results(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
