@@ -221,15 +221,19 @@ class AIConfigDialog:
         self.response = tk.Text(console_text, state="disabled", yscrollcommand=console_scroll.set)
         console_scroll.configure(command=self.response.yview)
         console_scroll.pack(side="right", fill="y"); self.response.pack(side="left", fill="both", expand=True)
-        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "包含 AI Monitor 自動判斷與「送出提問」的手動測試；雙擊可查看當次保存的圖片。")
+        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "包含 AI Monitor 自動判斷與「送出提問」的手動測試；點擊「判斷錯誤」欄可標記要讓 AI 日後反省的紀錄，雙擊其他欄位可查看當次保存的圖片。")
         history_box.rowconfigure(0, weight=1)
-        self.history_tree = ttk.Treeview(history_box, columns=("summary",), show="headings", height=5); self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果")
+        self.history_tree = ttk.Treeview(history_box, columns=("incorrect", "summary"), show="headings", height=5)
+        self.history_tree.heading("incorrect", text="判斷錯誤")
+        self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果")
+        self.history_tree.column("incorrect", width=72, minwidth=72, stretch=False, anchor="center")
         history_vertical_scroll = ttk.Scrollbar(history_box, orient="vertical", command=self.history_tree.yview)
         history_horizontal_scroll = ttk.Scrollbar(history_box, orient="horizontal", command=self.history_tree.xview)
         self.history_tree.configure(yscrollcommand=history_vertical_scroll.set, xscrollcommand=history_horizontal_scroll.set)
         self.history_tree.grid(row=0, column=0, sticky="nsew")
         history_vertical_scroll.grid(row=0, column=1, sticky="ns")
         history_horizontal_scroll.grid(row=1, column=0, sticky="ew")
+        self.history_tree.bind("<Button-1>", self._on_history_click)
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
         for content, minimum in ((question, 90), (controls, 62), (console, 120), (history_box, 110)):
             self.right_paned.add(content._section_outer, minsize=minimum, stretch="always")
@@ -896,7 +900,20 @@ class AIConfigDialog:
             stamp = time.strftime("%H:%M:%S", time.localtime(item.get("ended_at", item.get("captured_at", 0))))
             result = "逾時 {} 秒".format(_number_text(item.get("timeout_sec", item.get("elapsed_sec", 0)))) if item.get("error") == "AI 回答逾時" else (item.get("error") or item.get("answer", ""))
             summary = "{}｜{}｜{}｜{}".format(stamp, item.get("tag", ""), item.get("filename", ""), result)
-            self.history_tree.insert("", "end", iid=history_id, values=(summary,))
+            incorrect = "☑" if item.get("judgment_error", False) else "☐"
+            self.history_tree.insert("", "end", iid=history_id, values=(incorrect, summary))
+
+    def _on_history_click(self, event):
+        """Toggle the persisted human-feedback flag only from its checkbox column."""
+        if self.history_tree.identify_region(event.x, event.y) != "cell": return
+        if self.history_tree.identify_column(event.x) != "#1": return
+        row_id = self.history_tree.identify_row(event.y)
+        item = self._history_by_id.get(row_id)
+        if not item: return
+        item["judgment_error"] = not bool(item.get("judgment_error", False))
+        self.on_save(self.config)
+        self._refresh_history()
+        return "break"
 
     def _on_history_double_click(self, event):
         row_id = self.history_tree.identify_row(event.y)
