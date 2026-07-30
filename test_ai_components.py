@@ -238,6 +238,39 @@ class QwenTests(unittest.TestCase):
 
 
 class AIMonitorTests(unittest.TestCase):
+    def test_monitor_waits_for_a_new_camera_frame_each_attempt(self):
+        camera = mock.Mock(); camera.error = ""
+        camera.latest_frame.return_value = object()
+        packets = iter(((object(), 10, 100.0), (object(), 11, 101.0), (object(), 12, 102.0)))
+        camera.latest_frame_after.side_effect = lambda *_args, **_kwargs: next(packets)
+        client = mock.Mock(timeout=30)
+        monitor = AIMonitor(camera, client, [{"enabled": True, "prompt": "p"}])
+        answers = iter(("X", "O", None))
+        def chat(*_args, **_kwargs):
+            answer = next(answers)
+            if answer is None:
+                monitor._stop.set()
+                raise RuntimeError("done")
+            return answer
+        client.chat.side_effect = chat
+        encoded = mock.Mock(); encoded.tobytes.return_value = b"jpg"
+        cv2 = mock.Mock(); cv2.imencode.return_value = (True, encoded)
+        with mock.patch.dict("sys.modules", {"cv2": cv2}):
+            monitor.start()
+            deadline = time.time() + 1
+            while client.chat.call_count < 2 and time.time() < deadline: time.sleep(.01)
+            monitor.stop()
+        self.assertEqual(camera.latest_frame_after.call_args_list[:2], [
+            mock.call(-1, timeout=1.0), mock.call(10, timeout=1.0)])
+        _, _, first = monitor.results.get_nowait()
+        _, _, second = monitor.results.get_nowait()
+        self.assertEqual((first["frame_sequence"], second["frame_sequence"]), (10, 11))
+
+    def test_monitor_uses_updated_crop_settings_on_next_attempt(self):
+        monitor = AIMonitor(mock.Mock(), mock.Mock(), [])
+        monitor.update_image_settings({"crop_enabled": True, "crop": [.1, .2, .8, .9]})
+        self.assertEqual(monitor.image_settings["crop"], [.1, .2, .8, .9])
+
     def test_qwen_timeout_is_classified(self):
         self.assertTrue(is_timeout_error(QwenError("API timeout")))
         self.assertFalse(is_timeout_error(QwenError("無法連線")))

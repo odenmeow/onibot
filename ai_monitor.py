@@ -123,7 +123,7 @@ class AIMonitor:
         self.image_settings = dict(image_settings or {})
         self.alarm_suppression_sec, self._last_error_alarm = alarm_suppression_sec, {}
         self.results, self._lock, self._stop = queue.Queue(), threading.Lock(), threading.Event()
-        self._thread, self._generation = None, 0
+        self._thread, self._generation, self._last_frame_sequence = None, 0, -1
 
     @property
     def enabled(self):
@@ -158,15 +158,23 @@ class AIMonitor:
         tags = ", ".join(str(p.get("name", "")) for p in self.profiles if p.get("enabled"))
         while not self._stop.is_set():
             started, encoded, filename, path = time.time(), None, "", ""
-            frame = self.camera.latest_frame()
+            frame_sequence, frame_captured_at = None, None
+            fresh_reader = getattr(self.camera, "latest_frame_after", None)
+            packet = fresh_reader(self._last_frame_sequence, timeout=1.0) if callable(fresh_reader) else None
+            if isinstance(packet, tuple) and len(packet) == 3:
+                frame, frame_sequence, frame_captured_at = packet
+                if frame_sequence is not None: self._last_frame_sequence = frame_sequence
+            else:
+                frame = self.camera.latest_frame()
             try:
                 if frame is None: raise RuntimeError(self.camera.error or "相機尚無畫面")
                 try:
                     try:
                         if not self.image_settings:
                             raise TypeError("legacy encoder")
+                        with self._lock: image_settings = dict(self.image_settings)
                         encoded, _metadata = prepare_and_encode_ai_image(
-                            frame, self.image_settings, "camera")
+                            frame, image_settings, "camera")
                     except TypeError:
                         # Compatibility for synthetic/custom capture objects.
                         import cv2
@@ -183,7 +191,8 @@ class AIMonitor:
                          "elapsed_sec": ended - started, "text": answer, "answer": answer,
                          "error": "", "filename": filename, "path": path, "tag": tags,
                          "profile_tags": [str(p.get("id", "")) for p in self.profiles if p.get("enabled")],
-                         "mode": "auto", "prompt": prompt}
+                         "mode": "auto", "prompt": prompt, "frame_sequence": frame_sequence,
+                         "frame_captured_at": frame_captured_at}
                 if generation == self._generation and not self._stop.is_set():
                     self.results.put((generation, "answer", value))
                     if self.alarm_on_detected and is_alarm_response(answer) and self.alarm: self.alarm.play("detected")
@@ -194,7 +203,8 @@ class AIMonitor:
                          "elapsed_sec": ended - started, "text": "", "answer": "", "error": error,
                          "filename": filename, "path": path, "tag": tags, "prompt": prompt,
                          "profile_tags": [str(p.get("id", "")) for p in self.profiles if p.get("enabled")],
-                         "mode": "auto",
+                         "mode": "auto", "frame_sequence": frame_sequence,
+                         "frame_captured_at": frame_captured_at,
                          "timeout_sec": self.client.timeout if timeout else None}
                 if generation == self._generation and not self._stop.is_set():
                     self.results.put((generation, "timeout" if timeout else "error", value))
@@ -208,3 +218,7 @@ class AIMonitor:
         with self._lock: self._generation += 1; self._stop.set(); thread = self._thread
         if thread and thread is not threading.current_thread(): thread.join(timeout=.2)
         with self._lock: self._thread = None
+
+    def update_image_settings(self, settings):
+        """Apply a newly saved camera crop to the very next monitor request."""
+        with self._lock: self.image_settings = dict(settings or {})
