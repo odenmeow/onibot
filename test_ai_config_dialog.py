@@ -1,4 +1,6 @@
 import queue
+import os
+import tempfile
 import time
 import unittest
 from types import SimpleNamespace
@@ -210,6 +212,42 @@ class AIConfigDialogTests(unittest.TestCase):
         dialog._refresh_history()
         self.assertEqual(dialog.history_tree.rows, [])
         self.assertEqual(dialog._history_by_id, {})
+
+    def test_selected_history_exports_image_and_prompt_by_tag_and_result(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        with tempfile.TemporaryDirectory() as workspace:
+            source = os.path.join(workspace, "capture.JPG")
+            with open(source, "wb") as stream: stream.write(b"image")
+            dialog._history_by_id = {
+                "row-1": {"history_id": "row-1", "tag": "測試/範本", "answer": "O",
+                          "filename": "capture.JPG", "path": source, "prompt": "請判斷這張圖"}
+            }
+            review_root = os.path.join(workspace, "ReviewFolder")
+
+            exported, skipped, returned_root = dialog._export_history_rows(["row-1"], review_root)
+
+            target = os.path.join(review_root, "測試_範本", "o")
+            self.assertEqual(exported, 1)
+            self.assertEqual(skipped, [])
+            self.assertEqual(returned_root, review_root)
+            with open(os.path.join(target, "capture.jpg"), "rb") as stream:
+                self.assertEqual(stream.read(), b"image")
+            with open(os.path.join(target, "capture.txt"), encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), "請判斷這張圖")
+
+    def test_history_export_skips_missing_images_and_non_ox_results(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog._history_by_id = {
+            "timeout": {"answer": "", "error": "AI 回答逾時", "filename": "timeout.jpg"},
+            "missing": {"answer": "X", "path": "/missing/image.jpg", "filename": "missing.jpg"},
+        }
+        with tempfile.TemporaryDirectory() as review_root:
+            exported, skipped, _root = dialog._export_history_rows(["timeout", "missing"], review_root)
+
+        self.assertEqual(exported, 0)
+        self.assertEqual(len(skipped), 2)
+        self.assertIn("結果不是 O/X", skipped[0])
+        self.assertIn("圖片不存在", skipped[1])
 
     def test_manual_history_filename_has_manual_timestamp_prefix(self):
         filename = AIConfigDialog._manual_filename(0)
