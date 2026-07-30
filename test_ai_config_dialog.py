@@ -257,7 +257,7 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(dialog.history_tree.rows, [])
         self.assertEqual(dialog._history_by_id, {})
 
-    def test_selected_history_exports_image_and_prompt_by_tag_and_result(self):
+    def test_selected_history_exports_only_image_by_tag_and_result(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
         with tempfile.TemporaryDirectory() as workspace:
             source = os.path.join(workspace, "capture.JPG")
@@ -276,8 +276,7 @@ class AIConfigDialogTests(unittest.TestCase):
             self.assertEqual(returned_root, review_root)
             with open(os.path.join(target, "capture.jpg"), "rb") as stream:
                 self.assertEqual(stream.read(), b"image")
-            with open(os.path.join(target, "capture.txt"), encoding="utf-8") as stream:
-                self.assertEqual(stream.read(), "請判斷這張圖")
+            self.assertFalse(os.path.exists(os.path.join(target, "capture.txt")))
 
     def test_started_and_endedat_include_every_history_row_between_them(self):
         history = [
@@ -311,8 +310,7 @@ class AIConfigDialogTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(workspace, "測試", "o", "mistake.jpg")))
             wrong = os.path.join(workspace, "測試", "wrong", "seemsXasO")
             self.assertTrue(os.path.isfile(os.path.join(wrong, "mistake.jpg")))
-            with open(os.path.join(wrong, "mistake.txt"), encoding="utf-8") as stream:
-                self.assertEqual(stream.read(), "prompt")
+            self.assertFalse(os.path.exists(os.path.join(wrong, "mistake.txt")))
 
     def test_history_export_skips_missing_images_and_non_ox_results(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
