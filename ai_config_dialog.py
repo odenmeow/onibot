@@ -224,19 +224,23 @@ class AIConfigDialog:
         self.response = tk.Text(console_text, state="disabled", yscrollcommand=console_scroll.set)
         console_scroll.configure(command=self.response.yview)
         console_scroll.pack(side="right", fill="y"); self.response.pack(side="left", fill="both", expand=True)
-        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "包含 AI Monitor 自動判斷與「送出提問」的手動測試；點擊「判斷錯誤」欄可標記紀錄，雙擊可查看圖片。可用 Ctrl/Shift 選取多列後輸出到 ReviewFolder。")
+        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "點擊 started、endedat 設定輸出範圍（含頭尾與中間所有 O/X）；「判斷錯誤」會另外輸出到 wrong。雙擊可查看圖片。")
         history_box.rowconfigure(0, weight=1)
-        self.history_tree = ttk.Treeview(history_box, columns=("incorrect", "summary"), show="headings", height=5)
+        self.history_tree = ttk.Treeview(history_box, columns=("incorrect", "started", "endedat", "summary"), show="headings", height=5)
         self.history_tree.heading("incorrect", text="判斷錯誤")
+        self.history_tree.heading("started", text="started")
+        self.history_tree.heading("endedat", text="endedat")
         self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果")
         self.history_tree.column("incorrect", width=72, minwidth=72, stretch=False, anchor="center")
+        self.history_tree.column("started", width=58, minwidth=58, stretch=False, anchor="center")
+        self.history_tree.column("endedat", width=58, minwidth=58, stretch=False, anchor="center")
         history_vertical_scroll = ttk.Scrollbar(history_box, orient="vertical", command=self.history_tree.yview)
         history_horizontal_scroll = ttk.Scrollbar(history_box, orient="horizontal", command=self.history_tree.xview)
         self.history_tree.configure(yscrollcommand=history_vertical_scroll.set, xscrollcommand=history_horizontal_scroll.set)
         self.history_tree.grid(row=0, column=0, sticky="nsew")
         history_vertical_scroll.grid(row=0, column=1, sticky="ns")
         history_horizontal_scroll.grid(row=1, column=0, sticky="ew")
-        ttk.Button(history_box, text="輸出選取紀錄到 ReviewFolder",
+        ttk.Button(history_box, text="輸出 started～endedat 到 ReviewFolder",
                    command=self.export_selected_history).grid(row=2, column=0, sticky="ew", pady=(4, 0))
         self.history_tree.bind("<Button-1>", self._on_history_click)
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
@@ -910,16 +914,27 @@ class AIConfigDialog:
             result = "逾時 {} 秒".format(_number_text(item.get("timeout_sec", item.get("elapsed_sec", 0)))) if item.get("error") == "AI 回答逾時" else (item.get("error") or item.get("answer", ""))
             summary = "{}｜{}｜{}｜{}".format(stamp, item.get("tag", ""), item.get("filename", ""), result)
             incorrect = "☑" if item.get("judgment_error", False) else "☐"
-            self.history_tree.insert("", "end", iid=history_id, values=(incorrect, summary))
+            started = "☑" if item.get("export_started", False) else "☐"
+            endedat = "☑" if item.get("export_endedat", False) else "☐"
+            self.history_tree.insert("", "end", iid=history_id, values=(incorrect, started, endedat, summary))
 
     def _on_history_click(self, event):
         """Toggle the persisted human-feedback flag only from its checkbox column."""
         if self.history_tree.identify_region(event.x, event.y) != "cell": return
-        if self.history_tree.identify_column(event.x) != "#1": return
+        column = self.history_tree.identify_column(event.x)
+        if column not in ("#1", "#2", "#3"): return
         row_id = self.history_tree.identify_row(event.y)
         item = self._history_by_id.get(row_id)
         if not item: return
-        item["judgment_error"] = not bool(item.get("judgment_error", False))
+        if column == "#1":
+            item["judgment_error"] = not bool(item.get("judgment_error", False))
+        else:
+            marker = "export_started" if column == "#2" else "export_endedat"
+            enabled = not bool(item.get(marker, False))
+            # A range has one unambiguous start and one end.
+            for history_item in self.config.get("ai", {}).get("question_history", []):
+                if isinstance(history_item, dict): history_item.pop(marker, None)
+            if enabled: item[marker] = True
         self.on_save(self.config)
         self._refresh_history()
         return "break"
@@ -952,6 +967,17 @@ class AIConfigDialog:
         answer = str(item.get("answer", item.get("text", ""))).strip().upper()
         return answer.lower() if answer in ("O", "X") else ""
 
+    def _marked_history_range(self):
+        """Return every history id between the persisted start/end markers."""
+        history = self.config.get("ai", {}).get("question_history", [])
+        if not isinstance(history, list): return []
+        start = next((i for i, item in enumerate(history) if isinstance(item, dict) and item.get("export_started")), None)
+        end = next((i for i, item in enumerate(history) if isinstance(item, dict) and item.get("export_endedat")), None)
+        if start is None or end is None: return []
+        low, high = sorted((start, end))
+        return [str(item.get("history_id")) for item in history[low:high + 1]
+                if isinstance(item, dict) and item.get("history_id")]
+
     def _export_history_rows(self, row_ids, review_root=None):
         """Copy selected O/X captures and their exact prompts into review folders."""
         review_root = review_root or os.path.join(os.path.dirname(__file__), "ReviewFolder")
@@ -981,15 +1007,24 @@ class AIConfigDialog:
                 image_path = os.path.join(target_dir, safe_stem + suffix + extension.lower())
                 prompt_path = os.path.join(target_dir, safe_stem + suffix + ".txt")
             shutil.copy2(source, image_path)
-            with open(prompt_path, "w", encoding="utf-8") as stream:
-                stream.write(str(item.get("prompt", "")))
+            prompt = str(item.get("prompt", ""))
+            with open(prompt_path, "w", encoding="utf-8") as stream: stream.write(prompt)
+            if item.get("judgment_error"):
+                # The answer names what AI appeared to see: O is normally X-as-O.
+                wrong_kind = "seemsXasO" if result == "o" else "seemsOasX"
+                wrong_dir = os.path.join(tag_dir, "wrong", wrong_kind)
+                os.makedirs(wrong_dir, exist_ok=True)
+                shutil.copy2(source, os.path.join(wrong_dir, os.path.basename(image_path)))
+                with open(os.path.join(wrong_dir, os.path.basename(prompt_path)), "w", encoding="utf-8") as stream:
+                    stream.write(prompt)
             exported += 1
         return exported, skipped, review_root
 
     def export_selected_history(self):
-        row_ids = self.history_tree.selection()
+        row_ids = self._marked_history_range()
+        if not row_ids: row_ids = self.history_tree.selection()
         if not row_ids:
-            messagebox.showinfo("輸出複盤資料", "請先在提問歷史中選取一列或多列。\n多選可使用 Ctrl 或 Shift。", parent=self.window)
+            messagebox.showinfo("輸出複盤資料", "請先勾選 started 與 endedat（也可用 Ctrl/Shift 選取列）。", parent=self.window)
             return
         try:
             exported, skipped, review_root = self._export_history_rows(row_ids)
