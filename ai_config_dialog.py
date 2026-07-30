@@ -5,6 +5,8 @@ threads, prompt profiles, draft autosave and image viewing, then persists via
 the save callback supplied by the main application.
 """
 import os
+import re
+import shutil
 import threading
 import time
 import tkinter as tk
@@ -221,7 +223,7 @@ class AIConfigDialog:
         self.response = tk.Text(console_text, state="disabled", yscrollcommand=console_scroll.set)
         console_scroll.configure(command=self.response.yview)
         console_scroll.pack(side="right", fill="y"); self.response.pack(side="left", fill="both", expand=True)
-        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "包含 AI Monitor 自動判斷與「送出提問」的手動測試；點擊「判斷錯誤」欄可標記要讓 AI 日後反省的紀錄，雙擊其他欄位可查看當次保存的圖片。")
+        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "包含 AI Monitor 自動判斷與「送出提問」的手動測試；點擊「判斷錯誤」欄可標記紀錄，雙擊可查看圖片。可用 Ctrl/Shift 選取多列後輸出到 ReviewFolder。")
         history_box.rowconfigure(0, weight=1)
         self.history_tree = ttk.Treeview(history_box, columns=("incorrect", "summary"), show="headings", height=5)
         self.history_tree.heading("incorrect", text="判斷錯誤")
@@ -233,6 +235,8 @@ class AIConfigDialog:
         self.history_tree.grid(row=0, column=0, sticky="nsew")
         history_vertical_scroll.grid(row=0, column=1, sticky="ns")
         history_horizontal_scroll.grid(row=1, column=0, sticky="ew")
+        ttk.Button(history_box, text="輸出選取紀錄到 ReviewFolder",
+                   command=self.export_selected_history).grid(row=2, column=0, sticky="ew", pady=(4, 0))
         self.history_tree.bind("<Button-1>", self._on_history_click)
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
         for content, minimum in ((question, 90), (controls, 62), (console, 120), (history_box, 110)):
@@ -924,6 +928,64 @@ class AIConfigDialog:
             messagebox.showwarning("歷史圖片", "找不到歷史圖片：\n{}".format(item.get("filename") or os.path.basename(path)), parent=self.window)
             return
         self._open_image_viewer("history", path=path, title="歷史圖片", metadata=item)
+
+    @staticmethod
+    def _review_folder_name(value):
+        """Return a cross-platform-safe folder name while keeping the tag readable."""
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value or "").strip())
+        name = name.rstrip(". ")
+        return name or "未命名_tag"
+
+    @staticmethod
+    def _history_result_folder(item):
+        answer = str(item.get("answer", item.get("text", ""))).strip().upper()
+        return answer.lower() if answer in ("O", "X") else ""
+
+    def _export_history_rows(self, row_ids, review_root=None):
+        """Copy selected O/X captures and their exact prompts into review folders."""
+        review_root = review_root or os.path.join(os.path.dirname(__file__), "ReviewFolder")
+        exported, skipped = 0, []
+        for row_id in row_ids:
+            item = self._history_by_id.get(str(row_id))
+            if not item:
+                skipped.append("{} (找不到紀錄)".format(row_id)); continue
+            result = self._history_result_folder(item)
+            source = str(item.get("path", ""))
+            if not result:
+                skipped.append("{} (結果不是 O/X)".format(item.get("filename") or row_id)); continue
+            if not os.path.isfile(source):
+                skipped.append("{} (圖片不存在)".format(item.get("filename") or row_id)); continue
+            tag_dir = os.path.join(review_root, self._review_folder_name(item.get("tag")))
+            # Always expose both result buckets so every tag has the same shape.
+            for bucket in ("x", "o"): os.makedirs(os.path.join(tag_dir, bucket), exist_ok=True)
+            target_dir = os.path.join(tag_dir, result)
+            filename = os.path.basename(item.get("filename") or source)
+            stem, extension = os.path.splitext(filename)
+            if not extension: extension = os.path.splitext(source)[1] or ".jpg"
+            safe_stem = self._review_folder_name(stem)
+            image_path = os.path.join(target_dir, safe_stem + extension.lower())
+            prompt_path = os.path.join(target_dir, safe_stem + ".txt")
+            if os.path.exists(image_path) or os.path.exists(prompt_path):
+                suffix = "_" + self._review_folder_name(str(item.get("history_id", "")))[:8]
+                image_path = os.path.join(target_dir, safe_stem + suffix + extension.lower())
+                prompt_path = os.path.join(target_dir, safe_stem + suffix + ".txt")
+            shutil.copy2(source, image_path)
+            with open(prompt_path, "w", encoding="utf-8") as stream:
+                stream.write(str(item.get("prompt", "")))
+            exported += 1
+        return exported, skipped, review_root
+
+    def export_selected_history(self):
+        row_ids = self.history_tree.selection()
+        if not row_ids:
+            messagebox.showinfo("輸出複盤資料", "請先在提問歷史中選取一列或多列。\n多選可使用 Ctrl 或 Shift。", parent=self.window)
+            return
+        try:
+            exported, skipped, review_root = self._export_history_rows(row_ids)
+        except OSError as exc:
+            messagebox.showerror("輸出失敗", str(exc), parent=self.window); return
+        detail = "\n\n略過：\n" + "\n".join(skipped[:10]) if skipped else ""
+        messagebox.showinfo("輸出複盤資料", "已輸出 {} 筆到：\n{}{}".format(exported, review_root, detail), parent=self.window)
 
     def _append(self, role, value, timestamp=None):
         try: stamp = time.strftime("%H:%M:%S", time.localtime(float(timestamp) if timestamp is not None else time.time()))
