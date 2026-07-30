@@ -293,6 +293,19 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(dialog._marked_history_range(),
                          ["start", "middle-o", "middle-x", "end"])
 
+    @mock.patch("ai_config_dialog.subprocess.Popen")
+    def test_open_review_folder_creates_and_opens_directory(self, popen):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.window = mock.Mock()
+        with tempfile.TemporaryDirectory() as workspace, \
+                mock.patch("ai_config_dialog.__file__", os.path.join(workspace, "ai_config_dialog.py")), \
+                mock.patch("ai_config_dialog.sys.platform", "linux"):
+            dialog.open_review_folder()
+
+            review_root = os.path.join(workspace, "ReviewFolder")
+            self.assertTrue(os.path.isdir(review_root))
+            popen.assert_called_once_with(["xdg-open", review_root])
+
     def test_judgment_error_is_exported_only_to_directional_wrong_folder(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
         with tempfile.TemporaryDirectory() as workspace:

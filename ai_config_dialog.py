@@ -7,6 +7,8 @@ the save callback supplied by the main application.
 import os
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -240,8 +242,13 @@ class AIConfigDialog:
         self.history_tree.grid(row=0, column=0, sticky="nsew")
         history_vertical_scroll.grid(row=0, column=1, sticky="ns")
         history_horizontal_scroll.grid(row=1, column=0, sticky="ew")
-        ttk.Button(history_box, text="輸出 started～endedat 到 ReviewFolder",
-                   command=self.export_selected_history).grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        history_actions = ttk.Frame(history_box)
+        history_actions.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        history_actions.columnconfigure(0, weight=1)
+        ttk.Button(history_actions, text="輸出 started～endedat 到 ReviewFolder",
+                   command=self.export_selected_history).grid(row=0, column=0, sticky="ew")
+        ttk.Button(history_actions, text="開啟 ReviewFolder",
+                   command=self.open_review_folder).grid(row=0, column=1, padx=(4, 0))
         self.history_tree.bind("<Button-1>", self._on_history_click)
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
         for content, minimum in ((question, 90), (controls, 62), (console, 120), (history_box, 110)):
@@ -1026,6 +1033,20 @@ class AIConfigDialog:
             messagebox.showerror("輸出失敗", str(exc), parent=self.window); return
         detail = "\n\n略過：\n" + "\n".join(skipped[:10]) if skipped else ""
         messagebox.showinfo("輸出複盤資料", "已輸出 {} 筆到：\n{}{}".format(exported, review_root, detail), parent=self.window)
+
+    def open_review_folder(self):
+        """Create ReviewFolder when necessary and reveal it in the file manager."""
+        review_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "ReviewFolder"))
+        try:
+            os.makedirs(review_root, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(review_root)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", review_root])
+            else:
+                subprocess.Popen(["xdg-open", review_root])
+        except (OSError, AttributeError) as exc:
+            messagebox.showerror("開啟 ReviewFolder 失敗", str(exc), parent=self.window)
 
     def _append(self, role, value, timestamp=None):
         try: stamp = time.strftime("%H:%M:%S", time.localtime(float(timestamp) if timestamp is not None else time.time()))
