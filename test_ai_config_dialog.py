@@ -127,6 +127,7 @@ class AIConfigDialogTests(unittest.TestCase):
         dialog.fourcc = SimpleNamespace(get=lambda: "自動")
         dialog.camera_status = SimpleNamespace(config=lambda **_kwargs: None)
         dialog.mode = SimpleNamespace(get=lambda: "manual")
+        dialog.camera_view_state = "docked"; dialog.show_latest = mock.Mock()
         results = queue.Queue(); results.put((None, "answer", {"text": "O", "ended_at": 1234}))
         dialog.monitor = SimpleNamespace(results=results)
         dialog._current_device = lambda: None
@@ -137,6 +138,20 @@ class AIConfigDialogTests(unittest.TestCase):
         dialog._poll_preview()
 
         dialog._append.assert_called_once_with("AI", "O", 1234)
+
+    def test_visible_preview_refreshes_even_in_manual_mode(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.camera = SimpleNamespace(actual={}, width=None, height=None, fps=None, fallback={}, backend="dshow", state="connected", error="")
+        dialog.fourcc = SimpleNamespace(get=lambda: "自動")
+        dialog.camera_status = SimpleNamespace(config=lambda **_kwargs: None)
+        dialog.mode = SimpleNamespace(get=lambda: "manual")
+        dialog.camera_view_state = "detached"; dialog.monitor = None
+        dialog._current_device = lambda: None
+        dialog.show_latest = mock.Mock(); dialog._schedule = lambda *_args: None
+
+        dialog._poll_preview()
+
+        dialog.show_latest.assert_called_once_with()
 
     def test_history_keeps_latest_thousand_and_displays_newest_first(self):
         old_history = [{"history_id": str(i), "ended_at": i, "answer": str(i)} for i in range(QUESTION_HISTORY_LIMIT + 5)]

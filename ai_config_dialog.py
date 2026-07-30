@@ -403,7 +403,9 @@ class AIConfigDialog:
         used_text = self._resolution_text(used.get("width"), used.get("height")) + " @ " + (str(used.get("fps")) if used.get("fps") else "自動") + " FPS / " + (used.get("fourcc") or "自動")
         status = "畫面讀取正常" if self.camera.state == "connected" else (self.camera.error or self.camera.state)
         self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}\nfallback 後使用值：{}　實際規格：{}\n狀態：{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(used.get("backend", self.camera.backend), used.get("backend", self.camera.backend)), requested, used_text, actual_text, status))
-        if self.mode.get() == "auto": self.show_latest()
+        # A visible preview is always live.  The old "manual" branch had no
+        # refresh action and therefore left the opening snapshot on screen.
+        if getattr(self, "camera_view_state", "docked") != "hidden": self.show_latest()
         if self.monitor:
             while not self.monitor.results.empty():
                 _, kind, value = self.monitor.results.get_nowait()
@@ -747,6 +749,9 @@ class AIConfigDialog:
             settings = self.config.setdefault("ai", {}).setdefault(settings_key, {})
             settings.update({"enabled": True, "crop_enabled": True, "crop": list(roi)})
             self.on_save(self.config)
+            if settings_key == "camera_ai_image" and self.monitor:
+                self.monitor.update_image_settings(settings)
+                self._append("系統", "相機裁切已更新；AI Monitor 下一張畫面立即套用新範圍")
             if settings_key == "attachment_ai_image":
                 self.attachment_crop_roi = roi
                 self._select_image(self.selected_image, "附件", reset_crop=False)

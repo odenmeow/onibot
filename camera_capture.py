@@ -95,6 +95,7 @@ class CameraCapture:
         self.last_operation = ""; self.fallback = {}
         self._lock = threading.Lock(); self._stop = threading.Event()
         self._thread = self._capture = self._frame = None
+        self._frame_sequence, self._frame_captured_at = 0, None
 
     def _open(self, index, backend=None):
         if self.capture_factory is not None: return self.capture_factory(index)
@@ -232,7 +233,7 @@ class CameraCapture:
             try: ok, frame = cap.read()
             except Exception as exc: self._record_error("cap.read(validate)", exc); raise
             if not ok or frame is None: raise RuntimeError("可開啟裝置但無法讀取 frame；相機可能被 OBS 或其他程式占用")
-            with self._lock: self._frame = frame.copy()
+            self._store_frame(frame)
         self.actual = self._actual(cap)
 
     @property
@@ -259,7 +260,7 @@ class CameraCapture:
                 except Exception as exc:
                     self._record_error("cap.read(loop)", exc); self.state = "read_error"; break
                 if ok and frame is not None:
-                    with self._lock: self._frame = frame.copy()
+                    self._store_frame(frame)
                     self.state, self.error = "connected", ""
                 else:
                     self.state, self.error = "read_error", "可開啟裝置但無法讀取 frame"
@@ -303,6 +304,28 @@ class CameraCapture:
     def latest_frame(self):
         with self._lock: return None if self._frame is None else self._frame.copy()
 
+    def latest_frame_packet(self):
+        """Return a frame plus capture identity so consumers can reject stale frames."""
+        with self._lock:
+            frame = None if self._frame is None else self._frame.copy()
+            return frame, self._frame_sequence, self._frame_captured_at
+
+    def latest_frame_after(self, sequence, timeout=1.0):
+        """Wait briefly for a frame read after ``sequence`` without blocking capture."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while not self._stop.is_set():
+            packet = self.latest_frame_packet()
+            if packet[0] is not None and packet[1] > sequence: return packet
+            if time.monotonic() >= deadline: return packet
+            time.sleep(.005)
+        return self.latest_frame_packet()
+
+    def _store_frame(self, frame):
+        with self._lock:
+            self._frame = frame.copy()
+            self._frame_sequence += 1
+            self._frame_captured_at = time.time()
+
     def configure(self, device_id=_UNSET, index=_UNSET, backend=_UNSET, width=_UNSET, height=_UNSET, fps=_UNSET, fourcc=_UNSET):
         # Compatibility with the former configure(index, backend) positional API.
         if isinstance(device_id, int): device_id, index = _UNSET, device_id
@@ -312,7 +335,9 @@ class CameraCapture:
         if backend is not _UNSET: self.backend = str(backend or "auto").lower()
         for key, value in (("width", width), ("height", height), ("fps", fps), ("fourcc", fourcc)):
             if value is not _UNSET: setattr(self, key, value)
-        with self._lock: self._frame = None
+        with self._lock:
+            self._frame = None
+            self._frame_sequence, self._frame_captured_at = 0, None
         return self.start()
 
     def reconnect(self, index=None): self.configure(index=index)
