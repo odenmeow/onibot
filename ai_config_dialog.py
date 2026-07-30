@@ -224,7 +224,7 @@ class AIConfigDialog:
         self.response = tk.Text(console_text, state="disabled", yscrollcommand=console_scroll.set)
         console_scroll.configure(command=self.response.yview)
         console_scroll.pack(side="right", fill="y"); self.response.pack(side="left", fill="both", expand=True)
-        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "點擊 started、endedat 設定輸出範圍（含頭尾與中間所有 O/X）；「判斷錯誤」會另外輸出到 wrong。雙擊可查看圖片。")
+        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "點擊 started、endedat 設定輸出範圍（含頭尾與中間所有 O/X）；「判斷錯誤」只會輸出到 wrong，不會放入 O/X。雙擊可查看圖片。")
         history_box.rowconfigure(0, weight=1)
         self.history_tree = ttk.Treeview(history_box, columns=("incorrect", "started", "endedat", "summary"), show="headings", height=5)
         self.history_tree.heading("incorrect", text="判斷錯誤")
@@ -995,7 +995,13 @@ class AIConfigDialog:
             tag_dir = os.path.join(review_root, self._review_folder_name(item.get("tag")))
             # Always expose both result buckets so every tag has the same shape.
             for bucket in ("x", "o"): os.makedirs(os.path.join(tag_dir, bucket), exist_ok=True)
-            target_dir = os.path.join(tag_dir, result)
+            if item.get("judgment_error"):
+                # The answer names what AI appeared to see: O is normally X-as-O.
+                wrong_kind = "seemsXasO" if result == "o" else "seemsOasX"
+                target_dir = os.path.join(tag_dir, "wrong", wrong_kind)
+            else:
+                target_dir = os.path.join(tag_dir, result)
+            os.makedirs(target_dir, exist_ok=True)
             filename = os.path.basename(item.get("filename") or source)
             stem, extension = os.path.splitext(filename)
             if not extension: extension = os.path.splitext(source)[1] or ".jpg"
@@ -1005,12 +1011,6 @@ class AIConfigDialog:
                 suffix = "_" + self._review_folder_name(str(item.get("history_id", "")))[:8]
                 image_path = os.path.join(target_dir, safe_stem + suffix + extension.lower())
             shutil.copy2(source, image_path)
-            if item.get("judgment_error"):
-                # The answer names what AI appeared to see: O is normally X-as-O.
-                wrong_kind = "seemsXasO" if result == "o" else "seemsOasX"
-                wrong_dir = os.path.join(tag_dir, "wrong", wrong_kind)
-                os.makedirs(wrong_dir, exist_ok=True)
-                shutil.copy2(source, os.path.join(wrong_dir, os.path.basename(image_path)))
             exported += 1
         return exported, skipped, review_root
 

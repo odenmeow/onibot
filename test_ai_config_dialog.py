@@ -293,7 +293,7 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(dialog._marked_history_range(),
                          ["start", "middle-o", "middle-x", "end"])
 
-    def test_judgment_error_is_also_exported_to_directional_wrong_folder(self):
+    def test_judgment_error_is_exported_only_to_directional_wrong_folder(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
         with tempfile.TemporaryDirectory() as workspace:
             source = os.path.join(workspace, "mistake.jpg")
@@ -307,7 +307,7 @@ class AIConfigDialogTests(unittest.TestCase):
             exported, skipped, _ = dialog._export_history_rows(["wrong-o"], workspace)
 
             self.assertEqual((exported, skipped), (1, []))
-            self.assertTrue(os.path.isfile(os.path.join(workspace, "測試", "o", "mistake.jpg")))
+            self.assertFalse(os.path.isfile(os.path.join(workspace, "測試", "o", "mistake.jpg")))
             wrong = os.path.join(workspace, "測試", "wrong", "seemsXasO")
             self.assertTrue(os.path.isfile(os.path.join(wrong, "mistake.jpg")))
             self.assertFalse(os.path.exists(os.path.join(wrong, "mistake.txt")))
