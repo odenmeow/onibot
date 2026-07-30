@@ -979,7 +979,7 @@ class AIConfigDialog:
                 if isinstance(item, dict) and item.get("history_id")]
 
     def _export_history_rows(self, row_ids, review_root=None):
-        """Copy selected O/X captures and their exact prompts into review folders."""
+        """Copy selected O/X captures into review folders."""
         review_root = review_root or os.path.join(os.path.dirname(__file__), "ReviewFolder")
         exported, skipped = 0, []
         for row_id in row_ids:
@@ -1001,22 +1001,16 @@ class AIConfigDialog:
             if not extension: extension = os.path.splitext(source)[1] or ".jpg"
             safe_stem = self._review_folder_name(stem)
             image_path = os.path.join(target_dir, safe_stem + extension.lower())
-            prompt_path = os.path.join(target_dir, safe_stem + ".txt")
-            if os.path.exists(image_path) or os.path.exists(prompt_path):
+            if os.path.exists(image_path):
                 suffix = "_" + self._review_folder_name(str(item.get("history_id", "")))[:8]
                 image_path = os.path.join(target_dir, safe_stem + suffix + extension.lower())
-                prompt_path = os.path.join(target_dir, safe_stem + suffix + ".txt")
             shutil.copy2(source, image_path)
-            prompt = str(item.get("prompt", ""))
-            with open(prompt_path, "w", encoding="utf-8") as stream: stream.write(prompt)
             if item.get("judgment_error"):
                 # The answer names what AI appeared to see: O is normally X-as-O.
                 wrong_kind = "seemsXasO" if result == "o" else "seemsOasX"
                 wrong_dir = os.path.join(tag_dir, "wrong", wrong_kind)
                 os.makedirs(wrong_dir, exist_ok=True)
                 shutil.copy2(source, os.path.join(wrong_dir, os.path.basename(image_path)))
-                with open(os.path.join(wrong_dir, os.path.basename(prompt_path)), "w", encoding="utf-8") as stream:
-                    stream.write(prompt)
             exported += 1
         return exported, skipped, review_root
 
