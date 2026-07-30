@@ -150,6 +150,47 @@ class AIConfigDialogTests(unittest.TestCase):
 
         dialog._append.assert_called_once_with("AI", "O", 1234)
 
+    def test_monitor_o_opens_its_saved_capture_automatically(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {}}
+        dialog.camera = SimpleNamespace(actual={}, width=None, height=None, fps=None, fallback={}, backend="dshow", state="connected", error="")
+        dialog.fourcc = SimpleNamespace(get=lambda: "自動")
+        dialog.camera_status = SimpleNamespace(config=lambda **_kwargs: None)
+        dialog.mode = SimpleNamespace(get=lambda: "manual")
+        dialog.camera_view_state = "hidden"
+        result = {"text": "O", "ended_at": 1234, "path": "/history/detected.jpg"}
+        results = queue.Queue(); results.put((None, "answer", result))
+        dialog.monitor = SimpleNamespace(results=results)
+        dialog._current_device = lambda: None
+        dialog._record_history = mock.Mock(); dialog._append = mock.Mock()
+        dialog._show_detected_history_image = mock.Mock()
+        dialog._schedule = lambda *_args: None
+
+        dialog._poll_preview()
+
+        dialog._show_detected_history_image.assert_called_once_with(result)
+
+    def test_new_detected_capture_reuses_image_viewer(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog._open_image_viewer = mock.Mock()
+        with mock.patch("ai_config_dialog.os.path.isfile", return_value=True):
+            item = {"path": "/history/new.jpg", "filename": "new.jpg"}
+            dialog._show_detected_history_image(item)
+
+        dialog._open_image_viewer.assert_called_once_with(
+            "history", path="/history/new.jpg", title="偵測到 O", metadata=item)
+
+    def test_space_in_viewer_stops_alarm(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.alarm = SimpleNamespace(stop=mock.Mock())
+        dialog.viewer_status = FakeLabel()
+
+        result = dialog._stop_alarm_from_viewer()
+
+        dialog.alarm.stop.assert_called_once_with()
+        self.assertEqual(result, "break")
+        self.assertIn("鬧鐘已停止", dialog.viewer_status.options["text"])
+
     def test_visible_preview_refreshes_even_in_manual_mode(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
         dialog.camera = SimpleNamespace(actual={}, width=None, height=None, fps=None, fallback={}, backend="dshow", state="connected", error="")

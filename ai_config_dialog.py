@@ -13,7 +13,7 @@ import tkinter as tk
 import uuid
 from tkinter import filedialog, messagebox, ttk
 
-from ai_monitor import AIMonitor, AlarmPlayer, combine_prompt_profiles
+from ai_monitor import AIMonitor, AlarmPlayer, combine_prompt_profiles, is_alarm_response
 from camera_capture import BACKEND_LABELS, TYPE_LABELS, CameraCapture
 from image_library import ImageLibrary
 from ai_image_processing import map_canvas_point_to_image, prepare_and_encode_ai_image
@@ -39,6 +39,7 @@ class AIConfigDialog:
         self.monitor = None; self.devices = []; self.capabilities = []
         self.displayed_frame = self.selected_image = self._selected_item = None
         self.zoom_window = self._viewer_image = self._viewer_photo = None
+        self.viewer_info = self.viewer_status = self.zoom_canvas = None
         self._viewer_scale = self._viewer_offset = self._viewer_drag = None
         self._viewer_after = self.detached_window = self.detached_preview = None
         self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
@@ -419,7 +420,11 @@ class AIConfigDialog:
                 _, kind, value = self.monitor.results.get_nowait()
                 self._record_history(value)
                 ended_at = value.get("ended_at") if isinstance(value, dict) else None
-                if kind == "answer": self._append("AI", value["text"], ended_at)
+                if kind == "answer":
+                    self._append("AI", value["text"], ended_at)
+                    config = getattr(self, "config", {})
+                    if is_alarm_response(value.get("text"), config.get("ai", {}).get("accept_lowercase_o", False)):
+                        self._show_detected_history_image(value)
                 elif kind == "timeout":
                     waited = value.get("timeout_sec", self.timeout.get()); self._append("錯誤", "AI 回答逾時：已等待 {} 秒".format(_number_text(waited)), ended_at); self.monitor_status.config(text="AI Monitor：AI 回答逾時（繼續運行）")
                 else: self._append("錯誤", value.get("error", "未知錯誤"), ended_at); self.monitor_status.config(text="AI Monitor：發生錯誤（繼續運行）")
@@ -929,6 +934,12 @@ class AIConfigDialog:
             return
         self._open_image_viewer("history", path=path, title="歷史圖片", metadata=item)
 
+    def _show_detected_history_image(self, item):
+        """Open an O capture, or replace the image in the existing viewer."""
+        path = item.get("path", "") if isinstance(item, dict) else ""
+        if not os.path.isfile(path): return
+        self._open_image_viewer("history", path=path, title="偵測到 O", metadata=item)
+
     @staticmethod
     def _review_folder_name(value):
         """Return a cross-platform-safe folder name while keeping the tag readable."""
@@ -1041,8 +1052,7 @@ class AIConfigDialog:
         if item: self._open_image_viewer("library", path=item.get("path"), title="圖片庫", metadata=item)
 
     def _open_image_viewer(self, source_type, path=None, frame=None, title="", metadata=None):
-        """Open an explicit image source; never infer it from attachment state."""
-        self._close_image_viewer()
+        """Open an explicit image source, updating an existing viewer in place."""
         try:
             from PIL import Image
             if source_type == "camera":
@@ -1056,17 +1066,32 @@ class AIConfigDialog:
                 filename = os.path.basename(path)
         except Exception as exc:
             messagebox.showerror("圖片無法開啟", str(exc), parent=self.window); return
-        self._viewer_image = image
+        old_image, self._viewer_image = self._viewer_image, image
+        if old_image is not None:
+            try: old_image.close()
+            except Exception: pass
+        if self.zoom_window:
+            self.zoom_window.title(title or "圖片檢視")
+            self.viewer_info.config(text="{}   原始解析度：{}×{}   來源：{}".format(
+                filename, image.width, image.height,
+                {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}.get(source_type, source_type)))
+            self._viewer_scale = None; self._viewer_offset = None; self._viewer_drag = None
+            self._queue_viewer_render()
+            try: self.zoom_window.lift()
+            except tk.TclError: pass
+            return
         viewer = self.zoom_window = tk.Toplevel(self.window); viewer.title(title or "圖片檢視")
         viewer.geometry("900x700"); viewer.minsize(800, 600)
         source_labels = {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}
-        ttk.Label(viewer, text="{}   原始解析度：{}×{}   來源：{}".format(filename, image.width, image.height, source_labels.get(source_type, source_type))).pack(fill="x", padx=8, pady=5)
+        self.viewer_info = ttk.Label(viewer, text="{}   原始解析度：{}×{}   來源：{}".format(filename, image.width, image.height, source_labels.get(source_type, source_type)))
+        self.viewer_info.pack(fill="x", padx=8, pady=5)
         self.viewer_status = ttk.Label(viewer, text="滾輪縮放（以滑鼠位置為中心）｜按住左鍵拖曳圖片")
         self.viewer_status.pack(fill="x", padx=8)
         self.zoom_canvas = tk.Canvas(viewer, highlightthickness=0, background="#202020", cursor="fleur")
         self.zoom_canvas.pack(fill="both", expand=True)
         ttk.Button(viewer, text="關閉", command=self._close_image_viewer).pack(pady=5)
         viewer.bind("<Escape>", lambda _e: self._close_image_viewer())
+        viewer.bind("<space>", self._stop_alarm_from_viewer)
         self.zoom_canvas.bind("<Configure>", self._queue_viewer_render)
         self.zoom_canvas.bind("<MouseWheel>", self._on_viewer_wheel)
         self.zoom_canvas.bind("<Button-4>", self._on_viewer_wheel)
@@ -1076,6 +1101,12 @@ class AIConfigDialog:
         viewer.protocol("WM_DELETE_WINDOW", self._close_image_viewer)
         self._viewer_scale = None; self._viewer_offset = None; self._viewer_drag = None
         self._queue_viewer_render()
+
+    def _stop_alarm_from_viewer(self, _event=None):
+        self.alarm.stop()
+        if self.viewer_status:
+            self.viewer_status.config(text="鬧鐘已停止｜Esc 關閉圖片視窗")
+        return "break"
 
     def _queue_viewer_render(self, _event=None):
         if not self.zoom_window: return
@@ -1152,6 +1183,7 @@ class AIConfigDialog:
             try: self._viewer_image.close()
             except Exception: pass
         self.zoom_window = self._viewer_image = self._viewer_photo = None
+        self.viewer_info = self.viewer_status = self.zoom_canvas = None
         self._viewer_scale = self._viewer_offset = self._viewer_drag = None
     def close(self):
         if self._closed: return
