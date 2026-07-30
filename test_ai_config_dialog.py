@@ -41,6 +41,15 @@ class FakeTree:
     def insert(self, _parent, _where, iid, values):
         self.rows.append((iid, values))
 
+    def identify_region(self, _x, _y):
+        return "cell"
+
+    def identify_column(self, x):
+        return "#1" if x < 100 else "#2"
+
+    def identify_row(self, _y):
+        return self.rows[0][0] if self.rows else ""
+
 
 class FakeColumnTree:
     def __init__(self):
@@ -165,7 +174,34 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(len(history), QUESTION_HISTORY_LIMIT)
         self.assertEqual(history[-1]["history_id"], "new")
         self.assertEqual(dialog.history_tree.rows[0][0], "new")
+        self.assertEqual(dialog.history_tree.rows[0][1][0], "☐")
         self.assertEqual(len(dialog.history_tree.rows), QUESTION_HISTORY_LIMIT)
+
+    def test_history_error_checkbox_persists_human_feedback(self):
+        item = {"history_id": "answer-1", "ended_at": 1, "answer": "O"}
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {"question_history": [item]}}
+        dialog.on_save = mock.Mock(); dialog.history_tree = FakeTree(); dialog._history_by_id = {}
+        dialog._refresh_history()
+
+        result = dialog._on_history_click(SimpleNamespace(x=10, y=5))
+
+        self.assertEqual(result, "break")
+        self.assertTrue(item["judgment_error"])
+        self.assertEqual(dialog.history_tree.rows[0][1][0], "☑")
+        dialog.on_save.assert_called_once_with(dialog.config)
+
+    def test_history_click_outside_checkbox_does_not_change_feedback(self):
+        item = {"history_id": "answer-1", "ended_at": 1, "answer": "O"}
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {"question_history": [item]}}
+        dialog.on_save = mock.Mock(); dialog.history_tree = FakeTree(); dialog._history_by_id = {}
+        dialog._refresh_history()
+
+        dialog._on_history_click(SimpleNamespace(x=150, y=5))
+
+        self.assertNotIn("judgment_error", item)
+        dialog.on_save.assert_not_called()
 
     def test_legacy_malformed_history_loads_without_error(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
