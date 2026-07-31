@@ -104,9 +104,10 @@ class AIConfigDialog:
         ai = config.setdefault("ai", {})
         self.ai_layout = ai.setdefault("ai_window_layout", {})
         self.window.geometry(self.ai_layout.get("geometry", "1180x850"))
+        saved_fourcc = CameraCapture.normalize_fourcc(ai.get("camera_fourcc", ""))
         self.camera = CameraCapture(ai.get("camera_index", 0), backend=ai.get("camera_backend", "dshow"),
             device_id=ai.get("camera_device_id", ""), camera_name=ai.get("camera_name", ""),
-            width=ai.get("camera_width"), height=ai.get("camera_height"), fps=ai.get("camera_fps"), fourcc=ai.get("camera_fourcc"))
+            width=ai.get("camera_width"), height=ai.get("camera_height"), fps=ai.get("camera_fps"), fourcc=saved_fourcc)
         self.library = ImageLibrary(os.path.join(os.path.dirname(__file__), "saved_ai_images"))
         self.alarm = AlarmPlayer(ai.get("sound_path", ""), sound_mode=ai.get("sound_mode", "system_alarm"))
         self.monitor = None; self.devices = []; self.capabilities = []
@@ -121,6 +122,8 @@ class AIConfigDialog:
         self._preview_sequence = -1; self._detached_transform_id = 0
         self._detached_transform_signature = None
         self._detached_last_presented_sequence = -1
+        self._detached_last_presented_transform_id = -1
+        self._detached_canvas_size = None
         self._detached_present_times = []
         self._detached_photo_size = None
         self._detached_captured_at = None
@@ -135,7 +138,7 @@ class AIConfigDialog:
         # previous manual image must never silently affect the next attachment.
         self.attachment_crop_roi = None
         self.profiles = [dict(x) for x in ai.get("prompt_profiles", []) if isinstance(x, dict)]
-        self._build(ai); self._schedule(100, self.scan_cameras)
+        self._build(ai); self._schedule(100, self._connect_saved_camera)
         self._schedule(PREVIEW_INTERVAL_MS, self._poll_preview); self._schedule(STATUS_INTERVAL_MS, self._poll_status)
         self._schedule(80, self._restore_ai_layout)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
@@ -156,7 +159,8 @@ class AIConfigDialog:
         self.fps = tk.StringVar(value=str(ai.get("camera_fps") or "自動")); ttk.Label(preview, text="FPS").grid(row=2, column=6); self.fps_box = ttk.Combobox(preview, textvariable=self.fps, state="readonly", width=7); self.fps_box.grid(row=2, column=7)
         self.res_box["values"] = ("自動", "640 × 480", "1280 × 720", "1920 × 1080")
         self.fps_box["values"] = ("自動", "15", "30", "60")
-        self.fourcc = tk.StringVar(value=ai.get("camera_fourcc", "MJPG") or "自動"); ttk.Label(preview, text="FourCC").grid(row=2, column=8); ttk.Combobox(preview, textvariable=self.fourcc, values=("自動", "MJPG", "YUY2"), width=7).grid(row=2, column=9)
+        fourcc_value = CameraCapture.normalize_fourcc(ai.get("camera_fourcc", "MJPG")) or "自動"
+        self.fourcc = tk.StringVar(value=fourcc_value); ttk.Label(preview, text="FourCC").grid(row=2, column=8); ttk.Combobox(preview, textvariable=self.fourcc, values=("自動", "MJPG", "YUY2"), state="readonly", width=7).grid(row=2, column=9)
         self.scan_camera_button = ttk.Button(preview, text="重新掃描", command=self.scan_cameras); self.scan_camera_button.grid(row=2, column=10)
         self.apply_camera_button = ttk.Button(preview, text="套用相機設定", command=self.apply_camera); self.apply_camera_button.grid(row=2, column=11)
         camera_actions = ttk.Frame(preview); camera_actions.grid(row=3, column=0, columnspan=6, sticky="w")
@@ -451,6 +455,22 @@ class AIConfigDialog:
         for widget in (self.scan_camera_button, self.apply_camera_button, self.probe_camera_button):
             widget.configure(state=state)
 
+    def _connect_saved_camera(self):
+        """Open the persisted device directly; scan only when no identity exists."""
+        ai = self.config["ai"]
+        if not (ai.get("camera_device_id") or ai.get("camera_name")):
+            self.scan_cameras(); return
+        device = {"name": ai.get("camera_name") or "已保存相機",
+            "display_name": "[{}] {}".format(TYPE_LABELS["unknown"], ai.get("camera_name") or "已保存相機"),
+            "device_id": ai.get("camera_device_id", ""), "index": ai.get("camera_index", 0),
+            "runtime_index": ai.get("camera_index", 0), "device_type": "unknown",
+            "backend": ai.get("camera_backend", "dshow"), "frame_verified": False}
+        self.devices = [device]
+        label = "{}｜ID {}｜index {}｜{}｜直接連線".format(device["display_name"], device["device_id"],
+            device["runtime_index"], BACKEND_LABELS.get(device["backend"], device["backend"]))
+        self.camera_box["values"] = (label,); self.camera_box.current(0)
+        self.apply_camera()
+
     def scan_cameras(self):
         if self._busy:
             self._append("系統", "已有工作進行中，請稍候"); return
@@ -518,6 +538,10 @@ class AIConfigDialog:
         self.camera.device_name = device["name"]
         if not self.camera.configure(device_id=device["device_id"], index=device["index"], backend=device["backend"], width=w, height=h, fps=fps, fourcc=fourcc):
             messagebox.showwarning("相機", self.camera.error, parent=self.window); return
+        if not self.camera.wait_until_ready(minimum_frames=3):
+            self.camera.stop()
+            messagebox.showerror("相機設定失敗", self.camera.error or "相機未能收到新 frame", parent=self.window)
+            return
         if save: self.save_settings()
 
     def _poll_status(self):
@@ -528,11 +552,18 @@ class AIConfigDialog:
         requested += " / " + (self.fourcc.get() if self.fourcc.get() != "自動" else "自動")
         used = self.camera.fallback
         used_text = self._resolution_text(used.get("width"), used.get("height")) + " @ " + (str(used.get("fps")) if used.get("fps") else "自動") + " FPS / " + (used.get("fourcc") or "自動")
-        status = "畫面讀取正常" if self.camera.state == "connected" else (self.camera.error or self.camera.state)
+        packet = self.camera.latest_frame_packet() if hasattr(self.camera, "latest_frame_packet") else (None, 0, None)
+        age_ms = max(0.0, (time.time() - packet[2]) * 1000.0) if packet[2] else float("inf")
+        requested_fps = float(self.camera.fps or 0)
+        measured_fps = getattr(self.camera, "capture_fps", 0.0)
+        settled = bool(getattr(self.camera, "_connected_at", None) and time.monotonic() - self.camera._connected_at > 2.0)
+        stalled = self.camera.state == "connected" and (age_ms > 500 or (settled and requested_fps and measured_fps < requested_fps * .5))
+        status = "串流停滯" if stalled else ("畫面讀取正常" if self.camera.state == "connected" else (self.camera.error or self.camera.state))
         buffer_state = getattr(self.camera, "buffer_size_accepted", None)
         buffer_text = "接受" if buffer_state else ("未接受" if buffer_state is False else "未測試")
         warning = "\n⚠ 要求 MJPG，但實際 FourCC 不是 MJPG" if getattr(self.camera, "fourcc", None) == "MJPG" and actual.get("fourcc") != "MJPG" else ""
-        self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}\nfallback 後使用值：{}　實際規格：{}\nCapture FPS：{:.1f}　CAP_PROP_BUFFERSIZE=1：{}\n狀態：{}{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(used.get("backend", self.camera.backend), used.get("backend", self.camera.backend)), requested, used_text, actual_text, getattr(self.camera, "capture_fps", 0.0), buffer_text, status, warning))
+        age_text = "尚未收到" if not math.isfinite(age_ms) else "{:.0f} ms".format(age_ms)
+        self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}\nfallback 後使用值：{}　實際規格：{}\nCapture FPS：{:.1f}　距離最後新 frame：{}　CAP_PROP_BUFFERSIZE=1：{}\n狀態：{}{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(used.get("backend", self.camera.backend), used.get("backend", self.camera.backend)), requested, used_text, actual_text, measured_fps, age_text, buffer_text, status, warning))
         if self.monitor:
             while not self.monitor.results.empty():
                 _, kind, value = self.monitor.results.get_nowait()
@@ -585,10 +616,29 @@ class AIConfigDialog:
         except Exception as exc: self.preview_label.config(text="預覽失敗：{}".format(exc), image="")
 
     def _detached_fit_scale(self, image_width, image_height):
-        # Detached preview uses cover (not stretch/contain), preserving both
-        # 16:9 and 16:10 source aspect ratios while filling the canvas.
-        return max(max(1, self.detached_preview.winfo_width()) / image_width,
+        # Contain the complete source without stretching or cropping.
+        return min(max(1, self.detached_preview.winfo_width()) / image_width,
                    max(1, self.detached_preview.winfo_height()) / image_height)
+
+    def _fit_detached(self):
+        if self.displayed_frame is None or not self.detached_preview: return
+        height, width = self.displayed_frame.shape[:2]
+        scale = self._detached_fit_scale(width, height)
+        self._detached_scale = scale
+        self._detached_offset = ((self.detached_preview.winfo_width() - width * scale) / 2,
+                                 (self.detached_preview.winfo_height() - height * scale) / 2)
+        self._request_detached_render()
+
+    def _on_detached_resize(self, event):
+        new_size = (max(1, event.width), max(1, event.height))
+        old_size = self._detached_canvas_size
+        if old_size and self._detached_scale and self._detached_offset:
+            source_center = ((old_size[0] / 2 - self._detached_offset[0]) / self._detached_scale,
+                             (old_size[1] / 2 - self._detached_offset[1]) / self._detached_scale)
+            self._detached_offset = (new_size[0] / 2 - source_center[0] * self._detached_scale,
+                                     new_size[1] / 2 - source_center[1] * self._detached_scale)
+        self._detached_canvas_size = new_size
+        self._request_detached_render()
 
     def _request_detached_render(self):
         if not self._detached_worker or self.displayed_frame is None or not self.detached_preview: return
@@ -597,7 +647,7 @@ class AIConfigDialog:
         height, width = self.displayed_frame.shape[:2]
         fit_scale = self._detached_fit_scale(width, height)
         source_size = (width, height)
-        if self._detached_scale is None or self._detached_scale < fit_scale or self._detached_source_size != source_size:
+        if self._detached_scale is None or self._detached_source_size != source_size:
             self._detached_scale = fit_scale
             self._detached_offset = ((canvas_width - width * fit_scale) / 2,
                                      (canvas_height - height * fit_scale) / 2)
@@ -614,7 +664,10 @@ class AIConfigDialog:
         result = self._detached_worker.take_result() if self._detached_worker else None
         if not result or not self.detached_preview: return
         transform_id, sequence, captured_at, rgb, x, y, resize_ms = result
-        if transform_id != self._detached_transform_id or sequence <= self._detached_last_presented_sequence: return
+        if transform_id != self._detached_transform_id: return
+        if sequence < self._detached_last_presented_sequence: return
+        if (sequence == self._detached_last_presented_sequence and
+                transform_id <= self._detached_last_presented_transform_id): return
         from PIL import Image, ImageTk
         image = Image.fromarray(rgb); size = image.size
         if self._detached_photo is not None and self._detached_photo_size == size:
@@ -622,6 +675,7 @@ class AIConfigDialog:
         else:
             self._detached_photo = ImageTk.PhotoImage(image); self._detached_photo_size = size
         self._detached_last_presented_sequence = sequence
+        self._detached_last_presented_transform_id = transform_id
         now = time.time(); mono = time.monotonic(); self._detached_present_times.append(mono)
         self._detached_present_times = [t for t in self._detached_present_times if t >= mono - 2.0]
         present_fps = ((len(self._detached_present_times) - 1) /
@@ -673,7 +727,8 @@ class AIConfigDialog:
             self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
             self._detached_item = self._detached_source_size = None
         self._detached_transform_signature = None; self._detached_transform_id = 0
-        self._detached_last_presented_sequence = -1; self._detached_present_times = []
+        self._detached_last_presented_sequence = -1; self._detached_last_presented_transform_id = -1
+        self._detached_present_times = []; self._detached_canvas_size = None
         self._detached_photo_size = None
         self.camera_view_state = state; self.ai_layout["camera_state"] = state
         if state == "docked":
@@ -694,10 +749,11 @@ class AIConfigDialog:
             self.detached_preview.bind("<Button-5>", self._on_detached_wheel)
             self.detached_preview.bind("<ButtonPress-1>", self._start_detached_drag)
             self.detached_preview.bind("<B1-Motion>", self._drag_detached)
-            self.detached_preview.bind("<Configure>", lambda _event: self._request_detached_render())
+            self.detached_preview.bind("<Configure>", self._on_detached_resize)
             actions = ttk.Frame(win); actions.pack(pady=5)
             ttk.Button(actions, text="－", width=4, command=lambda: self._zoom_detached(1 / 1.15)).pack(side="left")
             ttk.Button(actions, text="＋", width=4, command=lambda: self._zoom_detached(1.15)).pack(side="left", padx=4)
+            ttk.Button(actions, text="適合視窗", command=self._fit_detached).pack(side="left", padx=(0, 4))
             ttk.Button(actions, text="重新 Dock", command=lambda: self.set_camera_view("docked")).pack(side="left")
             win.protocol("WM_DELETE_WINDOW", lambda: self.set_camera_view("docked"))
         self._save_ai_layout()
