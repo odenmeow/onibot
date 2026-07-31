@@ -119,6 +119,9 @@ class AIConfigDialog:
         self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
         self._draft_after = self._system_after = None
+        self._camera_switch_after = None; self._camera_switch_generation = 0
+        self._camera_switching = False; self._pending_camera_switch = None
+        self._camera_status_override = ""; self._camera_status_until = 0
         self._sections = {}
         self._probe_cancel = threading.Event()
         # Attachment crops are deliberately per-selection.  A crop saved for a
@@ -149,7 +152,8 @@ class AIConfigDialog:
         self.fps_box["values"] = ("自動", "15", "30", "60")
         self.fourcc = tk.StringVar(value=ai.get("camera_fourcc", "MJPG") or "自動"); ttk.Label(preview, text="FourCC").grid(row=2, column=8); ttk.Combobox(preview, textvariable=self.fourcc, values=("自動", "MJPG", "YUY2"), width=7).grid(row=2, column=9)
         ttk.Button(preview, text="重新掃描", command=self.scan_cameras).grid(row=2, column=10)
-        ttk.Button(preview, text="套用相機設定", command=self.apply_camera).grid(row=2, column=11)
+        self.camera_apply_button = ttk.Button(preview, text="套用相機設定", command=self.apply_camera)
+        self.camera_apply_button.grid(row=2, column=11)
         camera_actions = ttk.Frame(preview); camera_actions.grid(row=3, column=0, columnspan=6, sticky="w")
         ttk.Button(camera_actions, text="顯示預覽", command=lambda: self.set_camera_view("docked")).pack(side="left")
         ttk.Button(camera_actions, text="隱藏預覽", command=lambda: self.set_camera_view("hidden")).pack(side="left")
@@ -469,7 +473,19 @@ class AIConfigDialog:
         except (IndexError, TypeError): return None
     def _device_changed(self, _event=None):
         device = self._current_device()
-        if device: self.camera_status.config(text="已選擇 {}；按「套用相機設定」後才會開啟".format(device["name"]))
+        if not device: return
+        if device.get("device_type") == "virtual":
+            self.camera_status.config(text="已選擇虛擬相機 {}；為避免誤切換，請按「套用相機設定」確認".format(device["name"]))
+            return
+        if self._camera_switch_after:
+            try: self.window.after_cancel(self._camera_switch_after)
+            except tk.TclError: pass
+        self._camera_switch_generation += 1; generation = self._camera_switch_generation
+        self.camera_status.config(text="已選擇 {}；將在 300 ms 後自動切換".format(device["name"]))
+        def debounced():
+            self._camera_switch_after = None
+            if generation == self._camera_switch_generation: self.apply_camera()
+        self._camera_switch_after = self.window.after(300, debounced)
     def probe_capabilities(self):
         device = self._current_device()
         if not device: return
@@ -505,12 +521,84 @@ class AIConfigDialog:
         if not device: messagebox.showwarning("相機", "請先選擇相機裝置", parent=self.window); return
         parts = self.resolution.get().replace(" ", "").split("×"); w, h = (map(int, parts) if len(parts) == 2 else (None, None))
         fps = None if self.fps.get() == "自動" else float(self.fps.get()); fourcc = None if self.fourcc.get() == "自動" else self.fourcc.get()
-        self.camera.device_name = device["name"]
-        if not self.camera.configure(device_id=device["device_id"], index=device["index"], backend=device["backend"], width=w, height=h, fps=fps, fourcc=fourcc):
-            messagebox.showwarning("相機", self.camera.error, parent=self.window); return
-        if save: self.save_settings()
+        request = {"device": dict(device), "width": w, "height": h, "fps": fps,
+                   "fourcc": fourcc, "save": save}
+        self._camera_switch_generation += 1
+        request["generation"] = self._camera_switch_generation
+        self._pending_camera_switch = request
+        if not self._camera_switching: self._start_camera_switch()
+
+    def _start_camera_switch(self):
+        request = self._pending_camera_switch; self._pending_camera_switch = None
+        if not request or self._closed: return
+        self._camera_switching = True; self.camera_apply_button.config(state="disabled")
+        device = request["device"]; old_name = self.camera.device_name or "目前相機"
+        self._camera_status_override = "正在切換相機：{} → {}".format(old_name, device["name"])
+        self.camera_status.config(text=self._camera_status_override)
+        generation = request["generation"]
+        def work():
+            started = time.monotonic(); before_sequence = self.camera.latest_frame_packet()[1]
+            unchanged = ((self.camera.device_id, self.camera.index, self.camera.backend,
+                          self.camera.width, self.camera.height, self.camera.fps, self.camera.fourcc) ==
+                         (device["device_id"], device["index"], device["backend"], request["width"],
+                          request["height"], request["fps"], request["fourcc"]) and
+                         self.camera.running and self.camera.state == "connected")
+            self.camera.device_name = device["name"]
+            ok = self.camera.configure(device_id=device["device_id"], index=device["index"],
+                backend=device["backend"], width=request["width"], height=request["height"],
+                fps=request["fps"], fourcc=request["fourcc"])
+            if not ok: return False, self.camera.error, before_sequence, 0
+            if unchanged: return True, "unchanged", before_sequence, 0
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                if self.camera.state == "connected" and self.camera.latest_frame_packet()[1] > before_sequence:
+                    return True, "", before_sequence, int((time.monotonic() - started) * 1000)
+                if not self.camera.running and self.camera.state != "connected": break
+                time.sleep(.01)
+            return False, self.camera.error or "等待第一張畫面逾時", before_sequence, int((time.monotonic() - started) * 1000)
+        def run():
+            try: result = work()
+            except Exception as exc: result = (False, str(exc), 0, 0)
+            self._schedule(0, lambda: self._finish_camera_switch(request, generation, result))
+        threading.Thread(target=run, daemon=True, name="ai-camera-switch").start()
+
+    def _finish_camera_switch(self, request, generation, result):
+        if self._closed: return
+        current = generation == self._camera_switch_generation
+        self._camera_switching = False; self.camera_apply_button.config(state="normal")
+        ok, error, _sequence, total_ms = result; device = request["device"]
+        if current:
+            if ok:
+                timings = self.camera.switch_timings
+                if error == "unchanged":
+                    self._camera_status_override = "相機設定未變更，目前畫面已在運行"
+                else:
+                    self._camera_status_override = ("相機切換完成：{}\n開啟 {} ms／第一張畫面 {} ms／總計 {} ms".format(
+                        device["name"], timings.get("open_ms", 0),
+                        timings.get("first_frame_ms", 0), total_ms))
+                    logging.getLogger(__name__).info(
+                        "[camera] switch_complete device=%s open=%dms first_frame=%dms total=%dms",
+                        device["name"], timings.get("open_ms", 0), timings.get("first_frame_ms", 0), total_ms)
+                if request["save"]: self.save_settings()
+            else:
+                attempt = self.camera.last_attempt
+                spec = "{} / {} / {} / {} FPS".format(
+                    BACKEND_LABELS.get(attempt.get("backend"), attempt.get("backend", "自動")),
+                    attempt.get("fourcc") or "自動", self._resolution_text(attempt.get("width"), attempt.get("height")),
+                    attempt.get("fps") or "自動")
+                self._camera_status_override = "相機切換失敗：{}\n最後嘗試：{}\n原因：{}".format(device["name"], spec, error)
+            self.camera_status.config(text=self._camera_status_override)
+            self._camera_status_until = time.monotonic() + 3
+        if self._pending_camera_switch: self._start_camera_switch()
 
     def _poll_status(self):
+        if getattr(self, "_camera_switching", False):
+            detail = self.camera.operation_status
+            self.camera_status.config(text=self._camera_status_override + ("\n" + detail if detail else ""))
+            self._schedule(STATUS_INTERVAL_MS, self._poll_status); return
+        if time.monotonic() < getattr(self, "_camera_status_until", 0):
+            self.camera_status.config(text=self._camera_status_override)
+            self._schedule(STATUS_INTERVAL_MS, self._poll_status); return
         d = self._current_device() or {}; actual = self.camera.actual
         requested = self._resolution_text(self.camera.width, self.camera.height) + " @ " + (str(self.camera.fps) if self.camera.fps else "自動") + " FPS"
         actual_fps = "{:.1f}".format(actual["fps"]) if actual.get("fps") else "驅動未回報"
