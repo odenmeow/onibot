@@ -194,7 +194,7 @@ class AIConfigDialogTests(unittest.TestCase):
 
         dialog._poll_status()
 
-        dialog._show_detected_history_image.assert_called_once_with(result)
+        dialog._show_detected_history_image.assert_called_once_with(result, focus=True)
 
     def test_new_detected_capture_reuses_image_viewer(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
@@ -204,7 +204,47 @@ class AIConfigDialogTests(unittest.TestCase):
             dialog._show_detected_history_image(item)
 
         dialog._open_image_viewer.assert_called_once_with(
-            "history", path="/history/new.jpg", title="偵測到 O", metadata=item)
+            "history", path="/history/new.jpg", title="偵測到 O", metadata=item,
+            lift_existing=False)
+
+    def test_continuous_o_updates_image_without_repeated_focus(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {}}
+        dialog.camera = SimpleNamespace(actual={}, width=None, height=None, fps=None, fallback={}, backend="dshow", state="connected", error="")
+        dialog.fourcc = SimpleNamespace(get=lambda: "自動")
+        dialog.camera_status = SimpleNamespace(config=lambda **_kwargs: None)
+        dialog.camera_view_state = "hidden"
+        results = queue.Queue()
+        first, second = {"text": "O", "path": "/one.jpg"}, {"text": "O", "path": "/two.jpg"}
+        results.put((None, "answer", first)); results.put((None, "answer", second))
+        dialog.monitor = SimpleNamespace(results=results)
+        dialog._current_device = lambda: None
+        dialog._record_history = mock.Mock(); dialog._append = mock.Mock()
+        dialog._show_detected_history_image = mock.Mock()
+        dialog._schedule = lambda *_args: None
+
+        dialog._poll_status()
+
+        self.assertEqual(dialog._show_detected_history_image.call_args_list, [
+            mock.call(first, focus=True), mock.call(second, focus=False)])
+
+    def test_non_o_resets_detected_edge(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {}}
+        dialog.camera = SimpleNamespace(actual={}, width=None, height=None, fps=None, fallback={}, backend="dshow", state="connected", error="")
+        dialog.fourcc = SimpleNamespace(get=lambda: "自動")
+        dialog.camera_status = SimpleNamespace(config=lambda **_kwargs: None)
+        dialog.camera_view_state = "hidden"
+        results = queue.Queue()
+        for text in ("O", "X", "O"): results.put((None, "answer", {"text": text, "path": "/image.jpg"}))
+        dialog.monitor = SimpleNamespace(results=results)
+        dialog._current_device = lambda: None
+        dialog._record_history = mock.Mock(); dialog._append = mock.Mock()
+        dialog._show_detected_history_image = mock.Mock(); dialog._schedule = lambda *_args: None
+
+        dialog._poll_status()
+
+        self.assertEqual([call.kwargs["focus"] for call in dialog._show_detected_history_image.call_args_list], [True, True])
 
     def test_space_in_viewer_stops_alarm(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)

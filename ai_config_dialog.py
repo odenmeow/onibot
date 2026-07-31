@@ -27,6 +27,7 @@ from ollama_runtime_options import build_ollama_options, QWEN_OX_PRESET
 QUESTION_HISTORY_LIMIT = 1000
 PREVIEW_INTERVAL_MS = 33
 STATUS_INTERVAL_MS = 500
+DETECTED_FOCUS_COOLDOWN_SEC = 5.0
 
 
 class DetachedPreviewWorker:
@@ -118,6 +119,8 @@ class AIConfigDialog:
         self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
         self._draft_after = self._system_after = None
+        self._detected_o_active = False
+        self._last_detected_focus_at = float("-inf")
         self._sections = {}
         self._probe_cancel = threading.Event()
         # Attachment crops are deliberately per-selection.  A crop saved for a
@@ -178,6 +181,10 @@ class AIConfigDialog:
         self.alarm_on_error = tk.BooleanVar(value=ai.get("alarm_on_error", False))
         for col, (label, variable, tip) in enumerate((("偵測到 O 時警報", self.alarm_on_detected, "AI 回答 O 時持續警報"), ("AI 回答逾時時警報", self.alarm_on_timeout, "AI 等待超過設定秒數時短促警報"), ("系統錯誤時警報", self.alarm_on_error, "相機、Ollama 或圖片錯誤時提示；相同錯誤 10 秒內一次"))):
             widget = ttk.Checkbutton(qbox, text=label, variable=variable); widget.grid(row=2, column=col, columnspan=2, sticky="w"); self._tooltip(widget, tip)
+        self.focus_window_on_detected = tk.BooleanVar(value=ai.get("focus_window_on_detected", True))
+        focus_detected = ttk.Checkbutton(qbox, text="偵測到 O 時跳出並聚焦", variable=self.focus_window_on_detected)
+        focus_detected.grid(row=2, column=4, columnspan=2, sticky="w")
+        self._tooltip(focus_detected, "僅在判斷由非 O 變成 O 時將最新圖片帶到前景；連續 O 不會重複搶焦點")
         ttk.Label(qbox, text="警報聲音").grid(row=3, column=0, sticky="e")
         self.sound_mode = tk.StringVar(value=ai.get("sound_mode", "system_alarm")); self.sound_mode_box = ttk.Combobox(qbox, state="readonly", width=14, textvariable=self.sound_mode,
             values=("系統警報聲", "系統提示音", "自訂聲音檔", "靜音")); self.sound_mode_box.grid(row=3, column=1, sticky="w"); self.sound_mode_box.bind("<<ComboboxSelected>>", self._sound_mode_changed)
@@ -523,8 +530,14 @@ class AIConfigDialog:
                 if kind == "answer":
                     self._append("AI", value["text"], ended_at)
                     config = getattr(self, "config", {})
-                    if is_alarm_response(value.get("text"), config.get("ai", {}).get("accept_lowercase_o", False)):
-                        self._show_detected_history_image(value)
+                    detected = is_alarm_response(value.get("text"), config.get("ai", {}).get("accept_lowercase_o", False))
+                    if detected:
+                        was_detected = getattr(self, "_detected_o_active", False)
+                        self._detected_o_active = True
+                        self._show_detected_history_image(value, focus=not was_detected)
+                    else:
+                        # A subsequent O is a new edge and may alert again.
+                        self._detected_o_active = False
                 elif kind == "timeout":
                     waited = value.get("timeout_sec", self.timeout.get()); self._append("錯誤", "AI 回答逾時：已等待 {} 秒".format(_number_text(waited)), ended_at); self.monitor_status.config(text="AI Monitor：AI 回答逾時（繼續運行）")
                 else: self._append("錯誤", value.get("error", "未知錯誤"), ended_at); self.monitor_status.config(text="AI Monitor：發生錯誤（繼續運行）")
@@ -720,7 +733,7 @@ class AIConfigDialog:
         if timeout <= 0 or delay < 0: raise ValueError("AI 回答逾時必須大於 0，回答完成後等待不可小於 0")
         if num_predict < 1024: raise ValueError("最多輸出 token 不可小於 1024（Qwen3-VL 可能先使用內部思考 token）")
         parts = self.resolution.get().replace(" ", "").split("×"); w, h = (map(int, parts) if len(parts) == 2 else (None, None))
-        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "keep_alive": self.keep_alive.get().strip() or "30m", "think": self.think.get(), "num_predict": num_predict, "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "after_answer_delay": delay, "alarm_on_detected": self.alarm_on_detected.get(), "alarm_on_timeout": self.alarm_on_timeout.get(), "alarm_on_error": self.alarm_on_error.get(), "sound_mode": self._sound_mode_key(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
+        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "keep_alive": self.keep_alive.get().strip() or "30m", "think": self.think.get(), "num_predict": num_predict, "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "after_answer_delay": delay, "alarm_on_detected": self.alarm_on_detected.get(), "alarm_on_timeout": self.alarm_on_timeout.get(), "alarm_on_error": self.alarm_on_error.get(), "focus_window_on_detected": self.focus_window_on_detected.get(), "sound_mode": self._sound_mode_key(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
         ai.pop("interval", None); ai.pop("sound_enabled", None)
         self.on_save(self.config)
         if announce: self._append("系統", "設定已保存")
@@ -1086,11 +1099,43 @@ class AIConfigDialog:
             return
         self._open_image_viewer("history", path=path, title="歷史圖片", metadata=item)
 
-    def _show_detected_history_image(self, item):
+    def _show_detected_history_image(self, item, focus=False):
         """Open an O capture, or replace the image in the existing viewer."""
         path = item.get("path", "") if isinstance(item, dict) else ""
         if not os.path.isfile(path): return
-        self._open_image_viewer("history", path=path, title="偵測到 O", metadata=item)
+        created = self._open_image_viewer("history", path=path, title="偵測到 O", metadata=item,
+                                          lift_existing=False)
+        enabled = getattr(self, "focus_window_on_detected", None)
+        if focus and (enabled is None or enabled.get()):
+            now = time.monotonic()
+            if now - getattr(self, "_last_detected_focus_at", float("-inf")) >= DETECTED_FOCUS_COOLDOWN_SEC:
+                self._last_detected_focus_at = now
+                self.zoom_window.after(80 if created else 0, self._focus_detected_viewer)
+
+    def _focus_detected_viewer(self):
+        """Restore and temporarily raise the detected-image viewer."""
+        viewer = self.zoom_window
+        if not viewer: return
+        try:
+            if viewer.state() == "iconic": viewer.deiconify()
+            viewer.lift()
+            viewer.attributes("-topmost", True)
+            viewer.focus_force()
+            if sys.platform == "win32":
+                import ctypes
+                user32 = ctypes.windll.user32
+                hwnd = viewer.winfo_id()
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+            viewer.after(250, lambda: self._clear_viewer_topmost(viewer))
+        except (tk.TclError, OSError, AttributeError):
+            self._clear_viewer_topmost(viewer)
+
+    @staticmethod
+    def _clear_viewer_topmost(viewer):
+        try: viewer.attributes("-topmost", False)
+        except tk.TclError: pass
 
     @staticmethod
     def _review_folder_name(value):
@@ -1255,7 +1300,8 @@ class AIConfigDialog:
         item = next((x for x in self.library.list() if x.get("id") == row_id), None)
         if item: self._open_image_viewer("library", path=item.get("path"), title="圖片庫", metadata=item)
 
-    def _open_image_viewer(self, source_type, path=None, frame=None, title="", metadata=None):
+    def _open_image_viewer(self, source_type, path=None, frame=None, title="", metadata=None,
+                           lift_existing=True):
         """Open an explicit image source, updating an existing viewer in place."""
         try:
             from PIL import Image
@@ -1282,9 +1328,10 @@ class AIConfigDialog:
                 {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}.get(source_type, source_type)))
             self._viewer_scale = None; self._viewer_offset = None; self._viewer_drag = None
             self._queue_viewer_render()
-            try: self.zoom_window.lift()
-            except tk.TclError: pass
-            return
+            if lift_existing:
+                try: self.zoom_window.lift()
+                except tk.TclError: pass
+            return False
         viewer = self.zoom_window = tk.Toplevel(self.window); viewer.title(title or "圖片檢視")
         viewer.geometry("900x700"); viewer.minsize(800, 600)
         source_labels = {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}
@@ -1308,6 +1355,7 @@ class AIConfigDialog:
         viewer.protocol("WM_DELETE_WINDOW", self._close_image_viewer)
         self._viewer_scale = None; self._viewer_offset = None; self._viewer_drag = None
         self._queue_viewer_render()
+        return True
 
     def _stop_alarm_from_viewer(self, _event=None):
         self.alarm.stop()
