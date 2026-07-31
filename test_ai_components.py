@@ -97,9 +97,34 @@ class CameraTests(unittest.TestCase):
     def test_probe_releases_every_capture(self):
         captures = []
         def factory(index):
-            cap = FakeCapture(index == 2); captures.append(cap); return cap
+            cap = FakeCapture(index == 2, object() if index == 2 else None); captures.append(cap); return cap
         self.assertEqual(CameraCapture.probe(4, factory), [2])
         self.assertTrue(all(cap.released for cap in captures))
+
+    def test_probe_retries_and_requires_a_real_frame(self):
+        captures = []
+        def factory(_index):
+            cap = FakeCapture(True, object() if len(captures) == 2 else None)
+            captures.append(cap); return cap
+        with mock.patch.object(CameraCapture, "DISCOVERY_RETRY_DELAY", 0), \
+             mock.patch.object(CameraCapture, "RELEASE_GRACE_PERIOD", 0):
+            self.assertEqual(CameraCapture.probe(1, factory), [0])
+        self.assertEqual(len(captures), 3)
+        self.assertTrue(all(cap.released for cap in captures))
+
+    def test_windows_discovery_uses_backend_order_and_verified_metadata(self):
+        outcomes = {(0, "dshow"): False, (0, "msmf"): True}
+        with mock.patch.object(camera_capture.os, "name", "nt"), \
+             mock.patch.object(CameraCapture, "enumerate_dshow_devices", return_value=["USB Video"]), \
+             mock.patch.object(CameraCapture, "_windows_names", return_value=[
+                 {"FriendlyName": "USB Video", "InstanceId": "USB\\VID_1234", "Class": "MEDIA"}]), \
+             mock.patch.object(CameraCapture, "_probe_candidate",
+                 side_effect=lambda index, _factory, backend: outcomes.get((index, backend), False)) as probe:
+            devices = CameraCapture.discover(maximum=1)
+        self.assertEqual([call.args[2] for call in probe.call_args_list], ["dshow", "msmf"])
+        self.assertEqual(devices[0]["device_id"], "USB\\VID_1234")
+        self.assertEqual(devices[0]["backend"], "msmf")
+        self.assertTrue(devices[0]["frame_verified"])
 
     def test_open_failure_has_index_and_backend(self):
         reader = CameraCapture(3, lambda _i: FakeCapture(False), backend="dshow"); reader.start()
