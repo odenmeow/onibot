@@ -79,17 +79,36 @@ class AIConfigDialogTests(unittest.TestCase):
         frame[:, :, 0] = 255  # BGR blue becomes RGB blue.
         worker = DetachedPreviewWorker()
         try:
-            worker.submit((1, 9, frame, (800, 600), 10.0, (-9000.0, -5000.0)))
+            worker.submit((1, 9, time.time(), frame, (800, 600), 10.0, (-9000.0, -5000.0)))
             deadline = time.monotonic() + 1.0; result = None
             while result is None and time.monotonic() < deadline:
                 result = worker.take_result()
                 if result is None: time.sleep(.005)
             self.assertIsNotNone(result)
-            _request_id, sequence, rgb, _x, _y = result
+            _transform_id, sequence, _captured_at, rgb, _x, _y, resize_ms = result
             self.assertEqual(sequence, 9)
+            self.assertGreaterEqual(resize_ms, 0)
             self.assertLessEqual(rgb.shape[0], 610)
             self.assertLessEqual(rgb.shape[1], 810)
             self.assertEqual(tuple(rgb[0, 0]), (0, 0, 255))
+        finally:
+            worker.stop()
+
+    def test_detached_worker_finishes_active_resize_before_latest_waiting_frame(self):
+        try: import numpy as np
+        except ImportError: self.skipTest("NumPy/OpenCV preview dependencies are optional")
+        worker = DetachedPreviewWorker()
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        try:
+            worker.submit((4, 1, time.time(), frame, (160, 120), 1.0, (0.0, 0.0)))
+            time.sleep(.01)
+            worker.submit((4, 2, time.time(), frame, (160, 120), 1.0, (0.0, 0.0)))
+            deadline = time.monotonic() + 1.0; sequences = []
+            while time.monotonic() < deadline and 2 not in sequences:
+                result = worker.take_result()
+                if result: sequences.append(result[1])
+                time.sleep(.002)
+            self.assertIn(2, sequences)
         finally:
             worker.stop()
 

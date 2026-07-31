@@ -41,12 +41,14 @@ class DetachedPreviewWorker:
         self._condition = threading.Condition()
         self._request = self._result = None
         self._stopped = False
+        self.dropped_frames = 0
         self._thread = threading.Thread(target=self._run, name="detached-preview", daemon=True)
         self._thread.start()
 
     def submit(self, request):
         with self._condition:
             if self._stopped: return
+            if self._request is not None: self.dropped_frames += 1
             self._request = request
             self._condition.notify()
 
@@ -69,7 +71,7 @@ class DetachedPreviewWorker:
                 while self._request is None and not self._stopped: self._condition.wait()
                 if self._stopped: return
                 request, self._request = self._request, None
-            request_id, sequence, frame, canvas_size, scale, offset = request
+            transform_id, sequence, captured_at, frame, canvas_size, scale, offset = request
             height, width = frame.shape[:2]; canvas_width, canvas_height = canvas_size
             ox, oy = offset
             # Inverse-map the canvas viewport into the source.  At high zoom
@@ -82,16 +84,17 @@ class DetachedPreviewWorker:
             if sx1 <= sx0 or sy1 <= sy0: continue
             roi = frame[sy0:sy1, sx0:sx1]
             target = (max(1, round((sx1 - sx0) * scale)), max(1, round((sy1 - sy0) * scale)))
-            with self._condition:
-                # A newer frame/transform is already waiting; do not spend a
-                # resize on a result the main thread would immediately drop.
-                if self._request is not None: continue
             interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+            started = time.perf_counter()
             resized = cv2.resize(roi, target, interpolation=interpolation)
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            result = (request_id, sequence, rgb, round(ox + sx0 * scale), round(oy + sy0 * scale))
+            resize_ms = (time.perf_counter() - started) * 1000.0
+            result = (transform_id, sequence, captured_at, rgb,
+                      round(ox + sx0 * scale), round(oy + sy0 * scale), resize_ms)
             with self._condition:
-                if not self._stopped: self._result = result
+                if not self._stopped:
+                    if self._result is not None: self.dropped_frames += 1
+                    self._result = result
 
 
 class AIConfigDialog:
@@ -115,7 +118,12 @@ class AIConfigDialog:
         self._viewer_after = self.detached_window = self.detached_preview = None
         self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
         self._detached_worker = self._detached_item = self._detached_source_size = None
-        self._preview_sequence = -1; self._detached_request_id = 0
+        self._preview_sequence = -1; self._detached_transform_id = 0
+        self._detached_transform_signature = None
+        self._detached_last_presented_sequence = -1
+        self._detached_present_times = []
+        self._detached_photo_size = None
+        self._detached_captured_at = None
         self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
         self._draft_after = self._system_after = None
@@ -521,7 +529,10 @@ class AIConfigDialog:
         used = self.camera.fallback
         used_text = self._resolution_text(used.get("width"), used.get("height")) + " @ " + (str(used.get("fps")) if used.get("fps") else "自動") + " FPS / " + (used.get("fourcc") or "自動")
         status = "畫面讀取正常" if self.camera.state == "connected" else (self.camera.error or self.camera.state)
-        self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}\nfallback 後使用值：{}　實際規格：{}\n狀態：{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(used.get("backend", self.camera.backend), used.get("backend", self.camera.backend)), requested, used_text, actual_text, status))
+        buffer_state = getattr(self.camera, "buffer_size_accepted", None)
+        buffer_text = "接受" if buffer_state else ("未接受" if buffer_state is False else "未測試")
+        warning = "\n⚠ 要求 MJPG，但實際 FourCC 不是 MJPG" if getattr(self.camera, "fourcc", None) == "MJPG" and actual.get("fourcc") != "MJPG" else ""
+        self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}\nfallback 後使用值：{}　實際規格：{}\nCapture FPS：{:.1f}　CAP_PROP_BUFFERSIZE=1：{}\n狀態：{}{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(used.get("backend", self.camera.backend), used.get("backend", self.camera.backend)), requested, used_text, actual_text, getattr(self.camera, "capture_fps", 0.0), buffer_text, status, warning))
         if self.monitor:
             while not self.monitor.results.empty():
                 _, kind, value = self.monitor.results.get_nowait()
@@ -561,6 +572,7 @@ class AIConfigDialog:
         if frame is None: return
         # latest_frame_packet() already returns an isolated snapshot.
         self.displayed_frame = frame
+        if packet is not None: self._detached_captured_at = packet[2]
         try:
             from PIL import Image, ImageTk
             import cv2
@@ -589,19 +601,37 @@ class AIConfigDialog:
             self._detached_scale = fit_scale
             self._detached_offset = ((canvas_width - width * fit_scale) / 2,
                                      (canvas_height - height * fit_scale) / 2)
-        self._detached_source_size = source_size; self._detached_request_id += 1
-        self._detached_worker.submit((self._detached_request_id, self._preview_sequence,
-            self.displayed_frame, (canvas_width, canvas_height), self._detached_scale, self._detached_offset))
-        if hasattr(self, "detached_status"):
-            self.detached_status.config(text="滾輪或 ＋／－ 縮放｜按住左鍵拖曳｜{:.0f}%".format(self._detached_scale * 100))
+        self._detached_source_size = source_size
+        signature = (source_size, canvas_width, canvas_height, self._detached_scale, self._detached_offset)
+        if signature != self._detached_transform_signature:
+            self._detached_transform_signature = signature
+            self._detached_transform_id += 1
+        self._detached_worker.submit((self._detached_transform_id, self._preview_sequence,
+            self._detached_captured_at, self.displayed_frame, (canvas_width, canvas_height),
+            self._detached_scale, self._detached_offset))
 
     def _publish_detached_result(self):
         result = self._detached_worker.take_result() if self._detached_worker else None
         if not result or not self.detached_preview: return
-        request_id, _sequence, rgb, x, y = result
-        if request_id != self._detached_request_id: return
+        transform_id, sequence, captured_at, rgb, x, y, resize_ms = result
+        if transform_id != self._detached_transform_id or sequence <= self._detached_last_presented_sequence: return
         from PIL import Image, ImageTk
-        self._detached_photo = ImageTk.PhotoImage(Image.fromarray(rgb))
+        image = Image.fromarray(rgb); size = image.size
+        if self._detached_photo is not None and self._detached_photo_size == size:
+            self._detached_photo.paste(image)
+        else:
+            self._detached_photo = ImageTk.PhotoImage(image); self._detached_photo_size = size
+        self._detached_last_presented_sequence = sequence
+        now = time.time(); mono = time.monotonic(); self._detached_present_times.append(mono)
+        self._detached_present_times = [t for t in self._detached_present_times if t >= mono - 2.0]
+        present_fps = ((len(self._detached_present_times) - 1) /
+                       (self._detached_present_times[-1] - self._detached_present_times[0])) if len(self._detached_present_times) > 1 else 0.0
+        age_ms = max(0.0, (now - captured_at) * 1000.0) if captured_at else 0.0
+        if hasattr(self, "detached_status"):
+            self.detached_status.config(text=("滾輪或 ＋／－ 縮放｜{:.0f}%｜present {:.1f} FPS｜"
+                "resize {:.1f} ms｜frame age {:.0f} ms｜dropped {}".format(
+                    self._detached_scale * 100, present_fps, resize_ms, age_ms,
+                    self._detached_worker.dropped_frames)))
         if self._detached_item is None:
             self._detached_item = self.detached_preview.create_image(x, y, anchor="nw", image=self._detached_photo, tags="frame")
         else:
@@ -642,6 +672,9 @@ class AIConfigDialog:
             self.detached_window.destroy(); self.detached_window = self.detached_preview = None
             self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
             self._detached_item = self._detached_source_size = None
+        self._detached_transform_signature = None; self._detached_transform_id = 0
+        self._detached_last_presented_sequence = -1; self._detached_present_times = []
+        self._detached_photo_size = None
         self.camera_view_state = state; self.ai_layout["camera_state"] = state
         if state == "docked":
             self.preview_label.grid()

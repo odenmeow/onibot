@@ -41,6 +41,8 @@ class CameraCapture:
     DISCOVERY_RETRIES = 3
     DISCOVERY_RETRY_DELAY = .25
     RELEASE_GRACE_PERIOD = .30
+    WARMUP_SECONDS = .65
+    WARMUP_FRAMES = 3
     _device_locks = {}
     _device_locks_guard = threading.Lock()
     _released_at = {}
@@ -99,6 +101,9 @@ class CameraCapture:
         self.capture_factory, self.retry_delay = capture_factory, retry_delay
         self.actual = {}; self.error = ""; self.state = "stopped"
         self.last_operation = ""; self.fallback = {}
+        self.buffer_size_accepted = None
+        self.capture_fps = 0.0
+        self._capture_times = []
         self._lock = threading.Lock(); self._stop = threading.Event()
         self._thread = self._capture = self._frame = None
         self._frame_sequence, self._frame_captured_at = 0, None
@@ -300,6 +305,12 @@ class CameraCapture:
 
     def _apply(self, cap, validate=True):
         if cv2 is not None:
+            try:
+                accepted = cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                reported = cap.get(cv2.CAP_PROP_BUFFERSIZE)
+                self.buffer_size_accepted = bool(accepted and round(reported) == 1)
+            except Exception:
+                self.buffer_size_accepted = False
             if self.fourcc:
                 code = str(self.fourcc)[:4]
                 try: value = cv2.VideoWriter_fourcc(*code)
@@ -311,11 +322,22 @@ class CameraCapture:
                     try: cap.set(prop, float(value))
                     except Exception as exc: self._record_error("cap.set({})".format(name), exc); raise
         if validate:
-            try: ok, frame = cap.read()
-            except Exception as exc: self._record_error("cap.read(validate)", exc); raise
-            if not ok or frame is None: raise RuntimeError("可開啟裝置但無法讀取 frame；相機可能被 OBS 或其他程式占用")
-            self._store_frame(frame)
+            # Drivers often report the requested mode before their stream has
+            # actually switched.  Keep the device open long enough for that
+            # transition and require several real frames before accepting it.
+            deadline = time.monotonic() + self.WARMUP_SECONDS
+            frame_count, latest = 0, None
+            while time.monotonic() < deadline:
+                try: ok, frame = cap.read()
+                except Exception as exc: self._record_error("cap.read(warmup)", exc); raise
+                if ok and frame is not None: frame_count, latest = frame_count + 1, frame
+            if frame_count < self.WARMUP_FRAMES:
+                raise RuntimeError("相機 warm-up 後仍未成功讀取至少 {} 張 frame".format(self.WARMUP_FRAMES))
+            self._store_frame(latest)
         self.actual = self._actual(cap)
+        if self.fourcc and str(self.fourcc).upper() == "MJPG" and self.actual.get("fourcc", "").upper() != "MJPG":
+            raise RuntimeError("要求 MJPG，但驅動實際回報 {}；拒絕以 YUY2/其他格式靜默運作".format(
+                self.actual.get("fourcc") or "未知 FourCC"))
 
     @property
     def running(self): return bool(self._thread and self._thread.is_alive())
@@ -364,8 +386,16 @@ class CameraCapture:
         # A failed attempt is fully released before opening the same index again.
         attempts = [(self.backend, self.fourcc, self.width, self.height, self.fps)]
         if os.name == "nt" and self.backend == "dshow" and self.capture_factory is None:
-            attempts += [("dshow", None, self.width, self.height, self.fps), ("dshow", None, None, None, None),
-                         ("msmf", None, None, None, None), ("auto", None, None, None, None)]
+            # An explicitly requested codec is a correctness requirement, not
+            # a hint: changing resolution/backend may recover, changing to
+            # uncompressed YUY2 may not.
+            attempts += [("dshow", self.fourcc, None, None, None),
+                         ("msmf", self.fourcc, self.width, self.height, self.fps),
+                         ("auto", self.fourcc, self.width, self.height, self.fps)]
+            if not self.fourcc:
+                attempts += [("dshow", None, None, None, None),
+                             ("msmf", None, None, None, None),
+                             ("auto", None, None, None, None)]
         original = (self.backend, self.fourcc, self.width, self.height, self.fps)
         last = None
         for backend, fourcc, width, height, fps in attempts:
@@ -408,9 +438,19 @@ class CameraCapture:
 
     def _store_frame(self, frame):
         with self._lock:
-            self._frame = frame.copy()
+            # VideoCapture.read() hands ownership of a new ndarray to us.  Keep
+            # it directly; latest_frame_packet() performs the sole isolation
+            # copy consumed by UI/AI code.
+            self._frame = frame
             self._frame_sequence += 1
             self._frame_captured_at = time.time()
+            now = time.monotonic(); self._capture_times.append(now)
+            cutoff = now - 2.0
+            while len(self._capture_times) > 1 and self._capture_times[0] < cutoff:
+                self._capture_times.pop(0)
+            if len(self._capture_times) > 1:
+                span = self._capture_times[-1] - self._capture_times[0]
+                self.capture_fps = (len(self._capture_times) - 1) / span if span else 0.0
 
     def configure(self, device_id=_UNSET, index=_UNSET, backend=_UNSET, width=_UNSET, height=_UNSET, fps=_UNSET, fourcc=_UNSET):
         # Compatibility with the former configure(index, backend) positional API.
@@ -424,6 +464,7 @@ class CameraCapture:
         with self._lock:
             self._frame = None
             self._frame_sequence, self._frame_captured_at = 0, None
+            self._capture_times = []; self.capture_fps = 0.0
         return self.start()
 
     def reconnect(self, index=None): self.configure(index=index)
