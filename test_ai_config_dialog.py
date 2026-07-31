@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from ai_config_dialog import AIConfigDialog, QUESTION_HISTORY_LIMIT
+from ai_config_dialog import AIConfigDialog, DetachedPreviewWorker, QUESTION_HISTORY_LIMIT
 
 
 class FakeText:
@@ -72,6 +72,27 @@ class FakeLabel:
 
 
 class AIConfigDialogTests(unittest.TestCase):
+    def test_detached_worker_resizes_only_visible_roi_and_converts_rgb(self):
+        try: import numpy as np
+        except ImportError: self.skipTest("NumPy/OpenCV preview dependencies are optional")
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame[:, :, 0] = 255  # BGR blue becomes RGB blue.
+        worker = DetachedPreviewWorker()
+        try:
+            worker.submit((1, 9, frame, (800, 600), 10.0, (-9000.0, -5000.0)))
+            deadline = time.monotonic() + 1.0; result = None
+            while result is None and time.monotonic() < deadline:
+                result = worker.take_result()
+                if result is None: time.sleep(.005)
+            self.assertIsNotNone(result)
+            _request_id, sequence, rgb, _x, _y = result
+            self.assertEqual(sequence, 9)
+            self.assertLessEqual(rgb.shape[0], 610)
+            self.assertLessEqual(rgb.shape[1], 810)
+            self.assertEqual(tuple(rgb[0, 0]), (0, 0, 255))
+        finally:
+            worker.stop()
+
     def test_image_library_columns_can_shrink_without_hiding_source(self):
         tree = FakeColumnTree()
 
@@ -151,7 +172,7 @@ class AIConfigDialogTests(unittest.TestCase):
         dialog._append = mock.Mock()
         dialog._schedule = lambda *_args: None
 
-        dialog._poll_preview()
+        dialog._poll_status()
 
         dialog._append.assert_called_once_with("AI", "O", 1234)
 
@@ -171,7 +192,7 @@ class AIConfigDialogTests(unittest.TestCase):
         dialog._show_detected_history_image = mock.Mock()
         dialog._schedule = lambda *_args: None
 
-        dialog._poll_preview()
+        dialog._poll_status()
 
         dialog._show_detected_history_image.assert_called_once_with(result)
 
@@ -229,18 +250,17 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertIn("無法標記", dialog.viewer_status.options["text"])
 
     def test_visible_preview_refreshes_even_in_manual_mode(self):
-        dialog = AIConfigDialog.__new__(AIConfigDialog)
-        dialog.camera = SimpleNamespace(actual={}, width=None, height=None, fps=None, fallback={}, backend="dshow", state="connected", error="")
-        dialog.fourcc = SimpleNamespace(get=lambda: "自動")
-        dialog.camera_status = SimpleNamespace(config=lambda **_kwargs: None)
-        dialog.mode = SimpleNamespace(get=lambda: "manual")
-        dialog.camera_view_state = "detached"; dialog.monitor = None
-        dialog._current_device = lambda: None
+        dialog = AIConfigDialog.__new__(AIConfigDialog); frame = object()
+        dialog.camera = SimpleNamespace(latest_frame_packet=lambda: (frame, 7, 1.0))
+        dialog.camera_view_state = "docked"; dialog._preview_sequence = -1
         dialog.show_latest = mock.Mock(); dialog._schedule = lambda *_args: None
 
         dialog._poll_preview()
 
-        dialog.show_latest.assert_called_once_with()
+        dialog.show_latest.assert_called_once_with((frame, 7, 1.0))
+
+        dialog._poll_preview()
+        dialog.show_latest.assert_called_once_with((frame, 7, 1.0))
 
     def test_history_keeps_latest_thousand_and_displays_newest_first(self):
         old_history = [{"history_id": str(i), "ended_at": i, "answer": str(i)} for i in range(QUESTION_HISTORY_LIMIT + 5)]
