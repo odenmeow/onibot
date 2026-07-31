@@ -1348,6 +1348,20 @@ class AIConfigDialog:
         item = next((x for x in self.library.list() if x.get("id") == row_id), None)
         if item: self._open_image_viewer("library", path=item.get("path"), title="圖片庫", metadata=item)
 
+    def _focus_image_viewer(self):
+        """Raise the image viewer once and put keyboard focus on its canvas."""
+        viewer, canvas = self.zoom_window, self.zoom_canvas
+        if not viewer or not canvas: return
+        try:
+            viewer.deiconify()
+            viewer.lift()
+            viewer.update_idletasks()
+            viewer.focus_force()
+            canvas.focus_set()
+        except tk.TclError:
+            # The idle callback can coincide with the viewer being closed.
+            pass
+
     def _open_image_viewer(self, source_type, path=None, frame=None, title="", metadata=None):
         """Open an explicit image source, updating an existing viewer in place."""
         try:
@@ -1369,38 +1383,37 @@ class AIConfigDialog:
             try: old_image.close()
             except Exception: pass
         if self.zoom_window:
-            self.zoom_window.title(title or "圖片檢視")
+            viewer = self.zoom_window
+            viewer.title(title or "圖片檢視")
             self.viewer_info.config(text="{}   原始解析度：{}×{}   來源：{}".format(
                 filename, image.width, image.height,
                 {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}.get(source_type, source_type)))
-            self._viewer_scale = None; self._viewer_offset = None; self._viewer_drag = None
-            self._queue_viewer_render()
-            try: self.zoom_window.lift()
-            except tk.TclError: pass
-            return
-        viewer = self.zoom_window = tk.Toplevel(self.window); viewer.title(title or "圖片檢視")
-        viewer.geometry("900x700"); viewer.minsize(800, 600)
-        source_labels = {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}
-        self.viewer_info = ttk.Label(viewer, text="{}   原始解析度：{}×{}   來源：{}".format(filename, image.width, image.height, source_labels.get(source_type, source_type)))
-        self.viewer_info.pack(fill="x", padx=8, pady=5)
-        self.viewer_status = ttk.Label(viewer, text="空白鍵停止鬧鐘｜W 標記判斷錯誤｜Esc 關閉｜滾輪縮放｜左鍵拖曳")
-        self.viewer_status.pack(fill="x", padx=8)
-        self.zoom_canvas = tk.Canvas(viewer, highlightthickness=0, background="#202020", cursor="fleur")
-        self.zoom_canvas.pack(fill="both", expand=True)
-        ttk.Button(viewer, text="關閉", command=self._close_image_viewer).pack(pady=5)
-        viewer.bind("<Escape>", lambda _e: self._close_image_viewer())
-        viewer.bind("<space>", self._stop_alarm_from_viewer)
-        viewer.bind("<w>", self._mark_wrong_from_viewer)
-        viewer.bind("<W>", self._mark_wrong_from_viewer)
-        self.zoom_canvas.bind("<Configure>", self._queue_viewer_render)
-        self.zoom_canvas.bind("<MouseWheel>", self._on_viewer_wheel)
-        self.zoom_canvas.bind("<Button-4>", self._on_viewer_wheel)
-        self.zoom_canvas.bind("<Button-5>", self._on_viewer_wheel)
-        self.zoom_canvas.bind("<ButtonPress-1>", self._start_viewer_drag)
-        self.zoom_canvas.bind("<B1-Motion>", self._drag_viewer)
-        viewer.protocol("WM_DELETE_WINDOW", self._close_image_viewer)
+        else:
+            viewer = self.zoom_window = tk.Toplevel(self.window); viewer.title(title or "圖片檢視")
+            viewer.geometry("900x700"); viewer.minsize(800, 600)
+            source_labels = {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}
+            self.viewer_info = ttk.Label(viewer, text="{}   原始解析度：{}×{}   來源：{}".format(filename, image.width, image.height, source_labels.get(source_type, source_type)))
+            self.viewer_info.pack(fill="x", padx=8, pady=5)
+            self.viewer_status = ttk.Label(viewer, text="空白鍵停止鬧鐘｜W 標記判斷錯誤｜Esc 關閉｜滾輪縮放｜左鍵拖曳")
+            self.viewer_status.pack(fill="x", padx=8)
+            self.zoom_canvas = tk.Canvas(viewer, highlightthickness=0, background="#202020", cursor="fleur")
+            self.zoom_canvas.pack(fill="both", expand=True)
+            ttk.Button(viewer, text="關閉", command=self._close_image_viewer).pack(pady=5)
+            viewer.bind("<Escape>", lambda _e: self._close_image_viewer())
+            viewer.bind("<space>", self._stop_alarm_from_viewer)
+            viewer.bind("<w>", self._mark_wrong_from_viewer)
+            viewer.bind("<W>", self._mark_wrong_from_viewer)
+            self.zoom_canvas.bind("<Configure>", self._queue_viewer_render)
+            self.zoom_canvas.bind("<MouseWheel>", self._on_viewer_wheel)
+            self.zoom_canvas.bind("<Button-4>", self._on_viewer_wheel)
+            self.zoom_canvas.bind("<Button-5>", self._on_viewer_wheel)
+            self.zoom_canvas.bind("<ButtonPress-1>", self._start_viewer_drag)
+            self.zoom_canvas.bind("<B1-Motion>", self._drag_viewer)
+            viewer.protocol("WM_DELETE_WINDOW", self._close_image_viewer)
         self._viewer_scale = None; self._viewer_offset = None; self._viewer_drag = None
         self._queue_viewer_render()
+        try: viewer.after_idle(self._focus_image_viewer)
+        except tk.TclError: pass
 
     def _stop_alarm_from_viewer(self, _event=None):
         self.alarm.stop()
