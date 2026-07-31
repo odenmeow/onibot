@@ -43,6 +43,7 @@ class AIConfigDialog:
         self.zoom_window = self._viewer_image = self._viewer_photo = None
         self.viewer_info = self.viewer_status = self.zoom_canvas = None
         self._viewer_scale = self._viewer_offset = self._viewer_drag = None
+        self._viewer_metadata = None
         self._viewer_after = self.detached_window = self.detached_preview = None
         self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
         self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
@@ -904,7 +905,10 @@ class AIConfigDialog:
         self._schedule(100, lambda: self.sound_status.config(text=self.alarm.error or self.sound_status.cget("text")))
     def _record_history(self, value):
         if not isinstance(value, dict): return
-        item = dict(value); item.setdefault("history_id", uuid.uuid4().hex)
+        # Keep the id on the monitor result too, so the automatically opened
+        # viewer can persist keyboard feedback to this exact history row.
+        value.setdefault("history_id", uuid.uuid4().hex)
+        item = dict(value)
         item.setdefault("mode", "auto"); item.setdefault("profile_tags", [])
         ai = self.config.setdefault("ai", {})
         history = ai.get("question_history")
@@ -1151,6 +1155,7 @@ class AIConfigDialog:
         except Exception as exc:
             messagebox.showerror("圖片無法開啟", str(exc), parent=self.window); return
         old_image, self._viewer_image = self._viewer_image, image
+        self._viewer_metadata = metadata if source_type == "history" else None
         if old_image is not None:
             try: old_image.close()
             except Exception: pass
@@ -1169,13 +1174,15 @@ class AIConfigDialog:
         source_labels = {"camera": "相機", "attachment": "附件", "library": "圖片庫", "history": "最近提問"}
         self.viewer_info = ttk.Label(viewer, text="{}   原始解析度：{}×{}   來源：{}".format(filename, image.width, image.height, source_labels.get(source_type, source_type)))
         self.viewer_info.pack(fill="x", padx=8, pady=5)
-        self.viewer_status = ttk.Label(viewer, text="滾輪縮放（以滑鼠位置為中心）｜按住左鍵拖曳圖片")
+        self.viewer_status = ttk.Label(viewer, text="空白鍵停止鬧鐘｜W 標記判斷錯誤｜Esc 關閉｜滾輪縮放｜左鍵拖曳")
         self.viewer_status.pack(fill="x", padx=8)
         self.zoom_canvas = tk.Canvas(viewer, highlightthickness=0, background="#202020", cursor="fleur")
         self.zoom_canvas.pack(fill="both", expand=True)
         ttk.Button(viewer, text="關閉", command=self._close_image_viewer).pack(pady=5)
         viewer.bind("<Escape>", lambda _e: self._close_image_viewer())
         viewer.bind("<space>", self._stop_alarm_from_viewer)
+        viewer.bind("<w>", self._mark_wrong_from_viewer)
+        viewer.bind("<W>", self._mark_wrong_from_viewer)
         self.zoom_canvas.bind("<Configure>", self._queue_viewer_render)
         self.zoom_canvas.bind("<MouseWheel>", self._on_viewer_wheel)
         self.zoom_canvas.bind("<Button-4>", self._on_viewer_wheel)
@@ -1190,6 +1197,28 @@ class AIConfigDialog:
         self.alarm.stop()
         if self.viewer_status:
             self.viewer_status.config(text="鬧鐘已停止｜Esc 關閉圖片視窗")
+        return "break"
+
+    def _mark_wrong_from_viewer(self, _event=None):
+        """Stop the alarm and mark the currently viewed history result wrong."""
+        self.alarm.stop()
+        metadata = self._viewer_metadata
+        history_id = str(metadata.get("history_id", "")) if isinstance(metadata, dict) else ""
+        history = self.config.get("ai", {}).get("question_history", [])
+        item = next((candidate for candidate in history
+                     if isinstance(candidate, dict)
+                     and str(candidate.get("history_id", "")) == history_id), None)
+        if item is None and isinstance(metadata, dict) and metadata in history:
+            item = metadata
+        if item is not None:
+            item["judgment_error"] = True
+            self.on_save(self.config)
+            self._refresh_history()
+            status = "已停止鬧鐘並勾選「判斷錯誤」｜Esc 關閉圖片視窗"
+        else:
+            status = "鬧鐘已停止｜此圖片不是提問歷史，無法標記判斷錯誤｜Esc 關閉"
+        if self.viewer_status:
+            self.viewer_status.config(text=status)
         return "break"
 
     def _queue_viewer_render(self, _event=None):
@@ -1224,7 +1253,7 @@ class AIConfigDialog:
         self._viewer_photo = ImageTk.PhotoImage(image)
         self.zoom_canvas.delete("all")
         self.zoom_canvas.create_image(*self._viewer_offset, anchor="nw", image=self._viewer_photo)
-        self.viewer_status.config(text="滾輪縮放（以滑鼠位置為中心）｜按住左鍵拖曳圖片｜{:.0f}%".format(self._viewer_scale * 100))
+        self.viewer_status.config(text="空白鍵停止鬧鐘｜W 標記判斷錯誤｜Esc 關閉｜滾輪縮放｜左鍵拖曳｜{:.0f}%".format(self._viewer_scale * 100))
 
     @staticmethod
     def _zoom_at(scale, offset, pointer, factor, minimum, maximum=8.0):
@@ -1269,6 +1298,7 @@ class AIConfigDialog:
         self.zoom_window = self._viewer_image = self._viewer_photo = None
         self.viewer_info = self.viewer_status = self.zoom_canvas = None
         self._viewer_scale = self._viewer_offset = self._viewer_drag = None
+        self._viewer_metadata = None
     def close(self):
         if self._closed: return
         self._save_ai_layout(); self._close_image_viewer()

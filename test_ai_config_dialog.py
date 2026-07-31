@@ -196,6 +196,38 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(result, "break")
         self.assertIn("鬧鐘已停止", dialog.viewer_status.options["text"])
 
+    def test_w_in_viewer_stops_alarm_and_marks_current_history_wrong(self):
+        item = {"history_id": "answer-1", "answer": "O"}
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.alarm = SimpleNamespace(stop=mock.Mock())
+        dialog.viewer_status = FakeLabel()
+        dialog._viewer_metadata = {"history_id": "answer-1"}
+        dialog.config = {"ai": {"question_history": [item]}}
+        dialog.on_save = mock.Mock(); dialog._refresh_history = mock.Mock()
+
+        result = dialog._mark_wrong_from_viewer()
+
+        self.assertEqual(result, "break")
+        dialog.alarm.stop.assert_called_once_with()
+        self.assertTrue(item["judgment_error"])
+        dialog.on_save.assert_called_once_with(dialog.config)
+        dialog._refresh_history.assert_called_once_with()
+        self.assertIn("判斷錯誤", dialog.viewer_status.options["text"])
+
+    def test_w_in_non_history_viewer_only_stops_alarm(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.alarm = SimpleNamespace(stop=mock.Mock())
+        dialog.viewer_status = FakeLabel(); dialog._viewer_metadata = None
+        dialog.config = {"ai": {"question_history": []}}
+        dialog.on_save = mock.Mock(); dialog._refresh_history = mock.Mock()
+
+        dialog._mark_wrong_from_viewer()
+
+        dialog.alarm.stop.assert_called_once_with()
+        dialog.on_save.assert_not_called()
+        dialog._refresh_history.assert_not_called()
+        self.assertIn("無法標記", dialog.viewer_status.options["text"])
+
     def test_visible_preview_refreshes_even_in_manual_mode(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
         dialog.camera = SimpleNamespace(actual={}, width=None, height=None, fps=None, fallback={}, backend="dshow", state="connected", error="")
@@ -224,6 +256,18 @@ class AIConfigDialogTests(unittest.TestCase):
         self.assertEqual(dialog.history_tree.rows[0][0], "new")
         self.assertEqual(dialog.history_tree.rows[0][1][0], "☐")
         self.assertEqual(len(dialog.history_tree.rows), QUESTION_HISTORY_LIMIT)
+
+    def test_record_history_shares_generated_id_with_automatic_viewer_result(self):
+        result = {"ended_at": 1, "answer": "O"}
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {"question_history": []}}
+        dialog.on_save = mock.Mock(); dialog._refresh_history = mock.Mock()
+
+        dialog._record_history(result)
+
+        stored = dialog.config["ai"]["question_history"][0]
+        self.assertTrue(result["history_id"])
+        self.assertEqual(stored["history_id"], result["history_id"])
 
     def test_history_error_checkbox_persists_human_feedback(self):
         item = {"history_id": "answer-1", "ended_at": 1, "answer": "O"}
