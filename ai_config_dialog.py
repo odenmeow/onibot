@@ -226,16 +226,20 @@ class AIConfigDialog:
         self.response = tk.Text(console_text, state="disabled", yscrollcommand=console_scroll.set)
         console_scroll.configure(command=self.response.yview)
         console_scroll.pack(side="right", fill="y"); self.response.pack(side="left", fill="both", expand=True)
-        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "點擊 started、endedat 設定輸出範圍（含頭尾與中間所有 O/X）；「判斷錯誤」只會輸出到 wrong，不會放入 O/X。雙擊可查看圖片。")
+        history_box = self._section(self.right_paned, "最近 1000 次提問歷史", "點擊 started、endedat 設定輸出範圍；點擊 delFrom、delTo 設定刪除範圍。「判斷錯誤」只會輸出到 wrong，不會放入 O/X。雙擊可查看圖片。")
         history_box.rowconfigure(0, weight=1)
-        self.history_tree = ttk.Treeview(history_box, columns=("incorrect", "started", "endedat", "summary"), show="headings", height=5)
+        self.history_tree = ttk.Treeview(history_box, columns=("incorrect", "started", "endedat", "del_from", "del_to", "summary"), show="headings", height=5)
         self.history_tree.heading("incorrect", text="判斷錯誤")
         self.history_tree.heading("started", text="started")
         self.history_tree.heading("endedat", text="endedat")
+        self.history_tree.heading("del_from", text="delFrom")
+        self.history_tree.heading("del_to", text="delTo")
         self.history_tree.heading("summary", text="時間｜tag｜圖片｜結果")
         self.history_tree.column("incorrect", width=72, minwidth=72, stretch=False, anchor="center")
         self.history_tree.column("started", width=58, minwidth=58, stretch=False, anchor="center")
         self.history_tree.column("endedat", width=58, minwidth=58, stretch=False, anchor="center")
+        self.history_tree.column("del_from", width=62, minwidth=62, stretch=False, anchor="center")
+        self.history_tree.column("del_to", width=52, minwidth=52, stretch=False, anchor="center")
         history_vertical_scroll = ttk.Scrollbar(history_box, orient="vertical", command=self.history_tree.yview)
         history_horizontal_scroll = ttk.Scrollbar(history_box, orient="horizontal", command=self.history_tree.xview)
         self.history_tree.configure(yscrollcommand=history_vertical_scroll.set, xscrollcommand=history_horizontal_scroll.set)
@@ -247,8 +251,10 @@ class AIConfigDialog:
         history_actions.columnconfigure(0, weight=1)
         ttk.Button(history_actions, text="輸出 started～endedat 到 ReviewFolder",
                    command=self.export_selected_history).grid(row=0, column=0, sticky="ew")
+        ttk.Button(history_actions, text="刪除 delFrom～delTo",
+                   command=self.delete_marked_history).grid(row=0, column=1, padx=(4, 0))
         ttk.Button(history_actions, text="開啟 ReviewFolder",
-                   command=self.open_review_folder).grid(row=0, column=1, padx=(4, 0))
+                   command=self.open_review_folder).grid(row=0, column=2, padx=(4, 0))
         self.history_tree.bind("<Button-1>", self._on_history_click)
         self.history_tree.bind("<Double-Button-1>", self._on_history_double_click); self._refresh_history()
         for content, minimum in ((question, 90), (controls, 62), (console, 120), (history_box, 110)):
@@ -923,20 +929,24 @@ class AIConfigDialog:
             incorrect = "☑" if item.get("judgment_error", False) else "☐"
             started = "☑" if item.get("export_started", False) else "☐"
             endedat = "☑" if item.get("export_endedat", False) else "☐"
-            self.history_tree.insert("", "end", iid=history_id, values=(incorrect, started, endedat, summary))
+            del_from = "☑" if item.get("delete_from", False) else "☐"
+            del_to = "☑" if item.get("delete_to", False) else "☐"
+            self.history_tree.insert("", "end", iid=history_id,
+                                     values=(incorrect, started, endedat, del_from, del_to, summary))
 
     def _on_history_click(self, event):
         """Toggle the persisted human-feedback flag only from its checkbox column."""
         if self.history_tree.identify_region(event.x, event.y) != "cell": return
         column = self.history_tree.identify_column(event.x)
-        if column not in ("#1", "#2", "#3"): return
+        if column not in ("#1", "#2", "#3", "#4", "#5"): return
         row_id = self.history_tree.identify_row(event.y)
         item = self._history_by_id.get(row_id)
         if not item: return
         if column == "#1":
             item["judgment_error"] = not bool(item.get("judgment_error", False))
         else:
-            marker = "export_started" if column == "#2" else "export_endedat"
+            marker = {"#2": "export_started", "#3": "export_endedat",
+                      "#4": "delete_from", "#5": "delete_to"}[column]
             enabled = not bool(item.get(marker, False))
             # A range has one unambiguous start and one end.
             for history_item in self.config.get("ai", {}).get("question_history", []):
@@ -976,14 +986,38 @@ class AIConfigDialog:
 
     def _marked_history_range(self):
         """Return every history id between the persisted start/end markers."""
+        return self._history_range_between("export_started", "export_endedat")
+
+    def _history_range_between(self, start_marker, end_marker):
+        """Return every history id between two marker keys, including both ends."""
         history = self.config.get("ai", {}).get("question_history", [])
         if not isinstance(history, list): return []
-        start = next((i for i, item in enumerate(history) if isinstance(item, dict) and item.get("export_started")), None)
-        end = next((i for i, item in enumerate(history) if isinstance(item, dict) and item.get("export_endedat")), None)
+        start = next((i for i, item in enumerate(history) if isinstance(item, dict) and item.get(start_marker)), None)
+        end = next((i for i, item in enumerate(history) if isinstance(item, dict) and item.get(end_marker)), None)
         if start is None or end is None: return []
         low, high = sorted((start, end))
         return [str(item.get("history_id")) for item in history[low:high + 1]
                 if isinstance(item, dict) and item.get("history_id")]
+
+    def delete_marked_history(self):
+        """Delete the inclusive delFrom/delTo range after explicit confirmation."""
+        row_ids = self._history_range_between("delete_from", "delete_to")
+        if not row_ids:
+            messagebox.showinfo("刪除提問歷史", "請先勾選 delFrom 與 delTo。", parent=self.window)
+            return
+        if not messagebox.askyesno("刪除提問歷史",
+                                   "確定要刪除 delFrom～delTo 共 {} 筆紀錄？\n此操作不會刪除圖片檔案。".format(len(row_ids)),
+                                   parent=self.window):
+            return
+        deleted = set(row_ids)
+        history = self.config.get("ai", {}).get("question_history", [])
+        self.config["ai"]["question_history"] = [
+            item for item in history
+            if not (isinstance(item, dict) and str(item.get("history_id")) in deleted)
+        ]
+        self.on_save(self.config)
+        self._refresh_history()
+        messagebox.showinfo("刪除提問歷史", "已刪除 {} 筆紀錄。".format(len(row_ids)), parent=self.window)
 
     def _export_history_rows(self, row_ids, review_root=None):
         """Copy selected O/X captures into review folders."""

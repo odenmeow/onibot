@@ -50,7 +50,9 @@ class FakeTree:
         if x < 100: return "#1"
         if x < 200: return "#2"
         if x < 300: return "#3"
-        return "#4"
+        if x < 400: return "#4"
+        if x < 500: return "#5"
+        return "#6"
 
     def identify_row(self, _y):
         return self.rows[0][0] if self.rows else ""
@@ -244,7 +246,7 @@ class AIConfigDialogTests(unittest.TestCase):
         dialog.on_save = mock.Mock(); dialog.history_tree = FakeTree(); dialog._history_by_id = {}
         dialog._refresh_history()
 
-        dialog._on_history_click(SimpleNamespace(x=350, y=5))
+        dialog._on_history_click(SimpleNamespace(x=550, y=5))
 
         self.assertNotIn("judgment_error", item)
         dialog.on_save.assert_not_called()
@@ -292,6 +294,41 @@ class AIConfigDialogTests(unittest.TestCase):
 
         self.assertEqual(dialog._marked_history_range(),
                          ["start", "middle-o", "middle-x", "end"])
+
+    def test_del_from_and_del_to_delete_inclusive_range(self):
+        history = [
+            {"history_id": "before"},
+            {"history_id": "from", "delete_from": True},
+            {"history_id": "middle"},
+            {"history_id": "to", "delete_to": True},
+            {"history_id": "after"},
+        ]
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {"question_history": history}}
+        dialog.window = mock.Mock(); dialog.on_save = mock.Mock()
+        dialog.history_tree = FakeTree(); dialog._history_by_id = {}
+
+        with mock.patch("ai_config_dialog.messagebox.askyesno", return_value=True), \
+                mock.patch("ai_config_dialog.messagebox.showinfo") as showinfo:
+            dialog.delete_marked_history()
+
+        self.assertEqual([item["history_id"] for item in dialog.config["ai"]["question_history"]],
+                         ["before", "after"])
+        dialog.on_save.assert_called_once_with(dialog.config)
+        showinfo.assert_called_once()
+
+    def test_delete_history_requires_both_range_markers(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.config = {"ai": {"question_history": [{"history_id": "from", "delete_from": True}]}}
+        dialog.window = mock.Mock(); dialog.on_save = mock.Mock()
+
+        with mock.patch("ai_config_dialog.messagebox.showinfo") as showinfo, \
+                mock.patch("ai_config_dialog.messagebox.askyesno") as askyesno:
+            dialog.delete_marked_history()
+
+        showinfo.assert_called_once()
+        askyesno.assert_not_called()
+        dialog.on_save.assert_not_called()
 
     @mock.patch("ai_config_dialog.subprocess.Popen")
     def test_open_review_folder_creates_and_opens_directory(self, popen):
