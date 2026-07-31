@@ -72,6 +72,16 @@ class FakeLabel:
 
 
 class AIConfigDialogTests(unittest.TestCase):
+    def test_rescan_does_not_stop_running_camera(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.camera = SimpleNamespace(stop=mock.Mock())
+        dialog.config = {"ai": {"camera_backend": "dshow"}}
+        dialog._scanned = mock.Mock()
+        dialog._worker = lambda _operation, work, success: success(work())
+        with mock.patch("ai_config_dialog.CameraCapture.discover", return_value=[]):
+            dialog.scan_cameras()
+        dialog.camera.stop.assert_not_called()
+
     def test_detached_worker_resizes_only_visible_roi_and_converts_rgb(self):
         try: import numpy as np
         except ImportError: self.skipTest("NumPy/OpenCV preview dependencies are optional")

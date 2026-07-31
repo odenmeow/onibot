@@ -5,6 +5,7 @@ threads, prompt profiles, draft autosave and image viewing, then persists via
 the save callback supplied by the main application.
 """
 import math
+import logging
 import os
 import re
 import shutil
@@ -434,16 +435,35 @@ class AIConfigDialog:
 
     def scan_cameras(self):
         def scan():
-            if not self.camera.stop(): raise RuntimeError(self.camera.error)
             return CameraCapture.discover(10, backend=self.config["ai"].get("camera_backend"))
         self._worker("掃描相機", scan, self._scanned)
     def _scanned(self, devices):
         self.devices = devices; labels = [d["display_name"] + "（index {}）".format(d["index"]) for d in devices]; self.camera_box["values"] = labels
-        ai = self.config["ai"]; selected = CameraCapture.select_device(devices, ai.get("camera_device_id", ""), ai.get("camera_name", ""), ai.get("camera_index"))
-        if selected:
-            self.device_choice.set(labels[devices.index(selected)]); self.apply_camera()
+        ai = self.config["ai"]
+        active_id = self.camera.device_id if self.camera.running else ai.get("camera_device_id", "")
+        selected = CameraCapture.select_device(
+            devices, active_id, ai.get("camera_name", ""), ai.get("camera_index"),
+            ai.get("camera_device_path", ""), ai.get("camera_vid", ""), ai.get("camera_pid", ""))
+        discovery = CameraCapture.last_discovery
+        if discovery.get("legacy"):
+            self._append("系統", discovery.get("warning") or "快速列舉失敗，已進入 OpenCV 相容掃描模式")
         else:
-            self.camera_status.config(text="狀態：找不到先前選擇的 USB 相機，請重新選擇（不會自動切換至虛擬相機）")
+            self.camera_status.config(text="快速列舉完成：找到 {} 台相機（{} ms）".format(
+                len(devices), discovery.get("elapsed_ms", 0)))
+        if selected:
+            self.device_choice.set(labels[devices.index(selected)])
+            logging.getLogger(__name__).info("[camera] selected device_id=%s name=%s path=%s index=%s",
+                                             selected.get("device_id"), selected.get("name"),
+                                             selected.get("device_path"), selected.get("index"))
+            if not self.camera.running: self.apply_camera()
+            elif discovery.get("legacy"):
+                self.camera_status.config(text="快速列舉失敗，已進入 OpenCV 相容掃描模式")
+            else:
+                self.camera_status.config(text="快速列舉完成：找到 {} 台相機（{} ms）；目前相機未中斷".format(
+                    len(devices), discovery.get("elapsed_ms", 0)))
+        else:
+            prefix = "快速列舉失敗，已進入 OpenCV 相容掃描模式\n" if discovery.get("legacy") else ""
+            self.camera_status.config(text=prefix + "狀態：找不到先前選擇的 USB 相機，請重新選擇（不會自動切換至虛擬相機）")
     def _current_device(self):
         try: return self.devices[self.camera_box.current()]
         except (IndexError, TypeError): return None
@@ -705,7 +725,7 @@ class AIConfigDialog:
         if timeout <= 0 or delay < 0: raise ValueError("AI 回答逾時必須大於 0，回答完成後等待不可小於 0")
         if num_predict < 1024: raise ValueError("最多輸出 token 不可小於 1024（Qwen3-VL 可能先使用內部思考 token）")
         parts = self.resolution.get().replace(" ", "").split("×"); w, h = (map(int, parts) if len(parts) == 2 else (None, None))
-        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "keep_alive": self.keep_alive.get().strip() or "30m", "think": self.think.get(), "num_predict": num_predict, "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "after_answer_delay": delay, "alarm_on_detected": self.alarm_on_detected.get(), "alarm_on_timeout": self.alarm_on_timeout.get(), "alarm_on_error": self.alarm_on_error.get(), "sound_mode": self._sound_mode_key(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
+        ai.update({"enabled": bool(self.monitor and self.monitor.enabled), "camera_device_id": device.get("device_id", "") if device else ai.get("camera_device_id", ""), "camera_device_path": device.get("device_path", "") if device else ai.get("camera_device_path", ""), "camera_vid": device.get("vid", "") if device else ai.get("camera_vid", ""), "camera_pid": device.get("pid", "") if device else ai.get("camera_pid", ""), "camera_name": device.get("name", "") if device else ai.get("camera_name", ""), "camera_index": device.get("index", self.camera.index) if device else self.camera.index, "camera_backend": device.get("backend", self.camera.backend) if device else self.camera.backend, "camera_width": w, "camera_height": h, "camera_fps": None if self.fps.get() == "自動" else float(self.fps.get()), "camera_fourcc": "" if self.fourcc.get() == "自動" else self.fourcc.get(), "preview_mode": self.mode.get(), "base_url": self.base_url.get().strip(), "model": self.model.get().strip(), "timeout": timeout, "keep_alive": self.keep_alive.get().strip() or "30m", "think": self.think.get(), "num_predict": num_predict, "system_prompt": self.system.get("1.0", "end-1c"), "user_prompt_draft": self.user_text.get("1.0", "end-1c"), "after_answer_delay": delay, "alarm_on_detected": self.alarm_on_detected.get(), "alarm_on_timeout": self.alarm_on_timeout.get(), "alarm_on_error": self.alarm_on_error.get(), "sound_mode": self._sound_mode_key(), "sound_path": self.sound_path.get().strip(), "prompt_profiles": [dict(x) for x in self.profiles]})
         ai.pop("interval", None); ai.pop("sound_enabled", None)
         self.on_save(self.config)
         if announce: self._append("系統", "設定已保存")
