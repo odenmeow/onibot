@@ -102,7 +102,9 @@ class CameraCapture:
         self.fps = settings.get("fps"); self.fourcc = settings.get("fourcc")
         self.capture_factory, self.retry_delay = capture_factory, retry_delay
         self.actual = {}; self.error = ""; self.state = "stopped"
-        self.last_operation = ""; self.fallback = {}
+        self.last_operation = ""; self.fallback = {}; self.last_attempt = {}
+        self.operation_status = ""; self.switch_timings = {}
+        self._successful_settings = {}
         self._lock = threading.Lock(); self._stop = threading.Event()
         self._thread = self._capture = self._frame = None
         self._frame_sequence, self._frame_captured_at = 0, None
@@ -334,7 +336,6 @@ class CameraCapture:
         cap = None
         try:
             cap = self._open_with_fallback()
-            with self._lock: self._capture = cap
             if cap is None or not cap.isOpened():
                 raise RuntimeError("{} 開啟失敗（backend: {}，{}，index {}）；請確認裝置是否被占用".format(BACKEND_LABELS.get(self.backend, self.backend), self.backend, self.device_name or "相機", self.index))
             self.state, self.error = "connected", ""
@@ -352,40 +353,70 @@ class CameraCapture:
             self.state = "dependency_error" if cv2 is None and self.capture_factory is None else "configure_error"
             if not self.error: self._record_error("VideoCapture/open/configure", exc)
         finally:
-            with self._lock: self._capture = None
-            if cap is not None:
-                try: cap.release()
-                except Exception as exc: self._record_error("cap.release", exc)
+            with self._lock:
+                if self._capture is cap: self._capture = None
+            self._release(cap, "read_loop")
+
+    def _release(self, cap, source):
+        """Release a capture at most once, without holding the frame lock."""
+        if cap is None: return
+        with self._lock:
+            if getattr(self, "_released_capture", None) is cap: return
+            self._released_capture = cap
+        started = time.monotonic()
+        try: cap.release()
+        except Exception as exc: self._record_error("cap.release({})".format(source), exc)
+        finally:
+            LOGGER.info("[camera] release source=%s elapsed=%dms", source,
+                        int((time.monotonic() - started) * 1000))
 
     def _open_with_fallback(self):
         # A failed attempt is fully released before opening the same index again.
-        attempts = [(self.backend, self.fourcc, self.width, self.height, self.fps)]
+        requested = (self.backend, self.fourcc, self.width, self.height, self.fps)
+        remembered = self._successful_settings.get(self.device_id)
+        attempts = []
+        if remembered:
+            attempts.append(tuple(remembered.get(k) for k in ("backend", "fourcc", "width", "height", "fps")))
+        attempts.append(requested)
         if os.name == "nt" and self.backend == "dshow" and self.capture_factory is None:
             attempts += [("dshow", None, self.width, self.height, self.fps), ("dshow", None, None, None, None),
                          ("msmf", None, None, None, None), ("auto", None, None, None, None)]
-        original = (self.backend, self.fourcc, self.width, self.height, self.fps)
+        # Ordered de-duplication prevents the requested/default mode being retried.
+        attempts = list(dict.fromkeys(attempts))
+        original = requested
         last = None
         for backend, fourcc, width, height, fps in attempts:
             cap = None
             attempt_started = time.monotonic()
             try:
                 self.backend, self.fourcc, self.width, self.height, self.fps = backend, fourcc, width, height, fps
+                self.state = "opening"
+                self.operation_status = "正在開啟 {} index {}……".format(BACKEND_LABELS.get(backend, backend), self.index)
+                self.last_attempt = {"backend": backend, "fourcc": fourcc, "width": width,
+                                     "height": height, "fps": fps}
                 cap = self._open(self.index, backend)
+                self.switch_timings["open_ms"] = int((time.monotonic() - attempt_started) * 1000)
+                with self._lock:
+                    self._capture, self._released_capture = cap, None
                 LOGGER.info("[camera] open backend=%s index=%s elapsed=%dms", backend.upper(), self.index,
                             int((time.monotonic() - attempt_started) * 1000))
                 if cap is None or not cap.isOpened(): raise RuntimeError("裝置無法開啟")
+                self.state = "waiting_first_frame"; self.operation_status = "正在等待第一張畫面……"
+                first_started = time.monotonic()
                 self._apply(cap)
                 self.fallback = {"backend": backend, "width": width, "height": height, "fps": fps, "fourcc": fourcc}
+                self._successful_settings[self.device_id] = dict(self.fallback)
+                self.switch_timings.update(first_frame_ms=int((time.monotonic() - first_started) * 1000))
                 self.backend, self.fourcc, self.width, self.height, self.fps = original
                 return cap
             except Exception as exc:
                 last = exc
                 LOGGER.warning("[camera] fallback attempt backend=%s index=%s elapsed=%dms failed=%s",
                                backend.upper(), self.index, int((time.monotonic() - attempt_started) * 1000), exc)
-                if cap is not None:
-                    try: cap.release()
-                    except Exception: pass
-                time.sleep(.15)
+                with self._lock:
+                    if self._capture is cap: self._capture = None
+                self._release(cap, "failed_attempt")
+                self._stop.wait(.15)
         self.backend, self.fourcc, self.width, self.height, self.fps = original
         raise last or RuntimeError("相機開啟失敗")
 
@@ -417,22 +448,38 @@ class CameraCapture:
     def configure(self, device_id=_UNSET, index=_UNSET, backend=_UNSET, width=_UNSET, height=_UNSET, fps=_UNSET, fourcc=_UNSET):
         # Compatibility with the former configure(index, backend) positional API.
         if isinstance(device_id, int): device_id, index = _UNSET, device_id
+        target = (str(device_id or "") if device_id is not _UNSET else self.device_id,
+                  int(index) if index is not _UNSET else self.index,
+                  str(backend or "auto").lower() if backend is not _UNSET else self.backend,
+                  width if width is not _UNSET else self.width, height if height is not _UNSET else self.height,
+                  fps if fps is not _UNSET else self.fps, fourcc if fourcc is not _UNSET else self.fourcc)
+        current = (self.device_id, self.index, self.backend, self.width, self.height, self.fps, self.fourcc)
+        if target == current and self.running and self.state == "connected":
+            self.operation_status = "相機設定未變更，目前畫面已在運行"
+            return True
+        switch_started = time.monotonic(); self.switch_timings = {}
         if not self.stop(): return False
+        self.switch_timings["release_ms"] = int((time.monotonic() - switch_started) * 1000)
         if device_id is not _UNSET: self.device_id = str(device_id or "")
         if index is not _UNSET: self.index = int(index)
         if backend is not _UNSET: self.backend = str(backend or "auto").lower()
         for key, value in (("width", width), ("height", height), ("fps", fps), ("fourcc", fourcc)):
             if value is not _UNSET: setattr(self, key, value)
-        with self._lock:
-            self._frame = None
-            self._frame_sequence, self._frame_captured_at = 0, None
-        return self.start()
+        result = self.start()
+        self.switch_timings["started_at"] = switch_started
+        return result
 
     def reconnect(self, index=None): self.configure(index=index)
 
     def stop(self):
-        self._stop.set(); thread = self._thread
+        started = time.monotonic(); self._stop.set(); thread = self._thread
+        with self._lock: cap = self._capture
+        self.operation_status = "正在釋放舊相機……"
+        self._release(cap, "stop")
+        join_started = time.monotonic()
         if thread and thread is not threading.current_thread(): thread.join(timeout=2)
+        LOGGER.info("[camera] stop release_and_join=%dms join=%dms",
+                    int((time.monotonic() - started) * 1000), int((time.monotonic() - join_started) * 1000))
         if thread and thread.is_alive():
             self.state, self.error = "stop_timeout", "相機仍在釋放中，請稍候再重新套用設定"
             return False
