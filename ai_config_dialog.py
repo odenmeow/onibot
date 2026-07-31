@@ -4,6 +4,7 @@
 threads, prompt profiles, draft autosave and image viewing, then persists via
 the save callback supplied by the main application.
 """
+import math
 import os
 import re
 import shutil
@@ -24,6 +25,72 @@ from ollama_runtime_options import build_ollama_options, QWEN_OX_PRESET
 
 
 QUESTION_HISTORY_LIMIT = 1000
+PREVIEW_INTERVAL_MS = 33
+STATUS_INTERVAL_MS = 500
+
+
+class DetachedPreviewWorker:
+    """Convert only the visible part of the newest detached camera frame.
+
+    Both the input and output are single replaceable slots.  This is
+    intentional: rendering an old frame is always worse than dropping it for
+    a live preview.
+    """
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._request = self._result = None
+        self._stopped = False
+        self._thread = threading.Thread(target=self._run, name="detached-preview", daemon=True)
+        self._thread.start()
+
+    def submit(self, request):
+        with self._condition:
+            if self._stopped: return
+            self._request = request
+            self._condition.notify()
+
+    def take_result(self):
+        with self._condition:
+            result, self._result = self._result, None
+            return result
+
+    def stop(self):
+        with self._condition:
+            self._stopped = True
+            self._request = self._result = None
+            self._condition.notify()
+        if self._thread is not threading.current_thread(): self._thread.join(timeout=1.0)
+
+    def _run(self):
+        import cv2
+        while True:
+            with self._condition:
+                while self._request is None and not self._stopped: self._condition.wait()
+                if self._stopped: return
+                request, self._request = self._request, None
+            request_id, sequence, frame, canvas_size, scale, offset = request
+            height, width = frame.shape[:2]; canvas_width, canvas_height = canvas_size
+            ox, oy = offset
+            # Inverse-map the canvas viewport into the source.  At high zoom
+            # this keeps intermediate arrays near the canvas size rather than
+            # creating a many-thousand-pixel full-frame resize.
+            sx0 = max(0, min(width, math.floor((-ox) / scale)))
+            sy0 = max(0, min(height, math.floor((-oy) / scale)))
+            sx1 = max(sx0, min(width, math.ceil((canvas_width - ox) / scale)))
+            sy1 = max(sy0, min(height, math.ceil((canvas_height - oy) / scale)))
+            if sx1 <= sx0 or sy1 <= sy0: continue
+            roi = frame[sy0:sy1, sx0:sx1]
+            target = (max(1, round((sx1 - sx0) * scale)), max(1, round((sy1 - sy0) * scale)))
+            with self._condition:
+                # A newer frame/transform is already waiting; do not spend a
+                # resize on a result the main thread would immediately drop.
+                if self._request is not None: continue
+            interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+            resized = cv2.resize(roi, target, interpolation=interpolation)
+            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            result = (request_id, sequence, rgb, round(ox + sx0 * scale), round(oy + sy0 * scale))
+            with self._condition:
+                if not self._stopped: self._result = result
 
 
 class AIConfigDialog:
@@ -46,6 +113,8 @@ class AIConfigDialog:
         self._viewer_metadata = None
         self._viewer_after = self.detached_window = self.detached_preview = None
         self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
+        self._detached_worker = self._detached_item = self._detached_source_size = None
+        self._preview_sequence = -1; self._detached_request_id = 0
         self._history_by_id = {}; self.camera_view_state = self.ai_layout.get("camera_state", "docked")
         self._after_ids, self._busy, self._generation, self._closed = set(), False, 0, False
         self._draft_after = self._system_after = None
@@ -55,7 +124,8 @@ class AIConfigDialog:
         # previous manual image must never silently affect the next attachment.
         self.attachment_crop_roi = None
         self.profiles = [dict(x) for x in ai.get("prompt_profiles", []) if isinstance(x, dict)]
-        self._build(ai); self._schedule(100, self.scan_cameras); self._schedule(150, self._poll_preview)
+        self._build(ai); self._schedule(100, self.scan_cameras)
+        self._schedule(PREVIEW_INTERVAL_MS, self._poll_preview); self._schedule(STATUS_INTERVAL_MS, self._poll_status)
         self._schedule(80, self._restore_ai_layout)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -420,7 +490,7 @@ class AIConfigDialog:
             messagebox.showwarning("相機", self.camera.error, parent=self.window); return
         if save: self.save_settings()
 
-    def _poll_preview(self):
+    def _poll_status(self):
         d = self._current_device() or {}; actual = self.camera.actual
         requested = self._resolution_text(self.camera.width, self.camera.height) + " @ " + (str(self.camera.fps) if self.camera.fps else "自動") + " FPS"
         actual_fps = "{:.1f}".format(actual["fps"]) if actual.get("fps") else "驅動未回報"
@@ -430,9 +500,6 @@ class AIConfigDialog:
         used_text = self._resolution_text(used.get("width"), used.get("height")) + " @ " + (str(used.get("fps")) if used.get("fps") else "自動") + " FPS / " + (used.get("fourcc") or "自動")
         status = "畫面讀取正常" if self.camera.state == "connected" else (self.camera.error or self.camera.state)
         self.camera_status.config(text="裝置：{}\n類型：{}相機　連線方式：{}　要求規格：{}\nfallback 後使用值：{}　實際規格：{}\n狀態：{}".format(d.get("name", "未選擇"), TYPE_LABELS.get(d.get("device_type"), "未知"), BACKEND_LABELS.get(used.get("backend", self.camera.backend), used.get("backend", self.camera.backend)), requested, used_text, actual_text, status))
-        # A visible preview is always live.  The old "manual" branch had no
-        # refresh action and therefore left the opening snapshot on screen.
-        if getattr(self, "camera_view_state", "docked") != "hidden": self.show_latest()
         if self.monitor:
             while not self.monitor.results.empty():
                 _, kind, value = self.monitor.results.get_nowait()
@@ -446,45 +513,72 @@ class AIConfigDialog:
                 elif kind == "timeout":
                     waited = value.get("timeout_sec", self.timeout.get()); self._append("錯誤", "AI 回答逾時：已等待 {} 秒".format(_number_text(waited)), ended_at); self.monitor_status.config(text="AI Monitor：AI 回答逾時（繼續運行）")
                 else: self._append("錯誤", value.get("error", "未知錯誤"), ended_at); self.monitor_status.config(text="AI Monitor：發生錯誤（繼續運行）")
-        self._schedule(150, self._poll_preview)
-    def show_latest(self):
-        frame = self.camera.latest_frame()
+        self._schedule(STATUS_INTERVAL_MS, self._poll_status)
+
+    def _poll_preview(self):
+        """30 FPS UI tick, deliberately independent from status/AI polling."""
+        if getattr(self, "camera_view_state", "docked") != "hidden":
+            # Publish before submitting the next frame so a just-completed
+            # result is not made stale merely by this UI tick.
+            if self.camera_view_state == "detached": self._publish_detached_result()
+            packet = self.camera.latest_frame_packet()
+            frame, sequence, _captured_at = packet
+            if frame is not None and sequence != self._preview_sequence:
+                self._preview_sequence = sequence
+                self.show_latest(packet)
+        self._schedule(PREVIEW_INTERVAL_MS, self._poll_preview)
+
+    def show_latest(self, packet=None):
+        frame = packet[0] if packet is not None else self.camera.latest_frame_packet()[0]
         if frame is None: return
-        self.displayed_frame = frame.copy()
+        # latest_frame_packet() already returns an isolated snapshot.
+        self.displayed_frame = frame
         try:
             from PIL import Image, ImageTk
             import cv2
-            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             if self.camera_view_state == "docked":
+                image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 image.thumbnail((560, 250)); photo = ImageTk.PhotoImage(image)
                 self.preview_label.config(image=photo, text=""); self.preview_label.image = photo
             elif self.camera_view_state == "detached" and self.detached_preview:
-                self._render_detached_preview(image)
+                self._request_detached_render()
         except Exception as exc: self.preview_label.config(text="預覽失敗：{}".format(exc), image="")
 
     def _detached_fit_scale(self, image_width, image_height):
-        return min(max(1, self.detached_preview.winfo_width()) / image_width,
+        # Detached preview uses cover (not stretch/contain), preserving both
+        # 16:9 and 16:10 source aspect ratios while filling the canvas.
+        return max(max(1, self.detached_preview.winfo_width()) / image_width,
                    max(1, self.detached_preview.winfo_height()) / image_height)
 
-    def _render_detached_preview(self, image):
-        """Render a live frame using the detached preview's zoom transform."""
-        from PIL import Image, ImageTk
+    def _request_detached_render(self):
+        if not self._detached_worker or self.displayed_frame is None or not self.detached_preview: return
         canvas_width = max(1, self.detached_preview.winfo_width())
         canvas_height = max(1, self.detached_preview.winfo_height())
-        fit_scale = self._detached_fit_scale(image.width, image.height)
-        if self._detached_scale is None or self._detached_scale < fit_scale:
+        height, width = self.displayed_frame.shape[:2]
+        fit_scale = self._detached_fit_scale(width, height)
+        source_size = (width, height)
+        if self._detached_scale is None or self._detached_scale < fit_scale or self._detached_source_size != source_size:
             self._detached_scale = fit_scale
-            self._detached_offset = ((canvas_width - image.width * fit_scale) / 2,
-                                     (canvas_height - image.height * fit_scale) / 2)
-        size = (max(1, round(image.width * self._detached_scale)),
-                max(1, round(image.height * self._detached_scale)))
-        resized = image.resize(size, Image.Resampling.LANCZOS)
-        self._detached_photo = ImageTk.PhotoImage(resized)
-        self.detached_preview.delete("frame")
-        self.detached_preview.create_image(*self._detached_offset, anchor="nw",
-                                           image=self._detached_photo, tags="frame")
+            self._detached_offset = ((canvas_width - width * fit_scale) / 2,
+                                     (canvas_height - height * fit_scale) / 2)
+        self._detached_source_size = source_size; self._detached_request_id += 1
+        self._detached_worker.submit((self._detached_request_id, self._preview_sequence,
+            self.displayed_frame, (canvas_width, canvas_height), self._detached_scale, self._detached_offset))
         if hasattr(self, "detached_status"):
             self.detached_status.config(text="滾輪或 ＋／－ 縮放｜按住左鍵拖曳｜{:.0f}%".format(self._detached_scale * 100))
+
+    def _publish_detached_result(self):
+        result = self._detached_worker.take_result() if self._detached_worker else None
+        if not result or not self.detached_preview: return
+        request_id, _sequence, rgb, x, y = result
+        if request_id != self._detached_request_id: return
+        from PIL import Image, ImageTk
+        self._detached_photo = ImageTk.PhotoImage(Image.fromarray(rgb))
+        if self._detached_item is None:
+            self._detached_item = self.detached_preview.create_image(x, y, anchor="nw", image=self._detached_photo, tags="frame")
+        else:
+            self.detached_preview.coords(self._detached_item, x, y)
+            self.detached_preview.itemconfigure(self._detached_item, image=self._detached_photo)
 
     def _zoom_detached(self, factor, pointer=None):
         if self._detached_scale is None or self.displayed_frame is None: return "break"
@@ -495,6 +589,7 @@ class AIConfigDialog:
                        self.detached_preview.winfo_height() / 2)
         self._detached_scale, self._detached_offset = self._zoom_at(
             self._detached_scale, self._detached_offset, pointer, factor, fit_scale)
+        self._request_detached_render()
         return "break"
 
     def _on_detached_wheel(self, event):
@@ -507,20 +602,25 @@ class AIConfigDialog:
         self._detached_offset = (self._detached_offset[0] + event.x - self._detached_drag[0],
                                  self._detached_offset[1] + event.y - self._detached_drag[1])
         self._detached_drag = (event.x, event.y)
+        self._request_detached_render()
 
     def set_camera_view(self, state):
         """Switch only the live picture; camera controls always remain docked."""
         if state not in ("docked", "hidden", "detached"): return
+        if getattr(self, "_detached_worker", None):
+            self._detached_worker.stop(); self._detached_worker = None
         if self.detached_window:
             self.ai_layout["detached_geometry"] = self.detached_window.geometry()
             self.detached_window.destroy(); self.detached_window = self.detached_preview = None
             self._detached_photo = self._detached_scale = self._detached_offset = self._detached_drag = None
+            self._detached_item = self._detached_source_size = None
         self.camera_view_state = state; self.ai_layout["camera_state"] = state
         if state == "docked":
             self.preview_label.grid()
         else:
             self.preview_label.grid_remove()
         if state == "detached":
+            self._detached_worker = DetachedPreviewWorker()
             win = self.detached_window = tk.Toplevel(self.window); win.title("相機預覽")
             win.geometry(self.ai_layout.get("detached_geometry", "800x600")); win.minsize(400, 300)
             self.detached_status = ttk.Label(win, text="滾輪或 ＋／－ 縮放｜按住左鍵拖曳")
@@ -533,6 +633,7 @@ class AIConfigDialog:
             self.detached_preview.bind("<Button-5>", self._on_detached_wheel)
             self.detached_preview.bind("<ButtonPress-1>", self._start_detached_drag)
             self.detached_preview.bind("<B1-Motion>", self._drag_detached)
+            self.detached_preview.bind("<Configure>", lambda _event: self._request_detached_render())
             actions = ttk.Frame(win); actions.pack(pady=5)
             ttk.Button(actions, text="－", width=4, command=lambda: self._zoom_detached(1 / 1.15)).pack(side="left")
             ttk.Button(actions, text="＋", width=4, command=lambda: self._zoom_detached(1.15)).pack(side="left", padx=4)
@@ -1306,6 +1407,7 @@ class AIConfigDialog:
         except Exception: pass
         self._closed = True; self._generation += 1
         self._probe_cancel.set()
+        if self._detached_worker: self._detached_worker.stop(); self._detached_worker = None
         if self.monitor: self.monitor.stop()
         self.alarm.stop(); self.camera.stop()
         for after_id in list(self._after_ids):
