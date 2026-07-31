@@ -136,9 +136,8 @@ class AIConfigDialog:
         self.preview_label = ttk.Label(preview, text="尚無畫面", anchor="center"); self.preview_label.grid(row=0, column=0, columnspan=12, sticky="nsew")
         self.preview_label.bind("<Double-Button-1>", self._on_camera_double_click)
         self.camera_status = ttk.Label(preview, text="正在背景掃描相機……", justify="left"); self.camera_status.grid(row=1, column=0, columnspan=12, sticky="w")
-        self.mode = tk.StringVar(value=ai.get("preview_mode", "auto"))
+        self.mode = tk.StringVar(value="auto" if ai.get("preview_mode") == "manual" else ai.get("preview_mode", "auto"))
         ttk.Radiobutton(preview, text="自動顯示", variable=self.mode, value="auto").grid(row=2, column=0)
-        ttk.Radiobutton(preview, text="手動顯示", variable=self.mode, value="manual").grid(row=2, column=1)
         self.device_choice = tk.StringVar(); self.camera_box = ttk.Combobox(preview, textvariable=self.device_choice, state="readonly", width=37)
         ttk.Label(preview, text="相機裝置").grid(row=2, column=2); self.camera_box.grid(row=2, column=3); self.camera_box.bind("<<ComboboxSelected>>", self._device_changed)
         self.resolution = tk.StringVar(value=self._resolution_text(ai.get("camera_width"), ai.get("camera_height")))
@@ -147,14 +146,14 @@ class AIConfigDialog:
         self.res_box["values"] = ("自動", "640 × 480", "1280 × 720", "1920 × 1080")
         self.fps_box["values"] = ("自動", "15", "30", "60")
         self.fourcc = tk.StringVar(value=ai.get("camera_fourcc", "MJPG") or "自動"); ttk.Label(preview, text="FourCC").grid(row=2, column=8); ttk.Combobox(preview, textvariable=self.fourcc, values=("自動", "MJPG", "YUY2"), width=7).grid(row=2, column=9)
-        ttk.Button(preview, text="重新掃描", command=self.scan_cameras).grid(row=2, column=10)
-        ttk.Button(preview, text="套用相機設定", command=self.apply_camera).grid(row=2, column=11)
+        self.scan_camera_button = ttk.Button(preview, text="重新掃描", command=self.scan_cameras); self.scan_camera_button.grid(row=2, column=10)
+        self.apply_camera_button = ttk.Button(preview, text="套用相機設定", command=self.apply_camera); self.apply_camera_button.grid(row=2, column=11)
         camera_actions = ttk.Frame(preview); camera_actions.grid(row=3, column=0, columnspan=6, sticky="w")
         ttk.Button(camera_actions, text="顯示預覽", command=lambda: self.set_camera_view("docked")).pack(side="left")
         ttk.Button(camera_actions, text="隱藏預覽", command=lambda: self.set_camera_view("hidden")).pack(side="left")
         ttk.Button(camera_actions, text="分離預覽", command=lambda: self.set_camera_view("detached")).pack(side="left")
         ttk.Button(camera_actions, text="裁切畫面", command=self.crop_camera).pack(side="left")
-        ttk.Button(preview, text="完整偵測裝置規格", command=self.probe_capabilities).grid(row=3, column=10, columnspan=2)
+        self.probe_camera_button = ttk.Button(preview, text="完整偵測裝置規格", command=self.probe_capabilities); self.probe_camera_button.grid(row=3, column=10, columnspan=2)
 
         qbox = self._section(self.window, "Ollama 與監控設定", "設定 Ollama 位址與模型、回答逾時、每輪等待時間及三種警報。停止鬧鐘會立即停止目前聲音。", row=1, column=0, columnspan=2, sticky="ew", padx=8)
         self.base_url = self._entry(qbox, 0, "API 位址", ai.get("base_url", "http://127.0.0.1:11434"), 25)
@@ -432,13 +431,29 @@ class AIConfigDialog:
             self._schedule(0, done)
         threading.Thread(target=run, daemon=True, name="ai-{}".format(operation)).start()
 
+    def _set_camera_actions_enabled(self, enabled):
+        state = "normal" if enabled else "disabled"
+        for widget in (self.scan_camera_button, self.apply_camera_button, self.probe_camera_button):
+            widget.configure(state=state)
+
     def scan_cameras(self):
+        if self._busy:
+            self._append("系統", "已有工作進行中，請稍候"); return
+        self._set_camera_actions_enabled(False)
         def scan():
             if not self.camera.stop(): raise RuntimeError(self.camera.error)
-            return CameraCapture.discover(10, backend=self.config["ai"].get("camera_backend"))
-        self._worker("掃描相機", scan, self._scanned)
+            return CameraCapture.discover(10, backend=self.config["ai"].get("camera_backend"),
+                ffmpeg_path=self.config["ai"].get("ffmpeg_path", ""))
+        def failed(message):
+            self._set_camera_actions_enabled(True); self._append("錯誤", message)
+        self._worker("掃描相機", scan, self._scanned, failed)
     def _scanned(self, devices):
-        self.devices = devices; labels = [d["display_name"] + "（index {}）".format(d["index"]) for d in devices]; self.camera_box["values"] = labels
+        self._set_camera_actions_enabled(True)
+        self.devices = devices
+        labels = ["{}｜ID {}｜index {}｜{}｜frame {}".format(d["display_name"], d["device_id"],
+            d["runtime_index"], BACKEND_LABELS.get(d["backend"], d["backend"]), "✓" if d["frame_verified"] else "✗") for d in devices]
+        self.camera_box["values"] = labels
+        for label in labels: self._append("相機", label)
         ai = self.config["ai"]; selected = CameraCapture.select_device(devices, ai.get("camera_device_id", ""), ai.get("camera_name", ""), ai.get("camera_index"))
         if selected:
             self.device_choice.set(labels[devices.index(selected)]); self.apply_camera()

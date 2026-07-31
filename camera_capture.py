@@ -38,6 +38,12 @@ class CameraCapture:
     BACKENDS = {"auto": None, "dshow": "CAP_DSHOW", "msmf": "CAP_MSMF", "v4l2": "CAP_V4L2"}
     COMMON_RESOLUTIONS = ((640, 480), (1280, 720), (1920, 1080))
     COMMON_FPS = (15, 30, 60)
+    DISCOVERY_RETRIES = 3
+    DISCOVERY_RETRY_DELAY = .25
+    RELEASE_GRACE_PERIOD = .30
+    _device_locks = {}
+    _device_locks_guard = threading.Lock()
+    _released_at = {}
 
     @staticmethod
     def ffmpeg_path(configured=""):
@@ -106,10 +112,10 @@ class CameraCapture:
 
     @staticmethod
     def _windows_names():
-        """Read DirectShow/PnP friendly names without an extra dependency."""
+        """Read all present PnP devices (capture cards are not always Camera/Image)."""
         if os.name != "nt": return []
-        script = ("Get-PnpDevice -PresentOnly | Where-Object {$_.Class -in 'Camera','Image'} | "
-                  "Select-Object FriendlyName,InstanceId | ConvertTo-Json -Compress")
+        script = ("Get-PnpDevice -PresentOnly | Where-Object {$_.FriendlyName} | "
+                  "Select-Object FriendlyName,InstanceId,Class | ConvertTo-Json -Compress")
         try:
             raw = subprocess.check_output(["powershell", "-NoProfile", "-Command", script], timeout=8,
                                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -119,36 +125,110 @@ class CameraCapture:
             return []
 
     @classmethod
-    def discover(cls, maximum=10, capture_factory=None, backend=None):
-        backend = (backend or ("dshow" if os.name == "nt" else "v4l2")).lower()
-        indexes = cls.probe(maximum, capture_factory, backend)
-        pnp = cls._windows_names()
-        devices = []
-        for position, index in enumerate(indexes):
-            # PnP and DirectShow do not promise the same ordering.  Never bind a
-            # PnP identity to an OpenCV index merely because both are Nth.
-            info = pnp[position] if len(pnp) == 1 and len(indexes) == 1 else {}
-            name = str(info.get("FriendlyName") or ("Camera {}（名稱對應未驗證）".format(index)))
-            device_id = str(info.get("InstanceId") or "{}:index:{}".format(backend, index))
-            kind = classify_device(name, device_id)
+    def enumerate_dshow_devices(cls, ffmpeg_path="", timeout=10):
+        """Return DirectShow's real video-device names, not PnP camera classes."""
+        if os.name != "nt": return []
+        executable = cls.ffmpeg_path(ffmpeg_path)
+        if not executable: return []
+        command = [executable, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"]
+        try:
+            process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            output = process.stderr.decode("utf-8", "replace") + "\n" + process.stdout.decode("utf-8", "replace")
+        except Exception:
+            return []
+        names, in_video = [], False
+        for line in output.splitlines():
+            if "DirectShow video devices" in line: in_video = True; continue
+            if "DirectShow audio devices" in line: in_video = False; continue
+            if not in_video or "Alternative name" in line: continue
+            match = re.search(r'\]\s+"(.+?)"\s*$', line)
+            # Keep duplicates: DirectShow distinguishes equal friendly names by
+            # video_device_number, and collapsing them would hide a real camera.
+            if match: names.append(match.group(1))
+        return names
+
+    @staticmethod
+    def _normal_name(value):
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+    @classmethod
+    def _identity_for_name(cls, name, pnp, ordinal=0):
+        matches = [item for item in pnp if cls._normal_name(item.get("FriendlyName")) == cls._normal_name(name)]
+        info = matches[min(ordinal, len(matches) - 1)] if matches else {}
+        # The DShow name remains stable enough to recover devices for drivers that
+        # expose no useful PnP camera class.  It is never derived from an index.
+        return str(info.get("InstanceId") or "dshow:name:{}:{}".format(name, ordinal))
+
+    @classmethod
+    def _device_lock(cls, device_id):
+        key = str(device_id or "unknown")
+        with cls._device_locks_guard:
+            return cls._device_locks.setdefault(key, threading.RLock())
+
+    @classmethod
+    def _wait_release_grace(cls, device_id):
+        remaining = cls.RELEASE_GRACE_PERIOD - (time.monotonic() - cls._released_at.get(str(device_id), 0))
+        if remaining > 0: time.sleep(remaining)
+
+    @classmethod
+    def _mark_released(cls, device_id):
+        cls._released_at[str(device_id)] = time.monotonic()
+
+    @classmethod
+    def discover(cls, maximum=10, capture_factory=None, backend=None, ffmpeg_path=""):
+        backends = ("dshow", "msmf", "auto") if os.name == "nt" else ((backend or "v4l2"),)
+        names = cls.enumerate_dshow_devices(ffmpeg_path) if os.name == "nt" else []
+        pnp, devices, used_ids = cls._windows_names(), [], set()
+        for index in range(maximum):
+            success = None
+            for candidate in backends:
+                if cls._probe_candidate(index, capture_factory, candidate): success = candidate; break
+            if success is None: continue
+            # DShow and OpenCV's CAP_DSHOW share the same capture-device domain;
+            # PnP ordering is deliberately never used for this mapping.
+            if os.name == "nt" and index < len(names):
+                name = names[index]
+                ordinal = names[:index].count(name)
+                device_id = cls._identity_for_name(name, pnp, ordinal)
+            else:
+                name = "Video capture device {}".format(index)
+                device_id = "{}:runtime:{}".format(success, index)
+            if device_id in used_ids: continue
+            used_ids.add(device_id); kind = classify_device(name, device_id)
             devices.append({"name": name, "display_name": "[{}] {}".format(TYPE_LABELS[kind], name),
-                            "device_id": device_id, "index": index, "device_type": kind, "backend": backend})
+                "device_id": device_id, "index": index, "runtime_index": index,
+                "device_type": kind, "backend": success, "frame_verified": True})
         return devices
 
     @classmethod
+    def _probe_candidate(cls, index, capture_factory, backend):
+        reader = cls(index, capture_factory, backend=backend)
+        lock = cls._device_lock("runtime:{}".format(index))
+        with lock:
+            for attempt in range(cls.DISCOVERY_RETRIES):
+                cap = None
+                try:
+                    cls._wait_release_grace("runtime:{}".format(index))
+                    cap = reader._open(index, backend)
+                    if cap is not None and cap.isOpened():
+                        ok, frame = cap.read()
+                        if ok and frame is not None: return True
+                except Exception: pass
+                finally:
+                    if cap is not None:
+                        try: cap.release()
+                        except Exception: pass
+                        cls._mark_released("runtime:{}".format(index))
+                if attempt + 1 < cls.DISCOVERY_RETRIES: time.sleep(cls.DISCOVERY_RETRY_DELAY)
+        return False
+
+    @classmethod
     def probe(cls, maximum=10, capture_factory=None, backend="auto"):
-        found, reader = [], cls(capture_factory=capture_factory, backend=backend)
+        found = []
         if cv2 is None and capture_factory is None: return found
         for index in range(maximum):
-            cap = None
-            try:
-                cap = reader._open(index)
-                if cap is not None and cap.isOpened(): found.append(index)
-            except Exception: pass
-            finally:
-                if cap is not None:
-                    try: cap.release()
-                    except Exception: pass
+            if cls._probe_candidate(index, capture_factory, backend): found.append(index)
         return found
 
     @classmethod
@@ -183,7 +263,7 @@ class CameraCapture:
                             while time.monotonic() < deadline:
                                 if cancelled(): return results
                                 time.sleep(.02)
-                        else: time.sleep(.15)
+                        else: time.sleep(cls.RELEASE_GRACE_PERIOD)
         return results
 
     @staticmethod
@@ -192,6 +272,7 @@ class CameraCapture:
             if value:
                 found = next((d for d in devices if d.get(key) == value), None)
                 if found: return found
+        if device_id or name: return None
         found = next((d for d in devices if d.get("index") == index), None)
         # Never silently use a virtual camera as fallback.
         return found if found and (device_id or name or found.get("device_type") != "virtual") else None
@@ -248,8 +329,11 @@ class CameraCapture:
         return True
 
     def _read_loop(self):
-        cap = None
+        cap = None; device_key = "runtime:{}".format(self.index)
+        device_lock = self._device_lock(device_key)
+        device_lock.acquire()
         try:
+            self._wait_release_grace(device_key)
             cap = self._open_with_fallback()
             with self._lock: self._capture = cap
             if cap is None or not cap.isOpened():
@@ -273,6 +357,8 @@ class CameraCapture:
             if cap is not None:
                 try: cap.release()
                 except Exception as exc: self._record_error("cap.release", exc)
+                self._mark_released(device_key)
+            device_lock.release()
 
     def _open_with_fallback(self):
         # A failed attempt is fully released before opening the same index again.
