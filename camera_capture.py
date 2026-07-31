@@ -107,6 +107,7 @@ class CameraCapture:
         self._lock = threading.Lock(); self._stop = threading.Event()
         self._thread = self._capture = self._frame = None
         self._frame_sequence, self._frame_captured_at = 0, None
+        self._connected_at = None
 
     def _open(self, index, backend=None):
         if self.capture_factory is not None: return self.capture_factory(index)
@@ -241,34 +242,36 @@ class CameraCapture:
         """Verify common settings with a real frame; return unique actual modes."""
         results = []
         if cv2 is None and capture_factory is None: return results
-        for width, height in cls.COMMON_RESOLUTIONS:
-            for fps in cls.COMMON_FPS:
-                for fourcc in (("MJPG", None) if (width, height) == (1920, 1080) else (None,)):
-                    if cancelled and cancelled(): return results
-                    reader = cls(device["index"], capture_factory, backend=device.get("backend", "auto"),
-                                 width=width, height=height, fps=fps, fourcc=fourcc)
-                    cap = None
-                    try:
-                        cap = reader._open(reader.index)
-                        if not cap or not cap.isOpened(): continue
-                        reader._apply(cap, validate=False)
-                        ok, frame = cap.read()
-                        if not ok or frame is None: continue
-                        actual = reader._actual(cap)
-                        mode = (actual["width"], actual["height"], round(actual["fps"] or fps, 2))
-                        if mode not in [(x["width"], x["height"], x["fps"]) for x in results]:
-                            results.append(dict(width=mode[0], height=mode[1], fps=mode[2]))
-                    except Exception: pass
-                    finally:
-                        if cap is not None:
-                            try: cap.release()
-                            except Exception: pass
-                        if cancelled:
-                            deadline = time.monotonic() + .15
-                            while time.monotonic() < deadline:
-                                if cancelled(): return results
-                                time.sleep(.02)
-                        else: time.sleep(cls.RELEASE_GRACE_PERIOD)
+        device_key = "runtime:{}".format(device["index"])
+        with cls._device_lock(device_key):
+            for width, height in cls.COMMON_RESOLUTIONS:
+                for fps in cls.COMMON_FPS:
+                    for fourcc in (("MJPG", None) if (width, height) == (1920, 1080) else (None,)):
+                        if cancelled and cancelled(): return results
+                        reader = cls(device["index"], capture_factory, backend=device.get("backend", "auto"),
+                                     width=width, height=height, fps=fps, fourcc=fourcc)
+                        cap = None
+                        try:
+                            cap = reader._open(reader.index)
+                            if not cap or not cap.isOpened(): continue
+                            reader._apply(cap, validate=False)
+                            ok, frame = cap.read()
+                            if not ok or frame is None: continue
+                            actual = reader._actual(cap)
+                            mode = (actual["width"], actual["height"], round(actual["fps"] or fps, 2))
+                            if mode not in [(x["width"], x["height"], x["fps"]) for x in results]:
+                                results.append(dict(width=mode[0], height=mode[1], fps=mode[2]))
+                        except Exception: pass
+                        finally:
+                            if cap is not None:
+                                try: cap.release()
+                                except Exception: pass
+                            if cancelled:
+                                deadline = time.monotonic() + .15
+                                while time.monotonic() < deadline:
+                                    if cancelled(): return results
+                                    time.sleep(.02)
+                            else: time.sleep(cls.RELEASE_GRACE_PERIOD)
         return results
 
     @staticmethod
@@ -335,9 +338,20 @@ class CameraCapture:
                 raise RuntimeError("相機 warm-up 後仍未成功讀取至少 {} 張 frame".format(self.WARMUP_FRAMES))
             self._store_frame(latest)
         self.actual = self._actual(cap)
-        if self.fourcc and str(self.fourcc).upper() == "MJPG" and self.actual.get("fourcc", "").upper() != "MJPG":
-            raise RuntimeError("要求 MJPG，但驅動實際回報 {}；拒絕以 YUY2/其他格式靜默運作".format(
-                self.actual.get("fourcc") or "未知 FourCC"))
+        if self.width is not None and self.height is not None and (
+                self.actual.get("width"), self.actual.get("height")) != (int(self.width), int(self.height)):
+            raise RuntimeError("要求 {} × {}，但實際為 {} × {}；拒絕靜默接受其他解析度".format(
+                int(self.width), int(self.height), self.actual.get("width", 0), self.actual.get("height", 0)))
+        requested_fourcc = self.normalize_fourcc(self.fourcc)
+        actual_fourcc = self.normalize_fourcc(self.actual.get("fourcc"))
+        if requested_fourcc and actual_fourcc != requested_fourcc:
+            raise RuntimeError("要求 {}，但驅動實際回報 {}；拒絕以其他格式靜默運作".format(
+                requested_fourcc, actual_fourcc or "未知 FourCC"))
+
+    @staticmethod
+    def normalize_fourcc(value):
+        value = str(value or "").strip().upper()
+        return "YUY2" if value == "YUYV" else value
 
     @property
     def running(self): return bool(self._thread and self._thread.is_alive())
@@ -360,7 +374,7 @@ class CameraCapture:
             with self._lock: self._capture = cap
             if cap is None or not cap.isOpened():
                 raise RuntimeError("{} 開啟失敗（backend: {}，{}，index {}）；請確認裝置是否被占用".format(BACKEND_LABELS.get(self.backend, self.backend), self.backend, self.device_name or "相機", self.index))
-            self.state, self.error = "connected", ""
+            self.state, self.error = "connected", ""; self._connected_at = time.monotonic()
             while not self._stop.is_set():
                 try: ok, frame = cap.read()
                 except Exception as exc:
@@ -389,13 +403,10 @@ class CameraCapture:
             # An explicitly requested codec is a correctness requirement, not
             # a hint: changing resolution/backend may recover, changing to
             # uncompressed YUY2 may not.
-            attempts += [("dshow", self.fourcc, None, None, None),
-                         ("msmf", self.fourcc, self.width, self.height, self.fps),
+            # Explicit mode fields are requirements.  Backend fallback is OK;
+            # silently replacing any requested field with automatic is not.
+            attempts += [("msmf", self.fourcc, self.width, self.height, self.fps),
                          ("auto", self.fourcc, self.width, self.height, self.fps)]
-            if not self.fourcc:
-                attempts += [("dshow", None, None, None, None),
-                             ("msmf", None, None, None, None),
-                             ("auto", None, None, None, None)]
         original = (self.backend, self.fourcc, self.width, self.height, self.fps)
         last = None
         for backend, fourcc, width, height, fps in attempts:
@@ -455,22 +466,48 @@ class CameraCapture:
     def configure(self, device_id=_UNSET, index=_UNSET, backend=_UNSET, width=_UNSET, height=_UNSET, fps=_UNSET, fourcc=_UNSET):
         # Compatibility with the former configure(index, backend) positional API.
         if isinstance(device_id, int): device_id, index = _UNSET, device_id
+        # Clear every observation before stopping/opening so the UI can never
+        # present data belonging to the previous stream as the new result.
+        self.actual = {}; self.fallback = {}; self.buffer_size_accepted = None
+        self.capture_fps = 0.0; self._connected_at = None
+        with self._lock:
+            self._frame = None
+            self._frame_sequence, self._frame_captured_at = 0, None
+            self._capture_times = []
         if not self.stop(): return False
-        if device_id is not _UNSET: self.device_id = str(device_id or "")
-        if index is not _UNSET: self.index = int(index)
-        if backend is not _UNSET: self.backend = str(backend or "auto").lower()
-        for key, value in (("width", width), ("height", height), ("fps", fps), ("fourcc", fourcc)):
-            if value is not _UNSET: setattr(self, key, value)
         with self._lock:
             self._frame = None
             self._frame_sequence, self._frame_captured_at = 0, None
             self._capture_times = []; self.capture_fps = 0.0
+        if device_id is not _UNSET: self.device_id = str(device_id or "")
+        if index is not _UNSET: self.index = int(index)
+        if backend is not _UNSET: self.backend = str(backend or "auto").lower()
+        for key, value in (("width", width), ("height", height), ("fps", fps), ("fourcc", fourcc)):
+            if value is not _UNSET:
+                setattr(self, key, self.normalize_fourcc(value) if key == "fourcc" and value is not None else value)
         return self.start()
+
+    def wait_until_ready(self, minimum_frames=3, timeout=4.0):
+        """Wait for a genuinely connected stream and several newly read frames."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock: sequence = self._frame_sequence
+            if self.state == "connected" and sequence >= minimum_frames: return True
+            if self.state in ("configure_error", "dependency_error", "stop_timeout"): return False
+            time.sleep(.01)
+        self.error = "相機已啟動但未在期限內連線並收到至少 {} 張新 frame".format(minimum_frames)
+        return False
 
     def reconnect(self, index=None): self.configure(index=index)
 
     def stop(self):
         self._stop.set(); thread = self._thread
+        # release() is intentionally called from the stopper as well: many
+        # camera backends otherwise leave read() blocked forever.
+        with self._lock: capture = self._capture
+        if capture is not None:
+            try: capture.release()
+            except Exception as exc: self._record_error("cap.release(unblock)", exc)
         if thread and thread is not threading.current_thread(): thread.join(timeout=2)
         if thread and thread.is_alive():
             self.state, self.error = "stop_timeout", "相機仍在釋放中，請稍候再重新套用設定"
