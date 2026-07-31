@@ -2,6 +2,7 @@ import queue
 import os
 import tempfile
 import time
+import tkinter as tk
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -215,6 +216,33 @@ class AIConfigDialogTests(unittest.TestCase):
 
         dialog._open_image_viewer.assert_called_once_with(
             "history", path="/history/new.jpg", title="偵測到 O", metadata=item)
+
+    def test_focus_image_viewer_raises_window_then_focuses_canvas(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        calls = mock.Mock()
+        dialog.zoom_window = SimpleNamespace(
+            deiconify=calls.deiconify,
+            lift=calls.lift,
+            update_idletasks=calls.update_idletasks,
+            focus_force=calls.focus_force,
+        )
+        dialog.zoom_canvas = SimpleNamespace(focus_set=calls.canvas_focus_set)
+
+        dialog._focus_image_viewer()
+
+        self.assertEqual(calls.mock_calls, [
+            mock.call.deiconify(), mock.call.lift(), mock.call.update_idletasks(),
+            mock.call.focus_force(), mock.call.canvas_focus_set(),
+        ])
+
+    def test_focus_image_viewer_ignores_window_closed_during_idle_callback(self):
+        dialog = AIConfigDialog.__new__(AIConfigDialog)
+        dialog.zoom_window = SimpleNamespace(deiconify=mock.Mock(side_effect=tk.TclError))
+        dialog.zoom_canvas = SimpleNamespace(focus_set=mock.Mock())
+
+        dialog._focus_image_viewer()
+
+        dialog.zoom_canvas.focus_set.assert_not_called()
 
     def test_space_in_viewer_stops_alarm(self):
         dialog = AIConfigDialog.__new__(AIConfigDialog)
