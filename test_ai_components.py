@@ -88,6 +88,38 @@ class CameraTests(unittest.TestCase):
         self.assertEqual(CameraCapture.select_device(devices, "usb-a", "", 0)["index"], 4)
         self.assertEqual(CameraCapture.select_device(devices, "missing", "Webcam", 0)["index"], 4)
         self.assertIsNone(CameraCapture.select_device(devices, "", "", 0))
+
+    def test_enumeration_uses_path_identity_and_never_probes_indexes(self):
+        cameras = [
+            types.SimpleNamespace(index=0, name="Integrated Camera", path="builtin-path", vid=1, pid=2),
+            types.SimpleNamespace(index=7, name="USB Camera", path="usb-stable-path", vid=3, pid=4),
+        ]
+        fake_cv2 = types.SimpleNamespace(CAP_DSHOW=700)
+        with mock.patch.object(camera_capture.os, "name", "nt"), \
+             mock.patch.object(camera_capture, "cv2", fake_cv2), \
+             mock.patch.object(camera_capture, "enumerate_cameras", return_value=cameras), \
+             mock.patch.object(CameraCapture, "probe") as probe:
+            devices = CameraCapture.discover(10, backend="dshow")
+        probe.assert_not_called()
+        selected = CameraCapture.select_device(devices, "usb-stable-path", "USB Camera", 1)
+        self.assertEqual(selected["index"], 7)
+        self.assertEqual(selected["device_type"], "usb")
+        self.assertFalse(CameraCapture.last_discovery["legacy"])
+
+    def test_missing_usb_does_not_select_virtual_camera_by_old_index(self):
+        devices = [{"device_id": "obs", "name": "OBS Virtual Camera", "index": 2,
+                    "device_type": "virtual", "device_path": "obs-path"}]
+        self.assertIsNone(CameraCapture.select_device(devices, "missing-usb", "USB Camera", 2))
+
+    def test_enumeration_error_is_the_only_windows_path_to_legacy_probe(self):
+        with mock.patch.object(camera_capture.os, "name", "nt"), \
+             mock.patch.object(camera_capture, "enumerate_cameras", side_effect=RuntimeError("driver error")), \
+             mock.patch.object(camera_capture, "cv2", types.SimpleNamespace(CAP_DSHOW=700)), \
+             mock.patch.object(CameraCapture, "_legacy_discover", return_value=[]) as legacy:
+            CameraCapture.discover(10, backend="dshow")
+        legacy.assert_called_once()
+        self.assertTrue(CameraCapture.last_discovery["legacy"])
+        self.assertIn("driver error", CameraCapture.last_discovery["warning"])
     def test_missing_opencv_reports_dependency_error_without_thread(self):
         with mock.patch.object(camera_capture, "cv2", None):
             reader = CameraCapture(); reader.start()

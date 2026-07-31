@@ -5,6 +5,7 @@
 names and stable device IDs while numeric indexes remain runtime details.
 """
 import json
+import logging
 import os
 import re
 import shutil
@@ -17,19 +18,27 @@ try:
 except ImportError:  # camera support is optional on development machines
     cv2 = None
 
+try:
+    from cv2_enumerate_cameras import enumerate_cameras
+except ImportError:
+    enumerate_cameras = None
+
+
+LOGGER = logging.getLogger(__name__)
+
 
 TYPE_LABELS = {"usb": "USB", "integrated": "內建", "virtual": "虛擬", "unknown": "相機"}
 BACKEND_LABELS = {"dshow": "DirectShow", "msmf": "Media Foundation", "v4l2": "V4L2", "auto": "自動"}
 _UNSET = object()
 
 
-def classify_device(name, device_id=""):
-    text = (str(name) + " " + str(device_id)).lower()
+def classify_device(name, device_id="", device_path="", vid="", pid=""):
+    text = " ".join(map(str, (name, device_id, device_path, vid, pid))).lower()
     if any(word in text for word in ("obs", "virtual", "manycam", "snap camera")):
         return "virtual"
     if any(word in text for word in ("integrated", "built-in", "facetime", "內建")):
         return "integrated"
-    if "usb" in text or "vid_" in text:
+    if "usb" in text or "vid_" in text or (vid and pid):
         return "usb"
     return "unknown"
 
@@ -38,6 +47,7 @@ class CameraCapture:
     BACKENDS = {"auto": None, "dshow": "CAP_DSHOW", "msmf": "CAP_MSMF", "v4l2": "CAP_V4L2"}
     COMMON_RESOLUTIONS = ((640, 480), (1280, 720), (1920, 1080))
     COMMON_FPS = (15, 30, 60)
+    last_discovery = {"elapsed_ms": 0, "legacy": False, "warning": "", "backend": ""}
 
     @staticmethod
     def ffmpeg_path(configured=""):
@@ -121,6 +131,61 @@ class CameraCapture:
     @classmethod
     def discover(cls, maximum=10, capture_factory=None, backend=None):
         backend = (backend or ("dshow" if os.name == "nt" else "v4l2")).lower()
+        if os.name == "nt" and backend not in ("dshow", "msmf"): backend = "dshow"
+        started = time.monotonic()
+        if os.name == "nt" and capture_factory is None:
+            try:
+                if enumerate_cameras is None:
+                    raise ImportError("未安裝 cv2-enumerate-cameras")
+                api_name = "CAP_DSHOW" if backend == "dshow" else "CAP_MSMF"
+                api = getattr(cv2, api_name) if cv2 is not None else None
+                if api is None:
+                    raise RuntimeError("OpenCV 不支援 {}".format(api_name))
+                devices = [cls._enumerated_device(item, backend) for item in enumerate_cameras(api)]
+                elapsed = int((time.monotonic() - started) * 1000)
+                cls.last_discovery = {"elapsed_ms": elapsed, "legacy": False, "warning": "", "backend": backend}
+                LOGGER.info("[camera] enumeration backend=%s elapsed=%dms devices=%d", backend.upper(), elapsed, len(devices))
+                for device in devices:
+                    LOGGER.info("[camera] device name=%s path=%s vid=%s pid=%s index=%s backend=%s",
+                                device["name"], device["device_path"], device["vid"], device["pid"],
+                                device["index"], device["backend"].upper())
+                return devices
+            except Exception as exc:
+                warning = "快速相機列舉不可用，正在使用相容模式，偵測可能較慢：{}".format(exc)
+                LOGGER.warning("[camera] %s", warning)
+                # Only an explicit enumeration failure is allowed to reach the legacy probe.
+                devices = cls._legacy_discover(maximum, capture_factory, backend)
+                elapsed = int((time.monotonic() - started) * 1000)
+                cls.last_discovery = {"elapsed_ms": elapsed, "legacy": True, "warning": warning, "backend": backend}
+                return devices
+        devices = cls._legacy_discover(maximum, capture_factory, backend)
+        cls.last_discovery = {"elapsed_ms": int((time.monotonic() - started) * 1000),
+                              "legacy": True, "warning": "", "backend": backend}
+        return devices
+
+    @staticmethod
+    def _value(item, *names):
+        for name in names:
+            value = item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+            if value is not None: return value
+        return ""
+
+    @classmethod
+    def _enumerated_device(cls, item, backend):
+        name = str(cls._value(item, "name", "friendly_name") or "Camera")
+        path = str(cls._value(item, "path", "device_path") or "")
+        vid = str(cls._value(item, "vid") or "")
+        pid = str(cls._value(item, "pid") or "")
+        index = int(cls._value(item, "index") or 0)
+        device_id = path or ("vid:{}:pid:{}:name:{}".format(vid, pid, name) if vid and pid
+                             else "{}:index:{}".format(backend, index))
+        kind = classify_device(name, device_id, path, vid, pid)
+        return {"name": name, "display_name": "[{}] {}".format(TYPE_LABELS[kind], name),
+                "device_id": device_id, "index": index, "device_type": kind, "backend": backend,
+                "device_path": path, "vid": vid, "pid": pid}
+
+    @classmethod
+    def _legacy_discover(cls, maximum, capture_factory, backend):
         indexes = cls.probe(maximum, capture_factory, backend)
         pnp = cls._windows_names()
         devices = []
@@ -132,7 +197,8 @@ class CameraCapture:
             device_id = str(info.get("InstanceId") or "{}:index:{}".format(backend, index))
             kind = classify_device(name, device_id)
             devices.append({"name": name, "display_name": "[{}] {}".format(TYPE_LABELS[kind], name),
-                            "device_id": device_id, "index": index, "device_type": kind, "backend": backend})
+                            "device_id": device_id, "index": index, "device_type": kind, "backend": backend,
+                            "device_path": "", "vid": "", "pid": ""})
         return devices
 
     @classmethod
@@ -187,14 +253,27 @@ class CameraCapture:
         return results
 
     @staticmethod
-    def select_device(devices, device_id="", name="", index=None):
-        for key, value in (("device_id", device_id), ("name", name)):
+    def select_device(devices, device_id="", name="", index=None, device_path="", vid="", pid=""):
+        for key, value in (("device_id", device_id), ("device_path", device_path)):
             if value:
                 found = next((d for d in devices if d.get(key) == value), None)
                 if found: return found
+        if vid and pid and name:
+            found = next((d for d in devices if str(d.get("vid")) == str(vid) and
+                          str(d.get("pid")) == str(pid) and d.get("name") == name), None)
+            if found: return found
+        if name:
+            found = next((d for d in devices if d.get("name") == name), None)
+            if found:
+                LOGGER.info("[camera] selected device_id=%s name=%s path=%s index=%s",
+                            found.get("device_id"), found.get("name"), found.get("device_path"), found.get("index"))
+                return found
         found = next((d for d in devices if d.get("index") == index), None)
-        # Never silently use a virtual camera as fallback.
-        return found if found and (device_id or name or found.get("device_type") != "virtual") else None
+        # Index is only for settings that predate stable identity fields.  A
+        # missing known device must never be replaced merely because its old
+        # index now belongs to another camera (especially a virtual camera).
+        old_setting = not any((device_id, device_path, vid, pid, name))
+        return found if old_setting and found and found.get("device_type") != "virtual" else None
 
     def _actual(self, cap):
         if cv2 is None: return {}
@@ -218,6 +297,7 @@ class CameraCapture:
         self.error = "相機操作失敗（{}；{}）：{}".format(operation, self._context(), exc)
 
     def _apply(self, cap, validate=True):
+        properties_started = time.monotonic()
         if cv2 is not None:
             if self.fourcc:
                 code = str(self.fourcc)[:4]
@@ -229,11 +309,14 @@ class CameraCapture:
                 if value is not None:
                     try: cap.set(prop, float(value))
                     except Exception as exc: self._record_error("cap.set({})".format(name), exc); raise
+        LOGGER.info("[camera] apply_properties elapsed=%dms", int((time.monotonic() - properties_started) * 1000))
         if validate:
+            frame_started = time.monotonic()
             try: ok, frame = cap.read()
             except Exception as exc: self._record_error("cap.read(validate)", exc); raise
             if not ok or frame is None: raise RuntimeError("可開啟裝置但無法讀取 frame；相機可能被 OBS 或其他程式占用")
             self._store_frame(frame)
+            LOGGER.info("[camera] first_frame elapsed=%dms", int((time.monotonic() - frame_started) * 1000))
         self.actual = self._actual(cap)
 
     @property
@@ -284,9 +367,12 @@ class CameraCapture:
         last = None
         for backend, fourcc, width, height, fps in attempts:
             cap = None
+            attempt_started = time.monotonic()
             try:
                 self.backend, self.fourcc, self.width, self.height, self.fps = backend, fourcc, width, height, fps
                 cap = self._open(self.index, backend)
+                LOGGER.info("[camera] open backend=%s index=%s elapsed=%dms", backend.upper(), self.index,
+                            int((time.monotonic() - attempt_started) * 1000))
                 if cap is None or not cap.isOpened(): raise RuntimeError("裝置無法開啟")
                 self._apply(cap)
                 self.fallback = {"backend": backend, "width": width, "height": height, "fps": fps, "fourcc": fourcc}
@@ -294,6 +380,8 @@ class CameraCapture:
                 return cap
             except Exception as exc:
                 last = exc
+                LOGGER.warning("[camera] fallback attempt backend=%s index=%s elapsed=%dms failed=%s",
+                               backend.upper(), self.index, int((time.monotonic() - attempt_started) * 1000), exc)
                 if cap is not None:
                     try: cap.release()
                     except Exception: pass

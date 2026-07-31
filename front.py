@@ -161,7 +161,7 @@ def ensure_dirs():
 
 def load_config():
     ai_defaults = {
-        "enabled": False, "camera_device_id": "", "camera_name": "", "camera_index": 0,
+        "enabled": False, "camera_device_id": "", "camera_device_path": "", "camera_vid": "", "camera_pid": "", "camera_name": "", "camera_index": 0,
         "camera_backend": "dshow" if os.name == "nt" else "v4l2", "camera_width": 1280,
         "camera_height": 720, "camera_fps": 30, "camera_fourcc": "MJPG", "preview_mode": "auto",
         "base_url": "http://127.0.0.1:11434", "model": "qwen3-vl:8b", "timeout": 30,
