@@ -24,7 +24,6 @@
     "camera_height": 1080,
     "camera_fps": 30.0,
     "camera_fourcc": "YUYV",
-    "preview_mode": "auto",
     "base_url": "http://127.0.0.1:11434",
     "model": "qwen3-vl:8b",
     "timeout": 20.0,

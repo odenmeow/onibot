@@ -208,6 +208,24 @@ class CameraCapture:
         return devices
 
     @classmethod
+    def enumerate_devices(cls, ffmpeg_path=""):
+        """List device names without creating a ``VideoCapture`` or reading frames."""
+        if os.name == "nt":
+            names, pnp = cls.enumerate_dshow_devices(ffmpeg_path), cls._windows_names()
+            devices = []
+            for index, name in enumerate(names):
+                ordinal = names[:index].count(name)
+                device_id = cls._identity_for_name(name, pnp, ordinal)
+                kind = classify_device(name, device_id)
+                devices.append({"name": name, "display_name": "[{}] {}".format(TYPE_LABELS[kind], name),
+                    "device_id": device_id, "index": index, "runtime_index": index,
+                    "device_type": kind, "backend": "dshow", "frame_verified": False})
+            return devices
+        # FFmpeg is used only as a device-name source.  Never probe numeric
+        # indexes here: enumeration must be harmless to an active preview.
+        return []
+
+    @classmethod
     def _probe_candidate(cls, index, capture_factory, backend):
         reader = cls(index, capture_factory, backend=backend)
         lock = cls._device_lock("runtime:{}".format(index))
@@ -333,10 +351,13 @@ class CameraCapture:
             while time.monotonic() < deadline:
                 try: ok, frame = cap.read()
                 except Exception as exc: self._record_error("cap.read(warmup)", exc); raise
-                if ok and frame is not None: frame_count, latest = frame_count + 1, frame
+                if ok and frame is not None:
+                    frame_count, latest = frame_count + 1, frame
+                    # Publish the very first valid image immediately.  The
+                    # remaining warm-up validation continues on this worker.
+                    self._store_frame(frame)
             if frame_count < self.WARMUP_FRAMES:
                 raise RuntimeError("相機 warm-up 後仍未成功讀取至少 {} 張 frame".format(self.WARMUP_FRAMES))
-            self._store_frame(latest)
         self.actual = self._actual(cap)
         if self.width is not None and self.height is not None and (
                 self.actual.get("width"), self.actual.get("height")) != (int(self.width), int(self.height)):
@@ -356,11 +377,11 @@ class CameraCapture:
     @property
     def running(self): return bool(self._thread and self._thread.is_alive())
 
-    def start(self):
+    def start(self, compatibility=False):
         if self.running or (self._thread is not None and self._thread.is_alive()): return False
         if cv2 is None and self.capture_factory is None:
             self.state, self.error = "dependency_error", "無法載入 OpenCV；請安裝 opencv-python 並確認 DLL 可正常載入"; return False
-        self.state = "starting"; self._stop.clear()
+        self.state = "starting"; self._stop.clear(); self._compatibility = bool(compatibility)
         self._thread = threading.Thread(target=self._read_loop, daemon=True, name="ai-camera"); self._thread.start()
         return True
 
@@ -399,7 +420,7 @@ class CameraCapture:
     def _open_with_fallback(self):
         # A failed attempt is fully released before opening the same index again.
         attempts = [(self.backend, self.fourcc, self.width, self.height, self.fps)]
-        if os.name == "nt" and self.backend == "dshow" and self.capture_factory is None:
+        if getattr(self, "_compatibility", False) and os.name == "nt" and self.backend == "dshow" and self.capture_factory is None:
             # An explicitly requested codec is a correctness requirement, not
             # a hint: changing resolution/backend may recover, changing to
             # uncompressed YUY2 may not.
@@ -415,12 +436,17 @@ class CameraCapture:
                 self.backend, self.fourcc, self.width, self.height, self.fps = backend, fourcc, width, height, fps
                 cap = self._open(self.index, backend)
                 if cap is None or not cap.isOpened(): raise RuntimeError("裝置無法開啟")
+                # Publish the handle before any potentially blocking warm-up
+                # read, allowing stop() to release it from another thread.
+                with self._lock: self._capture = cap
                 self._apply(cap)
                 self.fallback = {"backend": backend, "width": width, "height": height, "fps": fps, "fourcc": fourcc}
                 self.backend, self.fourcc, self.width, self.height, self.fps = original
                 return cap
             except Exception as exc:
                 last = exc
+                with self._lock:
+                    if self._capture is cap: self._capture = None
                 if cap is not None:
                     try: cap.release()
                     except Exception: pass
@@ -463,7 +489,7 @@ class CameraCapture:
                 span = self._capture_times[-1] - self._capture_times[0]
                 self.capture_fps = (len(self._capture_times) - 1) / span if span else 0.0
 
-    def configure(self, device_id=_UNSET, index=_UNSET, backend=_UNSET, width=_UNSET, height=_UNSET, fps=_UNSET, fourcc=_UNSET):
+    def configure(self, device_id=_UNSET, index=_UNSET, backend=_UNSET, width=_UNSET, height=_UNSET, fps=_UNSET, fourcc=_UNSET, compatibility=False):
         # Compatibility with the former configure(index, backend) positional API.
         if isinstance(device_id, int): device_id, index = _UNSET, device_id
         # Clear every observation before stopping/opening so the UI can never
@@ -485,7 +511,7 @@ class CameraCapture:
         for key, value in (("width", width), ("height", height), ("fps", fps), ("fourcc", fourcc)):
             if value is not _UNSET:
                 setattr(self, key, self.normalize_fourcc(value) if key == "fourcc" and value is not None else value)
-        return self.start()
+        return self.start(compatibility=compatibility)
 
     def wait_until_ready(self, minimum_frames=3, timeout=4.0):
         """Wait for a genuinely connected stream and several newly read frames."""
