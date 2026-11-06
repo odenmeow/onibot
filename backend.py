@@ -15,10 +15,162 @@ import threading
 import time
 import uuid
 import os
+import queue
+import hashlib
+import subprocess
+import html
+from datetime import datetime, timezone
 import RPi.GPIO as GPIO
+
+
+# Low-overhead, nonblocking, timestamped backend diagnostics. JSONL is kept
+# outside the console; never store full timelines or secret-bearing payloads.
+TRACE_LOG_PATH = os.environ.get("ONIBOT_TRACE_LOG", os.path.join(os.path.dirname(__file__), "logs", "backend_trace.jsonl"))
+_trace_queue = queue.Queue(maxsize=3000)
+_trace_last_status = {}
+_trace_status_lock = threading.Lock()
+
+def _trace(event, **fields):
+    try:
+        record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()) + ".{:03d}".format(int(time.time() % 1 * 1000)),
+                  "epoch_ms": int(time.time() * 1000), "monotonic_ns": time.monotonic_ns(),
+                  "event": event, "thread": threading.current_thread().name}
+        record.update(fields)
+        _trace_queue.put_nowait(record)
+    except (queue.Full, Exception):
+        pass
+
+def _trace_writer():
+    batch = []
+    while True:
+        try:
+            item = _trace_queue.get(timeout=0.5)
+            batch.append(item)
+        except queue.Empty:
+            pass
+        if batch:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(TRACE_LOG_PATH)), exist_ok=True)
+                with open(TRACE_LOG_PATH, "a", encoding="utf-8") as h:
+                    for row in batch:
+                        h.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+                batch.clear()
+            except OSError:
+                batch.clear()
+
+threading.Thread(target=_trace_writer, name="backend-trace-writer", daemon=True).start()
 
 HOST = "0.0.0.0"
 PORT = 5000
+
+# The diagnostic HTTP handler shares PORT=5000 with the existing newline-JSON
+# TCP protocol. No second socket, port, firewall rule, or GPIO control route.
+BACKEND_BUILD_VERSION = "2026.11.06-stability-trace-http-v1"
+_BACKEND_STARTED_AT = datetime.now(timezone.utc).isoformat(timespec="seconds")
+_BACKEND_STARTED_MONO = time.monotonic()
+_BACKEND_SOURCE_PATH = os.path.realpath(__file__)
+
+def _sha256_file(path):
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+_RUNNING_SOURCE_SHA256 = _sha256_file(_BACKEND_SOURCE_PATH)
+
+def _git_commit():
+    try:
+        completed = subprocess.run(
+            ["git", "-C", os.path.dirname(_BACKEND_SOURCE_PATH), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=0.7, check=False,
+        )
+        if completed.returncode == 0:
+            return completed.stdout.strip()[:40]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+def _diagnostic_snapshot():
+    # Read-only: this function must not alter GPIO, task, or cooldown state.
+    try:
+        runtime = get_timeline_runtime_summary()
+    except Exception:
+        runtime = {}
+    try:
+        running = bool(current_run_thread is not None and current_run_thread.is_alive())
+    except Exception:
+        running = False
+    disk_hash = _sha256_file(_BACKEND_SOURCE_PATH)
+    return {
+        "service_name": "onibot-backend",
+        "build_version": BACKEND_BUILD_VERSION,
+        "contract_version": RUNTIME_CONTRACT_VERSION,
+        "pid": os.getpid(),
+        "started_at_utc": _BACKEND_STARTED_AT,
+        "uptime_sec": round(time.monotonic() - _BACKEND_STARTED_MONO, 1),
+        "listening_port": PORT,
+        "source_file": _BACKEND_SOURCE_PATH,
+        "running_source_sha256": _RUNNING_SOURCE_SHA256,
+        "disk_source_sha256": disk_hash,
+        "source_changed_since_start": (disk_hash != _RUNNING_SOURCE_SHA256) if disk_hash is not None else None,
+        "git_commit": _git_commit(),
+        "trace_log_path": os.path.realpath(TRACE_LOG_PATH),
+        "trace_log_exists": os.path.isfile(TRACE_LOG_PATH),
+        "task_running": running,
+        "runtime_state": str(runtime.get("state", "unknown")),
+        "execution_round": runtime.get("execution_round", 0),
+    }
+
+def _handle_http_diagnostic(conn, request_bytes):
+    # This is not a general HTTP server. Only GET/HEAD for harmless diagnostics.
+    # Limit headers to prevent an idle/malicious peer from holding a thread.
+    conn.settimeout(2.0)
+    header = request_bytes
+    while b"\r\n\r\n" not in header and len(header) < 8192:
+        block = conn.recv(min(4096, 8192 - len(header)))
+        if not block:
+            break
+        header += block
+    first = header.split(b"\r\n", 1)[0].decode("ascii", "replace")
+    parts = first.split(" ")
+    method = parts[0] if parts else ""
+    path = parts[1].split("?", 1)[0] if len(parts) > 1 else ""
+    if method not in ("GET", "HEAD"):
+        code, reason, content_type, content = 405, "Method Not Allowed", "text/plain; charset=utf-8", b"GET or HEAD only\n"
+    elif path in ("/version", "/health"):
+        snapshot = _diagnostic_snapshot()
+        if path == "/health":
+            snapshot = {"status": "ok", **snapshot}
+        content = (json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        code, reason, content_type = 200, "OK", "application/json; charset=utf-8"
+    elif path in ("/", "/index.html"):
+        # No external scripts or assets; works directly on Windows browser.
+        data = _diagnostic_snapshot()
+        rows = "".join("<tr><th>{}</th><td>{}</td></tr>".format(
+            html.escape(str(k)), html.escape(str(v))) for k, v in data.items())
+        page = ("<!doctype html><html lang='zh-Hant'><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                "<title>Onibot Backend Version</title><style>body{font:16px system-ui;"
+                "max-width:960px;margin:32px auto;padding:0 16px}table{border-collapse:collapse;"
+                "width:100%;overflow-wrap:anywhere}td,th{border:1px solid #bbb;"
+                "padding:8px;text-align:left}th{width:35%;background:#eee}"
+                "</style><h1>Onibot Backend 診斷</h1><p>此頁面只讀取版本與狀態，不控制 GPIO。</p>"
+                "<p><a href='/version'>/version JSON</a> | "
+                "<a href='/health'>/health JSON</a></p><table>" + rows + "</table></html>")
+        content = page.encode("utf-8")
+        code, reason, content_type = 200, "OK", "text/html; charset=utf-8"
+    else:
+        code, reason, content_type, content = 404, "Not Found", "text/plain; charset=utf-8", b"not found\n"
+    response_header = (
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n"
+        "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+        "Connection: close\r\n\r\n".format(code, reason, content_type, len(content))
+    ).encode("ascii")
+    conn.sendall(response_header + (b"" if method == "HEAD" else content))
 
 BACKEND_CONFIG_FILE = os.environ.get("ONIBOT_BACKEND_CONFIG", os.path.join(os.path.dirname(__file__), "backend_config.json"))
 ACTIVE_LOW = True
@@ -821,6 +973,9 @@ def run_timeline_background(
     try:
         pause_event.clear()
         current_run_clock = PausableClock()
+        _trace("task_running", client_task_id=current_client_task_id,
+               server_task_id=current_server_task_id, execution_round=execution_round,
+               events_total=len(events))
         set_timeline_runtime(
             "timeline",
             "running",
@@ -843,6 +998,9 @@ def run_timeline_background(
         run_timeline(events, buff_runtime=buff_runtime, buff_skip_mode=buff_skip_mode)
         release_all()
         patch_timeline_runtime(state="finished")
+        _trace("task_finished", client_task_id=current_client_task_id,
+               server_task_id=current_server_task_id, execution_round=execution_round,
+               processed_count=get_timeline_runtime_summary().get("processed_count"))
         current_run_status = {
             "state": "idle",
             "mode": "timeline",
@@ -852,6 +1010,8 @@ def run_timeline_background(
     except InterruptedError as e:
         release_all()
         patch_timeline_runtime(state="stopped")
+        _trace("task_stopped", client_task_id=current_client_task_id,
+               server_task_id=current_server_task_id, error=str(e)[:200])
         current_run_status = {
             "state": "stopped",
             "mode": "timeline",
@@ -861,6 +1021,8 @@ def run_timeline_background(
     except Exception as e:
         release_all()
         patch_timeline_runtime(state="error")
+        _trace("task_error", client_task_id=current_client_task_id,
+               server_task_id=current_server_task_id, error=str(e)[:200])
         current_run_status = {
             "state": "error",
             "mode": "timeline",
@@ -1307,6 +1469,19 @@ def handle_request(data):
         return {"status": "ok", "mode": "macro", "message": "已收到 macro，開始背景執行"}
 
     if str(data.get("type", "")).strip().lower() == "start_task":
+        # Idempotency guard for lost ACKs: an identical task ID never triggers
+        # a second GPIO execution, including once the first run has finished.
+        incoming_id = str(data.get("client_task_id", "")).strip()
+        if incoming_id and incoming_id == str(current_client_task_id or ""):
+            runtime = get_timeline_runtime_snapshot()
+            if runtime.get("state") in {"running", "paused", "resumed", "finished", "stopped", "error"}:
+                return {
+                    "type": "ack", "status": "ok", "client_task_id": incoming_id,
+                    "server_task_id": current_server_task_id,
+                    "timeline_runtime": runtime,
+                    "duplicate_task_id": True,
+                    "message": "同一 client_task_id 已接收，不重複執行 GPIO"
+                }
         # executor_only：只執行前端/上游已決定好的 timeline，不處理排程語意。
         if current_run_thread is not None and current_run_thread.is_alive():
             return make_error_response(
@@ -1378,6 +1553,9 @@ def handle_request(data):
             args=(events, buff_skip_mode, max(0, incoming_runtime_version), incoming_execution_round, effective_order_debug if runtime_debug_enabled else None, effective_cooldown_session_id),
             daemon=True
         )
+        _trace("task_accepted", client_task_id=client_task_id,
+               server_task_id=current_server_task_id,
+               execution_round=incoming_execution_round, events_total=len(events))
         current_run_thread.start()
         if incoming_round_traces:
             patch_timeline_runtime(round_traces=incoming_round_traces)
@@ -1419,29 +1597,79 @@ def handle_request(data):
     )
 
 
+
 def client_thread(conn, addr):
-    print("[連線] {}".format(addr))
+    peer = "{}:{}".format(addr[0], addr[1])
+    _trace("connection_open", peer=peer)
     buffer = b""
+    seq = 0
 
     def handle_line(raw_line):
+        nonlocal seq
+        seq += 1
+        received_ns = time.monotonic_ns()
+        action = "unknown"
+        trace_id = ""
+        task_id = ""
+        round_num = None
         try:
             text = raw_line.decode("utf-8")
-            print("[收到] {}".format(text))
             data = json.loads(text)
+            action = str(data.get("action") or data.get("type") or "unknown")
+            trace_id = str(data.get("trace_request_id", ""))[:80]
+            task_id = str(data.get("client_task_id", ""))[:100]
+            round_num = data.get("execution_round")
+            # Do not block the request thread on stdout/journald.
+            if action != "status":
+                _trace("request_received", peer=peer, seq=seq, trace_request_id=trace_id,
+                       action=action, client_task_id=task_id, execution_round=round_num,
+                       bytes=len(raw_line))
             response = handle_request(data)
         except Exception as e:
+            _trace("request_exception", peer=peer, seq=seq, trace_request_id=trace_id,
+                   action=action, error_type=type(e).__name__, error=str(e)[:250])
             response = make_error_response(
-                code="exception",
-                message=str(e),
-                phase="request",
-                diag={"last_state": str(current_run_status.get("state", "")), "elapsed_ms": 0, "threshold_ms": 0}
+                code="exception", message=str(e), phase="request",
+                diag={"last_state": str(current_run_status.get("state", "")),
+                      "elapsed_ms": 0, "threshold_ms": 0}
             )
 
+        handled_ns = time.monotonic_ns()
+        handle_ms = round((handled_ns - received_ns) / 1000000, 3)
+        runtime = response.get("timeline_runtime", {}) if isinstance(response, dict) else {}
+        if not isinstance(runtime, dict):
+            runtime = {}
+        status_state = str(runtime.get("state", ""))
+        status_round = runtime.get("execution_round")
+        status_id = str(runtime.get("client_task_id", ""))[:100]
+        status_log = False
+        if action == "status":
+            with _trace_status_lock:
+                previous = _trace_last_status.get(peer.split(":")[0])
+                state_tuple = (status_id, status_state, status_round)
+                if previous is None or previous[0] != state_tuple or time.monotonic() - previous[1] >= 30:
+                    _trace_last_status[peer.split(":")[0]] = (state_tuple, time.monotonic())
+                    status_log = True
+        if action != "status" or status_log or handle_ms > 200:
+            _trace("request_handled", peer=peer, seq=seq, trace_request_id=trace_id,
+                   action=action, client_task_id=task_id or status_id,
+                   server_task_id=str(runtime.get("server_task_id", response.get("server_task_id", "")))[:100] if isinstance(response, dict) else "",
+                   execution_round=round_num if round_num is not None else status_round,
+                   response_status=response.get("status") if isinstance(response, dict) else None,
+                   runtime_state=status_state, handle_ms=handle_ms)
         try:
             wire = json.dumps(response, ensure_ascii=False) + "\n"
             conn.sendall(wire.encode("utf-8"))
+            sent_ms = round((time.monotonic_ns() - received_ns) / 1000000, 3)
+            if action != "status" or sent_ms > 200:
+                _trace("response_sent", peer=peer, seq=seq, trace_request_id=trace_id,
+                       action=action, client_task_id=task_id or status_id,
+                       duration_ms=sent_ms, handle_ms=handle_ms,
+                       response_bytes=len(wire.encode("utf-8")))
         except Exception as e:
-            print("[回傳失敗] {}".format(e))
+            _trace("response_send_error", peer=peer, seq=seq, trace_request_id=trace_id,
+                   action=action, client_task_id=task_id, error=str(e)[:250],
+                   error_type=type(e).__name__)
             raise
 
     try:
@@ -1449,21 +1677,30 @@ def client_thread(conn, addr):
             raw = conn.recv(1024 * 1024)
             if not raw:
                 break
-
+            # A TCP read may split "GET /version" between packets. Classify
+            # only the first request; established JSON connections are unchanged.
             buffer += raw
+            if seq == 0 and b"\n" not in buffer:
+                http_prefixes = (b"GET ", b"HEAD ", b"POST ")
+                if any(prefix.startswith(buffer) for prefix in http_prefixes):
+                    continue  # wait for enough bytes to identify the protocol
+            if seq == 0 and (buffer.startswith(b"GET ") or buffer.startswith(b"HEAD ") or buffer.startswith(b"POST ")):
+                _handle_http_diagnostic(conn, buffer)
+                _trace("http_diagnostic_request", peer=peer)
+                return
             while b"\n" in buffer:
                 line, buffer = buffer.split(b"\n", 1)
                 line = line.strip()
-                if not line:
-                    continue
-                handle_line(line)
-
+                if line:
+                    handle_line(line)
         rest = buffer.strip()
         if rest:
             handle_line(rest)
+    except Exception as e:
+        _trace("connection_error", peer=peer, error_type=type(e).__name__, error=str(e)[:250])
     finally:
         conn.close()
-        print("[斷線] {}".format(addr))
+        _trace("connection_closed", peer=peer, requests=seq)
 
 
 def start_server():
@@ -1475,6 +1712,7 @@ def start_server():
     server.listen(5)
 
     print("Pi backend v4 listening on {}:{}".format(HOST, PORT))
+    _trace("backend_listening", host=HOST, port=PORT, pid=os.getpid())
 
     try:
         while True:

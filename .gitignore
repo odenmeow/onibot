@@ -1,2 +1,5 @@
 saved_ai_images/
 LogFile/
+__pycache__/
+ReviewFolder/
+logs/

@@ -27,15 +27,15 @@ BUFF_SKIP_MODE_WALK = "walk"
 BUFF_SKIP_MODE_PASS = "pass"
 BUFF_SKIP_MODE_COMPRESS = "compress"
 NEGATIVE_GROUP_ANCHOR_GAP_SEC = 0.2
-RUNTIME_POLL_INTERVAL_MS = 300
+RUNTIME_POLL_INTERVAL_MS = 500
 RUNTIME_POLL_IDLE_INTERVAL_MS = 1500
 FRONT_LOOP_STATUS_CACHE_MAX_AGE_SEC = 0.75
 STATUS_SUMMARY_RAW_LOG_MAX_CHARS = 512
 CONTROL_REQUEST_TIMEOUT_SEC = 8.0
-STATUS_REQUEST_TIMEOUT_SEC = 0.45
+STATUS_REQUEST_TIMEOUT_SEC = 1.2
 FIRST_EVENT_DEADLINE_GRACE_SEC = 0.8
 ACK_TIMEOUT_MS = 1500
-START_TIMEOUT_MS = 5000
+START_TIMEOUT_MS = 10000
 PROGRESS_STALL_MS = 3000
 PROGRESS_STALL_FALLBACK_MS = 8000
 PROGRESS_PREDICT_JITTER_BUDGET_MS = 1500
@@ -2042,7 +2042,7 @@ class App:
     def _daily_log_writer_loop(self):
         buffer = []
         last_flush = time.monotonic()
-        flush_interval_sec = 5.0
+        flush_interval_sec = 0.8
         max_batch_size = 500
         while not self.daily_log_stop_event.is_set():
             timeout = max(0.1, flush_interval_sec - (time.monotonic() - last_flush))
@@ -2706,6 +2706,22 @@ class App:
                 "raw_response_text",
                 max_chars=raw_response_max_chars
             )
+            # Keep all controls and errors; sample healthy status traffic only on
+            # state/task/round transitions or once every 30 seconds. Never drop errors.
+            if copied.get("action") == "status" and copied.get("direction") != "error":
+                kind = copied.get("direction")
+                if kind in ("give", "take"):
+                    return
+                signature = (copied.get("client_task_id"), copied.get("timeline_runtime.state"),
+                             copied.get("timeline_runtime.execution_round"), copied.get("timeline_runtime.processed_count"))
+                # progress changes frequently, track state/round, not every keypress
+                signature = signature[:3]
+                now = time.monotonic()
+                if (signature == getattr(self, "_trace_last_status_signature", None)
+                        and now - getattr(self, "_trace_last_status_log_at", 0.0) < 30.0):
+                    return
+                self._trace_last_status_signature = signature
+                self._trace_last_status_log_at = now
             self.communication_log_queue.put_nowait(copied)
         except Exception:
             pass
@@ -2743,6 +2759,9 @@ class App:
         ))
         timeout_ms = int(max(1.0, req_timeout * 1000.0))
         lock = self.status_request_lock if channel == "status" else self.control_request_lock
+        trace_id = "win-{}-{}".format(int(time.time() * 1000), uuid.uuid4().hex[:8])
+        wire_payload = dict(payload)
+        wire_payload["trace_request_id"] = trace_id
         with lock:
             max_attempts = 2 if allow_retry else 1
             for retry in range(max_attempts):
@@ -2751,10 +2770,13 @@ class App:
                     self.ensure_connection(channel=channel, timeout=req_timeout)
                     conn = self.status_conn if channel == "status" else self.control_conn
                     conn_file = self.status_conn_file if channel == "status" else self.control_conn_file
-                    wire = json.dumps(payload, ensure_ascii=False) + "\n"
+                    wire = json.dumps(wire_payload, ensure_ascii=False) + "\n"
                     wire_bytes = wire.encode("utf-8")
                     self._enqueue_communication_log({
                         **self._communication_log_base("give", channel, action),
+                        "trace_request_id": trace_id,
+                        "client_task_id": wire_payload.get("client_task_id"),
+                        "execution_round": wire_payload.get("execution_round"),
                         "pi_host": self.config.get("pi_host", DEFAULT_PI_HOST),
                         "port": PI_PORT,
                         "timeout_ms": timeout_ms,
@@ -2770,6 +2792,7 @@ class App:
                         raw_log_limit = STATUS_SUMMARY_RAW_LOG_MAX_CHARS
                     self._enqueue_communication_log({
                         **self._communication_log_base("take", channel, action, elapsed_ms=elapsed_ms),
+                        "trace_request_id": trace_id,
                         "raw_response_byte_length": len(line.encode("utf-8")) if isinstance(line, str) else len(line or b""),
                         "raw_response_text": line,
                         "_raw_response_text_max_chars": raw_log_limit,
@@ -2782,6 +2805,9 @@ class App:
                         runtime = {}
                     self._enqueue_communication_log({
                         **self._communication_log_base("parsed", channel, action, elapsed_ms=elapsed_ms),
+                        "trace_request_id": trace_id,
+                        "client_task_id": runtime.get("client_task_id", res.get("client_task_id")) if isinstance(res, dict) else None,
+                        "server_task_id": runtime.get("server_task_id", res.get("server_task_id")) if isinstance(res, dict) else None,
                         "parsed_status": res.get("status") if isinstance(res, dict) else None,
                         "backend_code": res.get("code") if isinstance(res, dict) else None,
                         "backend_message": res.get("message") if isinstance(res, dict) else None,
@@ -2799,6 +2825,8 @@ class App:
                     elapsed_ms = (time.monotonic() - start_time) * 1000.0 if start_time is not None else None
                     self._enqueue_communication_log({
                         **self._communication_log_base("error", channel, action, elapsed_ms=elapsed_ms),
+                        "trace_request_id": trace_id,
+                        "client_task_id": wire_payload.get("client_task_id"),
                         "timeout_ms": timeout_ms,
                         "exception_class": e.__class__.__name__,
                         "exception_message": str(e),
@@ -4635,10 +4663,13 @@ class App:
                             self.timeline_runtime_info.get("processed_count", 0)
                         )
                     self._check_first_event_progress_timeout(state)
-                    self._monitor_task_status_progress(
-                        state,
-                        self.timeline_runtime_info.get("processed_count", 0)
-                    )
+                    monitor_obj = getattr(self, "task_monitor", {})
+                    monitor_id = str(monitor_obj.get("client_task_id", "") or "") if isinstance(monitor_obj, dict) else ""
+                    status_id = str(self.timeline_runtime_info.get("client_task_id", "") or "")
+                    if not monitor_id or (status_id and monitor_id == status_id):
+                        self._monitor_task_status_progress(
+                            state, self.timeline_runtime_info.get("processed_count", 0)
+                        )
                     if state in ("running", "resumed", "paused"):
                         self.runtime_manual_restore_active = False
                         self.runtime_display_frozen = False
@@ -4926,6 +4957,10 @@ class App:
 
         if phase == "wait_running":
             started = float(monitor.get("phase_started_at", now))
+            if state == "finished":
+                # The Pi may finish before a status poll observes `running`.
+                self._reset_task_monitor()
+                return
             if state in {"running", "resumed", "paused"}:
                 monitor["phase"] = "watch_progress"
                 monitor["phase_started_at"] = now
@@ -6262,6 +6297,12 @@ class App:
             self.front_round_last_running_at = self.front_round_state_changed_at
 
     def _mark_loop_terminal(self):
+        self._enqueue_communication_log({
+            **self._communication_log_base("loop_terminal", "control", "start_task"),
+            "client_task_id": str(getattr(self, "front_inflight_client_task_id", "") or ""),
+            "execution_round": int(getattr(self, "front_loop_round_index", 0) or 0),
+            "monitor": str(getattr(self, "task_monitor", ""))[:600],
+        })
         self.front_loop_enabled = False
         self.cooldown_session_id = ""
         self.front_loop_ui_paused = False
@@ -6475,11 +6516,57 @@ class App:
                 if self.front_round_state != "waiting_ack":
                     return
                 try:
-                    res = self.request_pi(
-                        payload,
-                        write_response=False,
-                        timeout=max(0.2, ack_timeout_ms / 1000.0)
-                    )
+                    try:
+                        res = self.request_pi(
+                            payload,
+                            write_response=False,
+                            timeout=max(0.2, ack_timeout_ms / 1000.0)
+                        )
+                    except PiRequestError as ack_error:
+                        if ack_error.kind not in {"ack_read_timeout", "connect_failed"}:
+                            raise
+                        # Do not resend a non-idempotent GPIO task on an ambiguous ACK.
+                        # Reconcile the SAME client_task_id, including a task that has
+                        # already finished before we managed to query status.
+                        expected_id = str(payload.get("client_task_id", ""))
+                        deadline = time.monotonic() + 10.0
+                        res = None
+                        while self.front_loop_enabled and time.monotonic() < deadline:
+                            try:
+                                recovered = self.request_pi(
+                                    {"action": "status", "view": "summary"},
+                                    write_response=False,
+                                    channel="status",
+                                    timeout=1.5
+                                )
+                                runtime = recovered.get("timeline_runtime", {}) if isinstance(recovered, dict) else {}
+                                runtime = runtime if isinstance(runtime, dict) else {}
+                                state = str(runtime.get("state", "")).lower()
+                                if (str(runtime.get("client_task_id", "")) == expected_id
+                                        and state in {"running", "paused", "resumed", "finished"}):
+                                    res = {
+                                        "type": "ack", "status": "ok",
+                                        "client_task_id": expected_id,
+                                        "server_task_id": str(runtime.get("server_task_id", "")),
+                                        "timeline_runtime": runtime,
+                                        "reconciled_after_ack_timeout": True
+                                    }
+                                    self._mark_ack_timeout_recovered("status_identity_reconciled")
+                                    break
+                                if (state in {"running", "paused", "resumed"}
+                                        and runtime.get("client_task_id") not in (None, "", expected_id)):
+                                    raise RuntimeError("Pi 正在執行不同任務，拒絕自動重送")
+                            except RuntimeError:
+                                raise
+                            except Exception:
+                                pass
+                            time.sleep(0.3)
+                        if res is None:
+                            raise PiRequestError(
+                                "ambiguous_start_task",
+                                "start_task ACK 未收到，10 秒內無法核對相同 client_task_id；"
+                                "為避免 GPIO 重複執行，未自動重送。請檢查 Pi 狀態。"
+                            ) from ack_error
                     sent_at_monotonic = delay_meta["actual_send_time_monotonic"]
                     first_event_timing = self._extract_first_event_timing(backend_events)
                     self.write_text({
@@ -6531,6 +6618,10 @@ class App:
                     self.pending_runtime_version = 0
                     self._arm_first_event_progress_watch(sent_at_monotonic, delay_meta["send_delay_sec"], first_event_timing)
                     self._monitor_after_ack(res)
+                    recovered_runtime = res.get("timeline_runtime", {}) if isinstance(res, dict) else {}
+                    if (isinstance(recovered_runtime, dict)
+                            and str(recovered_runtime.get("state", "")).lower() == "finished"):
+                        self._reset_task_monitor()
                     self._set_front_round_state("running")
                     monitor_obj = getattr(self, "task_monitor", {})
                     if isinstance(monitor_obj, dict):
@@ -6671,12 +6762,8 @@ class App:
                 )
                 return
             if state == "finished":
-                if not bool(getattr(self, "front_round_seen_active_running", False)):
-                    self.front_loop_after_id = self.root.after(
-                        80,
-                        lambda: self._poll_front_loop_round_done(display_name)
-                    )
-                    return
+                # `_read_front_loop_runtime_state` checks all four round IDs.
+                # A short round may finish entirely between status polls.
                 now = float(time.monotonic())
                 last_running = getattr(self, "front_round_last_running_at", None)
                 if last_running is not None:
@@ -6697,7 +6784,7 @@ class App:
                 return
             if state == "waiting_ack":
                 self.front_loop_after_id = self.root.after(
-                    80,
+                    250,
                     lambda: self._poll_front_loop_round_done(display_name)
                 )
                 return
@@ -6707,7 +6794,7 @@ class App:
                 self._update_runtime_control_buttons()
                 return
             self.front_loop_after_id = self.root.after(
-                80,
+                250,
                 lambda: self._poll_front_loop_round_done(display_name)
             )
         except Exception:
